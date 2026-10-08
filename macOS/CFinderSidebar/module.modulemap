@@ -1,0 +1,4 @@
+module CFinderSidebar [system] {
+    header "FinderSidebarBridge.h"
+    export *
+}

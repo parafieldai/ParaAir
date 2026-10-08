@@ -1,0 +1,7 @@
+ParaAir
+Copyright 2026 The ParaAir Authors
+
+This product includes software built on JuiceFS
+(https://github.com/juicedata/juicefs), licensed under the Apache License,
+Version 2.0. scripts/build-juicefs.sh downloads a pinned JuiceFS release,
+verifies its checksum and applies ParaAir's patches at build time.

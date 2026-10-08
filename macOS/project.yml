@@ -1,0 +1,68 @@
+name: ParaAir
+options:
+  minimumXcodeGenVersion: 2.40.0
+  deploymentTarget:
+    macOS: "26.0"
+packages:
+  ParaAir:
+    path: ..
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    ENABLE_HARDENED_RUNTIME: YES
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    COMBINE_HIDPI_IMAGES: YES
+    DEVELOPMENT_TEAM: ""
+targets:
+  StreamDrive:
+    type: application
+    productName: ParaAir
+    platform: macOS
+    sources:
+      - App
+      - path: Resources
+        buildPhase: resources
+        excludes: [Branding.md]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.streamdrive.app
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/StreamDrive.entitlements
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/CFinderSidebar"
+        ENABLE_APP_SANDBOX: NO
+    dependencies:
+      - package: ParaAir
+        product: StreamDriveCore
+      - target: StreamDriveFS
+        embed: true
+  StreamDriveFS:
+    type: extensionkit-extension
+    platform: macOS
+    sources: [Extension]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.streamdrive.app.filesystem
+        INFOPLIST_FILE: Extension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Extension/StreamDriveFS.entitlements
+        ENABLE_APP_SANDBOX: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    dependencies:
+      - package: ParaAir
+        product: StreamDriveCore
+      - sdk: FSKit.framework
+      - sdk: ExtensionFoundation.framework
+schemes:
+  StreamDriveFS:
+    build:
+      targets:
+        StreamDriveFS: all
+  StreamDrive:
+    build:
+      targets:
+        StreamDrive: all
+        StreamDriveFS: all

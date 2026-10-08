@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ParaAir: your storage bucket as a Mac drive</title>
+  <meta name="description" content="ParaAir puts your storage bucket in Finder as a drive. Open any file and only the parts you use come down. Alpha for Apple Silicon Macs on macOS 26 or later.">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="glide.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Hallmark · macrostructure: custom (signature-field poster) · tone: calm-technical · anchor hue: Glide sage
+       theme: custom (brand) · paper #20282C / #F1EFE7 · accent #9AC7B4 · display New York (ui-serif) + body system-ui -->
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="masthead">
+    <a class="brand" href="#top" aria-label="ParaAir home">
+      <svg class="brand-mark" viewBox="0 0 454 460" aria-hidden="true">
+        <polygon class="mark-a" points="0,150 454,0 316,298 244,208"/>
+        <polygon class="mark-b" points="244,208 316,298 156,460 168,256"/>
+      </svg>
+      <span>ParaAir</span>
+    </a>
+    <a class="nav-cta" href="#access">Early access</a>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <canvas class="field" data-field aria-hidden="true"></canvas>
+      <div class="hero-text">
+        <h1 id="hero-title">Fetch only what you play.</h1>
+        <p class="lede">ParaAir puts your storage bucket in Finder. Open any file, and only the parts you use come down.</p>
+      </div>
+      <div class="hero-action">
+        <a class="cta" data-contact href="mailto:contact@parafield.ai?subject=ParaAir%20early%20access">Request early access</a>
+        <p class="requires">Alpha · Apple Silicon · macOS 26 or later</p>
+      </div>
+    </section>
+
+    <section class="scene scene-pieces" aria-labelledby="pieces-title" data-scene>
+      <div class="scene-copy">
+        <h2 id="pieces-title">Big files open in pieces.</h2>
+        <p>Only the parts you open come down. A small cache keeps them close for next time.</p>
+      </div>
+      <div class="lanes" aria-hidden="true">
+        <span class="lane-label lane-label-top">Your storage</span>
+        <div class="file-row" data-file-row></div>
+        <span class="lane-label lane-label-bottom">Your Mac</span>
+      </div>
+    </section>
+
+    <section class="scene scene-saves" aria-labelledby="saves-title" data-scene>
+      <div class="loop" aria-hidden="true">
+        <span class="loop-end">Your Mac</span>
+        <span class="loop-path"><i></i><i></i><i></i></span>
+        <span class="loop-end">Your storage</span>
+      </div>
+      <div class="scene-copy">
+        <h2 id="saves-title">Saves land on your Mac first.</h2>
+        <p>Then they upload in the background.</p>
+      </div>
+    </section>
+
+    <section class="choice" aria-labelledby="choice-title">
+      <h2 id="choice-title">Your storage, or ours.</h2>
+      <div class="choice-pair">
+        <p><strong>Bring a bucket.</strong> Free and open source. Cloudflare R2 works today.</p>
+        <p><strong>ParaAir Cloud is coming.</strong> No buckets, no keys.</p>
+      </div>
+    </section>
+
+    <section class="access" id="access" aria-labelledby="access-title">
+      <svg class="access-mark" viewBox="0 0 454 460" aria-hidden="true">
+        <polygon class="mark-a" points="0,150 454,0 316,298 244,208"/>
+        <polygon class="mark-b" points="244,208 316,298 156,460 168,256"/>
+      </svg>
+      <h2 id="access-title">Try the alpha.</h2>
+      <a class="cta" data-contact href="mailto:contact@parafield.ai?subject=ParaAir%20early%20access">Request early access</a>
+      <p class="requires">For Apple Silicon Macs on macOS 26 or later.</p>
+    </section>
+  </main>
+
+  <footer class="colophon">
+    <p>ParaAir by Parafield · <a href="https://github.com/parafieldai/ParaAir">Source code</a> (Apache-2.0) · Built on <a href="https://github.com/juicedata/juicefs">JuiceFS</a> · © 2026</p>
+  </footer>
+
+  <script src="motion.js" defer></script>
+</body>
+</html>

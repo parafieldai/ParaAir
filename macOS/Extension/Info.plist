@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleDisplayName</key><string>ParaAir file system</string>
+<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+<key>CFBundleName</key><string>ParaAir file system</string>
+<key>CFBundlePackageType</key><string>XPC!</string>
+<key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+<key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+<key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+<key>EXAppExtensionAttributes</key><dict>
+  <key>EXExtensionPointIdentifier</key><string>com.apple.fskit.fsmodule</string>
+  <key>FSShortName</key><string>streamdrive</string>
+  <key>FSActivateOptionSyntax</key><dict><key>shortOptions</key><string>p:o:</string></dict>
+  <key>FSMediaTypes</key><dict/>
+  <key>FSPersonalities</key><dict><key>StreamDrive</key><dict>
+    <key>FSName</key><string>ParaAir</string>
+    <key>FSfileObjectsAreCaseSensitive</key><true/>
+  </dict></dict>
+  <key>FSRequiresSecurityScopedPathURLResources</key><true/>
+  <key>FSSupportsPathURLs</key><true/>
+  <key>FSSupportsGenericURLResources</key><false/>
+  <key>FSSupportsBlockResources</key><false/>
+  <key>FSSupportsServerURLs</key><false/>
+  <key>FSVolumeAlwaysIgnoreOwnership</key><true/>
+</dict>
+</dict></plist>

@@ -1,0 +1,29 @@
+.build/
+.runtime/
+.deps/
+.DS_Store
+macOS/StreamDrive.xcodeproj/
+macOS/ParaAir.xcodeproj/
+*.xcresult
+
+.build-native/
+native/lib/
+
+# Local Finder mount; never traverse cloud contents as repository files.
+/ParaAir/
+
+# Local Python caches and credential exports.
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.provisionprofile
+*.mobileprovision
+
+# Internal planning documents stay on the operator's Mac, outside the public repository.
+/PRICING.md
+/SETUP-AUDIT.md
+/notes/
