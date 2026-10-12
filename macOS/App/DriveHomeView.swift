@@ -46,7 +46,11 @@ extension MenuModel {
             creatingDrive: creatingDrive,
             error: error,
             mountMessage: mountMessage,
-            sidebarMessage: sidebarMessage)
+            folderNotice: adoptionNotice ?? otherDriveNotice,
+            sidebarMessage: sidebarMessage,
+            storageKind: profile?.backend == .paraairCloud ? .paraairCloud : .ownBucket,
+            uploadActivity: profile == nil ? nil : uploadActivity,
+            cloudUsage: profile?.backend == .paraairCloud && cloudAccount.signedInAccount != nil ? cloudAccount.usage : nil)
     }
 
     func homeDetails() -> HomeDetails {
@@ -69,7 +73,8 @@ extension MenuModel {
                 case .addStorage: show("storage-settings")
                 case .createDrive: self.createDriveFromReadyConnection()
                 case .signInAgain:
-                    self.pendingReconnectID = profile?.connectionID
+                    // ParaAir Cloud signs in from its own section; only saved connections reopen a form.
+                    if profile?.backend != .paraairCloud { self.pendingReconnectID = profile?.connectionID }
                     show("storage-settings")
                 case .openSystemSettings: self.openExtensionSettings()
                 case .connectDrive: if let profile { self.continueSetup(profile) }

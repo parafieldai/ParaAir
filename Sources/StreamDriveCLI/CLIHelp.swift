@@ -9,18 +9,31 @@ enum CLIHelp {
               --metadata-url URI     Existing formatted JuiceFS metadata endpoint; no credentials or query
               --library PATH         Pinned libstreamdrive.dylib for CLI storage access
               --connection ID        Saved storage connection from the Mac app (no secrets)
+              --cloud-account ID     ParaAir Cloud account signed in with the Mac app (see cloud-accounts)
+              --cloud-drive ID       ParaAir Cloud drive to attach; requires --cloud-account
               --credential-id ID     Metadata URI stored by the app's secure Keychain dialog
               --mount-point PATH     Empty directory for the Finder volume
               --cache-mib N          Evictable touched-block cache limit (default 1024 MiB)
               --min-free-mib N       Free-space reserve (default 5120 MiB)
-              --block-size N         Read/cache block size in bytes (4096–8388608; default 1048576)
+              --block-size N         Read/cache block size in bytes (4096–8388608; default 1048576,
+                                     4194304 with --connection; ParaAir Cloud requires 4194304)
               --journal-mib N        Pending-write admission limit (default 4096 MiB)
-              --replace             Explicitly replace an unmounted profile configuration
+              --replace             Explicitly replace an unmounted profile configuration (keeps its block size
+                                    unless --block-size is given)
               --fixture-root PATH   Explicit local-directory test adapter; never a remote fallback
 
             connect saves a reference. It does not format storage, test connectivity or mount it.
             Create new managed cloud volumes in the Mac app. --connection selects its saved authorization.
+            --cloud-account attaches an existing ParaAir Cloud drive after checking it with the service;
+            it cannot be combined with --metadata-url, --library, --credential-id, --fixture-root or --connection.
             Secret URLs are entered through the app's secure dialog and stored in Keychain.
+            """ + "\n"
+        case "trash", "restore":
+            return """
+            Usage: paraair trash PROFILE [--json]
+                   paraair restore PROFILE NODE_ID [--to PATH] [--json]
+            ParaAir Cloud profiles only. trash lists deleted files that can still be restored.
+            restore puts one back at its original path, or at --to PATH.
             """ + "\n"
         case "cache":
             return """
@@ -47,6 +60,7 @@ enum CLIHelp {
             Usage: paraair [--state-dir PATH] COMMAND [PROFILE] [options]
 
               connections                         List public saved connection references
+              cloud-accounts                      List ParaAir Cloud accounts signed in with the app
               connect PROFILE [options]           Save an existing JuiceFS volume reference
               mount PROFILE [--mount-point PATH]  Mount using the signed macOS filesystem extension
               unmount PROFILE                     Unmount without forcing open files closed
@@ -57,6 +71,8 @@ enum CLIHelp {
               pin PROFILE [/path]                 Explicitly download for offline reads
               unpin PROFILE [/path]               Make clean blocks eligible for eviction
               uploads PROFILE [--retry]           Inspect or retry durable pending uploads
+              trash PROFILE                       List deleted ParaAir Cloud files that can be restored
+              restore PROFILE NODE_ID [--to PATH] Restore a deleted ParaAir Cloud file
               doctor [PROFILE]                    Check local prerequisites without network or Keychain access
               help [COMMAND]
 

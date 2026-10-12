@@ -135,4 +135,23 @@ final class ConnectionStoreTests: XCTestCase {
         try JSONEncoder().encode(altered).write(to: file)
         expect(ENOENT) { _ = try store.load(record.id) }
     }
+
+    func testListSkipsUndecodableRecordAndReportsIt() throws {
+        let root = try fixture(), store = ConnectionStore(root: root), record = record()
+        try store.save(record)
+        let directory = root.appendingPathComponent("connections")
+        let undecodable = UUID().uuidString.lowercased() + ".json", invalid = UUID().uuidString.lowercased() + ".json"
+        try Data("not json".utf8).write(to: directory.appendingPathComponent(undecodable))
+        var unsafe = record; unsafe.id = String(invalid.dropLast(5)); unsafe.endpoint = "http://plain.example.test"
+        try JSONEncoder().encode(unsafe).write(to: directory.appendingPathComponent(invalid))
+        try Data("ignored".utf8).write(to: directory.appendingPathComponent("notes.txt"))
+        XCTAssertEqual(try store.list(), [record])
+        let report = try store.listReport()
+        XCTAssertEqual(report.records, [record])
+        XCTAssertEqual(Set(report.unreadable), [undecodable, invalid])
+        // An unsafe connections directory still fails the whole listing.
+        try FileManager.default.removeItem(at: directory)
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: root)
+        expect(EACCES) { _ = try store.listReport() }
+    }
 }

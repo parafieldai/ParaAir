@@ -79,5 +79,5 @@ if [[ -n "$native" ]]; then
     env STREAMDRIVE_NATIVE_LIBRARY="$native" \
         CLANG_MODULE_CACHE_PATH="$repo/.build/module-cache" \
         SWIFTPM_MODULECACHE_OVERRIDE="$repo/.build/module-cache" \
-        swift test --package-path "$repo" --cache-path "$repo/.build/pm-cache" --disable-sandbox --filter NativeBackendTests
+        swift test --package-path "$repo" --cache-path "$repo/.build/pm-cache" --disable-sandbox --jobs 4 --filter NativeBackendTests
 fi

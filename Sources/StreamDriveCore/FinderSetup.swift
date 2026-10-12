@@ -23,6 +23,72 @@ public enum FinderExtensionState: Equatable, Sendable {
     }
 }
 
+/// Every gate an automatic mount waits on, so the take decision and its log
+/// line read one value. `description` carries no paths or identifiers.
+public struct AutoMountReadiness: Equatable, Sendable, CustomStringConvertible {
+    public var credentialCheckFinished: Bool
+    public var storageBlocked: Bool
+    public var extensionState: FinderExtensionState
+    public var checkingExtension: Bool
+    public var mounted: Bool
+    public var mounting: Bool
+
+    public init(credentialCheckFinished: Bool, storageBlocked: Bool, extensionState: FinderExtensionState,
+                checkingExtension: Bool, mounted: Bool, mounting: Bool) {
+        self.credentialCheckFinished = credentialCheckFinished; self.storageBlocked = storageBlocked
+        self.extensionState = extensionState; self.checkingExtension = checkingExtension
+        self.mounted = mounted; self.mounting = mounting
+    }
+
+    public var canStartMount: Bool {
+        credentialCheckFinished && !storageBlocked && extensionState == .enabled && !checkingExtension && !mounted && !mounting
+    }
+    /// The first gate that prevents mounting, or nil when `canStartMount`.
+    public var blockedGate: String? {
+        if !credentialCheckFinished { return "credentials-pending" }
+        if storageBlocked { return "storage-blocked" }
+        if extensionState != .enabled { return "extension-\(extensionState)" }
+        if checkingExtension { return "checking-extension" }
+        if mounted { return "mounted" }
+        if mounting { return "mounting" }
+        return nil
+    }
+    public var description: String {
+        "gate=\(blockedGate ?? "ready") credentialCheckFinished=\(credentialCheckFinished) storageBlocked=\(storageBlocked) "
+            + "extension=\(extensionState) checkingExtension=\(checkingExtension) mounted=\(mounted) mounting=\(mounting)"
+    }
+}
+
+/// State folders whose drive mounts at login. The selected folder always does. Signing in
+/// to ParaAir Cloud switches to the cloud drive's own folder and keeps the folder it left,
+/// so an existing drive never stops mounting at login (spec D5). Choose State Folder…
+/// replaces the selected folder as before, except that choosing a kept folder keeps the
+/// one it replaces. Paths are standardized state-folder paths.
+public struct LoginMountFolders: Equatable, Sendable {
+    /// Folders other than the selected one that also mount at login, oldest first.
+    public private(set) var kept: [String]
+    public init(kept: [String] = []) { self.kept = kept }
+
+    /// A switch to the folder of a drive that just became ready (a ParaAir Cloud sign-in).
+    public mutating func adopt(_ next: String, leaving previous: String, previousHasDrive: Bool) {
+        select(next, keeping: previousHasDrive ? previous : nil)
+    }
+    /// A switch made with Choose State Folder….
+    public mutating func choose(_ next: String, leaving previous: String, previousHasDrive: Bool) {
+        select(next, keeping: previousHasDrive && kept.contains(next) ? previous : nil)
+    }
+    /// Folders to mount at login, the selected one first. Kept folders without a drive drop out.
+    public mutating func targets(selected: String, hasDrive: (String) -> Bool) -> [String] {
+        kept.removeAll { $0 == selected || !hasDrive($0) }
+        return [selected] + kept
+    }
+
+    private mutating func select(_ next: String, keeping previous: String?) {
+        kept.removeAll { $0 == next }
+        if let previous, previous != next, !kept.contains(previous) { kept.append(previous) }
+    }
+}
+
 /// Coordinates discovery and user intent without mounting or changing OS access.
 @MainActor
 public final class FinderSetupCoordinator {
@@ -67,11 +133,16 @@ public final class FinderSetupCoordinator {
 
     public func requestContinuation(for target: String) { pendingTarget = target }
     public func cancelContinuation() { pendingTarget = nil }
-    public func takeContinuation(for target: String, storageReady: Bool, mounted: Bool, mounting: Bool) -> Bool {
+    public func takeContinuation(for target: String, readiness: AutoMountReadiness) -> Bool {
         guard pendingTarget == target else { return false }
-        if mounted { pendingTarget = nil; return false }
-        guard state == .enabled, !isRefreshing, storageReady, !mounting else { return false }
+        if readiness.mounted { pendingTarget = nil; return false }
+        guard state == .enabled, !isRefreshing, readiness.canStartMount else { return false }
         pendingTarget = nil
         return true
+    }
+    public func takeContinuation(for target: String, storageReady: Bool, mounted: Bool, mounting: Bool) -> Bool {
+        takeContinuation(for: target, readiness: AutoMountReadiness(
+            credentialCheckFinished: true, storageBlocked: !storageReady, extensionState: state,
+            checkingExtension: isRefreshing, mounted: mounted, mounting: mounting))
     }
 }

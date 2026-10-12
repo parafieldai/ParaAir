@@ -271,8 +271,8 @@
  "plans": {
   "personal": {
    "included_tb": 1,
-   "monthly_usd": 12.0,
-   "annual_usd": 120.0,
+   "monthly_usd": 10.0,
+   "annual_usd": 100.0,
    "expansion_tb_monthly_usd": 10.0,
    "expansion_tb_annual_usd": 120.0,
    "ops_usd_per_account_month": 0.6,
@@ -280,8 +280,8 @@
   },
   "team": {
    "included_tb": 1,
-   "monthly_usd": 24.0,
-   "annual_usd": 240.0,
+   "monthly_usd": 16.0,
+   "annual_usd": 160.0,
    "expansion_tb_monthly_usd": 10.0,
    "expansion_tb_annual_usd": 120.0,
    "ops_usd_per_account_month": 1.5,

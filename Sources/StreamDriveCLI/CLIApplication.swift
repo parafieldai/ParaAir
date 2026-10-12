@@ -10,7 +10,10 @@ struct CLIExecution {
 
 final class CLIApplication {
     private let environment: [String: String]
-    init(environment: [String: String] = ProcessInfo.processInfo.environment) { self.environment = environment }
+    private let dependencies: EngineOpenDependencies
+    init(environment: [String: String] = ProcessInfo.processInfo.environment, dependencies: EngineOpenDependencies = .live) {
+        self.environment = environment; self.dependencies = dependencies
+    }
     func run(_ arguments: [String]) -> CLIExecution {
         do { return try execute(CLIParser.parse(arguments)) }
         catch {
@@ -34,6 +37,49 @@ final class CLIApplication {
             let records = try ConnectionStore(root: stateRoot).list()
             let text = records.map { "\($0.id)\t\($0.provider.title)\t\($0.state.rawValue)\t\($0.name)" }.joined(separator: "\n")
             return try render(records, invocation: invocation, text: text.isEmpty ? "No saved connections. Open ParaAir Connections.\n" : text + "\n")
+        case .cloudAccounts:
+            let accounts = CloudAccountStore(root: stateRoot).list().accounts
+            let text = accounts.map { "\($0.id)\tParaAir Cloud\t\($0.state.rawValue)\t\(displayName($0.email))" }.joined(separator: "\n")
+            return try render(accounts, invocation: invocation, text: text.isEmpty ? "No ParaAir Cloud accounts. Sign in from the ParaAir app.\n" : text + "\n")
+        case .trash(let name):
+            let profile = try cloudProfile(name, store: store)
+            let api = try cloudAPI(profile, root: stateRoot)
+            var items: [ParaAirCloudTrashPage.Item] = [], cursor: String?, pages = 0
+            repeat {
+                let page = try api.trash(driveID: profile.cloudDriveID!, cursor: cursor, limit: 1000)
+                items += page.items; cursor = page.nextCursor; pages += 1
+            } while cursor != nil && pages < 1000
+            let text = items.isEmpty ? "Trash is empty.\n" : items.map { "\($0.nodeId)\t\($0.size)\t\(displayName($0.path))" }.joined(separator: "\n") + "\n"
+            return try render(items, invocation: invocation, text: text)
+        case .restore(let name, let nodeID, let to):
+            let profile = try cloudProfile(name, store: store)
+            let destination = try to.map { try canonicalPath($0) }
+            let entry = try cloudAPI(profile, root: stateRoot).restore(driveID: profile.cloudDriveID!, nodeID: nodeID, to: destination, idempotencyKey: UUID())
+            return try render(entry, invocation: invocation, text: "Restored \(displayName(entry.path)).\n")
+        case .connect(let arguments) where arguments.values["cloud-account"] != nil:
+            let values = arguments.values
+            guard let drive = values["cloud-drive"] else { throw CLIUsageError(message: "--cloud-account requires --cloud-drive") }
+            for flag in ["metadata-url", "library", "credential-id", "fixture-root", "connection"] where values[flag] != nil {
+                throw CLIUsageError(message: "--\(flag) cannot be combined with --cloud-account")
+            }
+            if let size = values["block-size"], Int(size) != CloudDriveSetup.blockSize {
+                throw CLIUsageError(message: "ParaAir Cloud drives use --block-size 4194304")
+            }
+            if arguments.overwrite, let previous = try? store.load(arguments.profile), mounted(previous) {
+                throw DriveError(EBUSY, "Unmount the profile before replacing its configuration")
+            }
+            var profile = try CloudDriveSetup.attach(driveID: drive, finderName: arguments.profile, name: arguments.profile,
+                                                     accountID: values["cloud-account"]!, stateRoot: stateRoot,
+                                                     replace: arguments.overwrite, dependencies: dependencies)
+            if values["cache-mib"] != nil || values["min-free-mib"] != nil || values["journal-mib"] != nil || values["mount-point"] != nil {
+                profile.cacheLimitBytes = try bytes(values["cache-mib"], default: profile.cacheLimitBytes)
+                profile.minFreeBytes = try bytes(values["min-free-mib"], default: profile.minFreeBytes)
+                profile.maxJournalBytes = try bytes(values["journal-mib"], default: profile.maxJournalBytes)
+                profile.mountPoint = values["mount-point"].map(absolutePath) ?? profile.mountPoint
+                try store.save(profile, overwrite: true)
+            }
+            let response = ProfileReference(profile: profile.name, backend: profile.backend.rawValue, mountPoint: profile.mountPoint, mounted: false)
+            return try render(response, invocation: invocation, text: "Saved ParaAir Cloud profile '\(profile.name)'. Run ls to browse it, then mount to open it in Finder.\n")
         case .connect(let arguments):
             let values = arguments.values
             let fixture = values["fixture-root"].map(absolutePath)
@@ -52,7 +98,7 @@ final class CLIApplication {
                 guard connection.state == .storageReady else { throw DriveError(ENOTCONN, "Finish setup in ParaAir Connections") }
                 _ = try connection.nativeBucketURL()
             }
-            let profile = DriveProfile(
+            var profile = DriveProfile(
                 name: arguments.profile, backend: fixture == nil ? .juicefs : .local,
                 metadataURL: values["metadata-url"], localRoot: fixture,
                 libraryPath: values["library"].map(absolutePath), mountPoint: values["mount-point"].map(absolutePath),
@@ -62,8 +108,13 @@ final class CLIApplication {
                 maxJournalBytes: try bytes(values["journal-mib"], default: 4_294_967_296),
                 credentialID: values["credential-id"], connectionID: values["connection"]
             )
-            if arguments.overwrite, let previous = try? store.load(arguments.profile), mounted(previous) {
+            let previous = arguments.overwrite ? try? store.load(arguments.profile) : nil
+            if let previous, mounted(previous) {
                 throw DriveError(EBUSY, "Unmount the profile before replacing its configuration")
+            }
+            // Cached blocks are keyed by block size; a replacement keeps the stored one unless asked.
+            if values["block-size"] == nil {
+                profile.blockSize = previous?.blockSize ?? (values["connection"] != nil ? ConnectedDrive.blockSize : profile.blockSize)
             }
             try store.save(profile, overwrite: arguments.overwrite)
             let response = ProfileReference(profile: profile.name, backend: profile.backend.rawValue, mountPoint: profile.mountPoint, mounted: false)
@@ -144,7 +195,22 @@ final class CLIApplication {
         }
     }
 
-    private func open(_ profile: DriveProfile, root: URL) throws -> Engine { try Engine.open(profile: profile, stateRoot: root) }
+    private func open(_ profile: DriveProfile, root: URL) throws -> Engine { try Engine.open(profile: profile, stateRoot: root, dependencies: dependencies) }
+    private func cloudProfile(_ name: String, store: ProfileStore) throws -> DriveProfile {
+        let profile = try store.load(name)
+        guard profile.backend == .paraairCloud else { throw CLIUsageError(message: "trash and restore apply only to ParaAir Cloud profiles") }
+        return profile
+    }
+    private func cloudAPI(_ profile: DriveProfile, root: URL) throws -> ParaAirCloudAPI {
+        let root = root.standardizedFileURL.resolvingSymlinksInPath()
+        guard try CloudAccountStore(root: root).load(profile.cloudAccountID!).issuer == profile.cloudIssuer else {
+            throw DriveError(EXDEV, "This drive belongs to another ParaAir Cloud service")
+        }
+        let session = try ParaAirCloudSession.shared(root: root, accountID: profile.cloudAccountID!, vault: dependencies.cloudVault,
+                                                     configuration: dependencies.cloudConfiguration, policy: dependencies.cloudPolicy,
+                                                     options: dependencies.cloudSessionOptions)
+        return ParaAirCloudAPI(http: try session.http(), tokens: session)
+    }
     private func selectedProfiles(_ name: String?, store: ProfileStore) throws -> [DriveProfile] { try name.map { [try store.load($0)] } ?? store.list() }
     private func mounted(_ profile: DriveProfile) -> Bool {
         guard let point = profile.mountPoint else { return false }
@@ -198,6 +264,11 @@ final class CLIApplication {
         }
         let profiles = try selectedProfiles(name, store: store)
         for profile in profiles {
+            if profile.backend == .paraairCloud {
+                checks.append(DoctorCheck(name: "profile:\(profile.name)", state: "pass",
+                                          detail: "ParaAir Cloud drive \(profile.cloudDriveID ?? "") at \(profile.cloudIssuer ?? ""); service and Keychain access were not probed"))
+                continue
+            }
             let local = profile.backend == .local
             let exists = local ? profile.localRoot.map { FileManager.default.fileExists(atPath: $0) } ?? false : profile.libraryPath.map { FileManager.default.fileExists(atPath: $0) } ?? false
             checks.append(DoctorCheck(name: "profile:\(profile.name)", state: local && !exists ? "fail" : "pass", detail: local ? "Explicit local fixture; \(exists ? "root exists" : "root is missing")" : "Existing JuiceFS metadata reference; remote access and Keychain access were not probed"))

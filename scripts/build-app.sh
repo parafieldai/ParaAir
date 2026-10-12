@@ -14,6 +14,28 @@ if [[ -n "${STREAMDRIVE_CLOUDFLARE_CLIENT_ID:-}" ]]; then
     echo "Invalid public Cloudflare OAuth client ID." >&2; exit 1
   fi
 fi
+# A signed build without a bundled client ID cannot renew Cloudflare sign-in once
+# the access token expires, so Finder never mounts the drive automatically.
+if [[ -n "${STREAMDRIVE_SIGN_IDENTITY:-}" && -z "${STREAMDRIVE_CLOUDFLARE_CLIENT_ID:-}" \
+      && "${STREAMDRIVE_ALLOW_UNBUNDLED_OAUTH_CLIENT:-}" != 1 ]]; then
+  echo "Signed builds need STREAMDRIVE_CLOUDFLARE_CLIENT_ID (the public client ID from cloudflare-oauth-client.json) so R2 sign-in can renew." >&2
+  echo "Set STREAMDRIVE_ALLOW_UNBUNDLED_OAUTH_CLIENT=1 to build without it." >&2
+  exit 1
+fi
+# ParaAir Cloud service address: an HTTPS origin, or the loopback dev service.
+cloud_loopback=0
+if [[ -n "${PARAAIR_CLOUD_BASE_URL:-}" ]]; then
+  if [[ "$PARAAIR_CLOUD_BASE_URL" =~ ^https://[^/?#]+$ ]]; then
+    cloud_loopback=0
+  elif [[ "$PARAAIR_CLOUD_BASE_URL" =~ ^http://127\.0\.0\.1:[0-9]{2,5}$ ]]; then
+    cloud_loopback=1
+  else
+    echo "PARAAIR_CLOUD_BASE_URL must be https://<host> or http://127.0.0.1:<port>, with no path, query or fragment." >&2; exit 1
+  fi
+  if (( cloud_loopback )) && [[ -n "${STREAMDRIVE_SIGN_IDENTITY:-}" && "${STREAMDRIVE_ALLOW_DEV_CLOUD:-}" != 1 ]]; then
+    echo "Refusing a loopback ParaAir Cloud address in a signed build. Set STREAMDRIVE_ALLOW_DEV_CLOUD=1 for a development build." >&2; exit 1
+  fi
+fi
 [[ -f "$native_library" ]] || { echo "Build the native engine with scripts/build-juicefs.sh first." >&2; exit 1; }
 command -v xcodegen >/dev/null || { echo "xcodegen is required (brew install xcodegen)." >&2; exit 1; }
 signing="$root/.build/signing"
@@ -137,6 +159,19 @@ if [[ -n "${STREAMDRIVE_CLOUDFLARE_CLIENT_ID:-}" ]]; then
 fi
 extension="$app/Contents/Extensions/StreamDriveFS.appex"
 /usr/bin/ditto "$products/StreamDriveFS.appex" "$extension"
+if [[ -n "${PARAAIR_CLOUD_BASE_URL:-}" ]]; then
+  for info in "$app/Contents/Info.plist" "$cli/Contents/Info.plist" "$extension/Contents/Info.plist"; do
+    /usr/bin/plutil -replace ParaAirCloudBaseURL -string "$PARAAIR_CLOUD_BASE_URL" "$info"
+    if (( cloud_loopback )); then
+      /usr/bin/plutil -replace ParaAirCloudAllowLoopbackHTTP -bool YES "$info"
+      /usr/bin/plutil -replace NSAppTransportSecurity \
+        -json '{"NSExceptionDomains":{"127.0.0.1":{"NSExceptionAllowsInsecureHTTPLoads":true}}}' "$info"
+    fi
+  done
+  if (( cloud_loopback )); then
+    echo "Warning: this build talks to a development ParaAir Cloud service over plain HTTP at $PARAAIR_CLOUD_BASE_URL. Do not distribute it." >&2
+  fi
+fi
 if [[ -n "${STREAMDRIVE_SIGN_IDENTITY:-}" ]]; then
   python3 "$root/scripts/prepare-signing.py" configure --app "$app" --plan "$signing/plan.json"
 else

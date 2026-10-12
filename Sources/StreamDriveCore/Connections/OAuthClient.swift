@@ -86,6 +86,13 @@ public actor OAuthClient {
         catch let error as OAuthError { throw error }
         catch { throw OAuthError.requestFailed }
         try Task.checkCancellation()
+        return try OAuthTokenResponse.parse(response, now: now())
+    }
+}
+
+/// The token endpoint response rules shared by `OAuthClient` and `ParaAirCloudSession`.
+enum OAuthTokenResponse {
+    static func parse(_ response: OAuthHTTPResponse, now: Date) throws -> OAuthTokens {
         guard (200...299).contains(response.statusCode) else {
             if (response.statusCode == 400 || response.statusCode == 401), response.data.count <= 1_048_576,
                let body = try? JSONSerialization.jsonObject(with: response.data) as? [String: Any],
@@ -103,7 +110,7 @@ public actor OAuthClient {
         if let value = object["expires_in"] {
             guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
                   number.doubleValue.isFinite, number.doubleValue > 0, number.doubleValue <= 315_360_000 else { throw OAuthError.invalidTokenResponse }
-            expiry = now().addingTimeInterval(number.doubleValue)
+            expiry = now.addingTimeInterval(number.doubleValue)
         }
         guard object["scope"] == nil || object["scope"] is String else { throw OAuthError.invalidTokenResponse }
         return OAuthTokens(accessToken: access, refreshToken: refresh, expiresAt: expiry, tokenType: type, scope: object["scope"] as? String)

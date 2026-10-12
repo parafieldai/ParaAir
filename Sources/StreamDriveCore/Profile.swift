@@ -3,7 +3,7 @@ import Security
 import Darwin
 import CryptoKit
 
-public enum DriveBackendKind: String, Codable, Sendable { case juicefs, local }
+public enum DriveBackendKind: String, Codable, Sendable { case juicefs, local, paraairCloud }
 
 public struct DriveProfile: Codable, Equatable, Sendable {
     public var name: String
@@ -22,19 +22,24 @@ public struct DriveProfile: Codable, Equatable, Sendable {
     public var credentialID: String?
     public var objectCredentialID: String?
     public var connectionID: String?
+    /// ParaAir Cloud service issuer, account record and drive. Only for `.paraairCloud`.
+    public var cloudIssuer: String?
+    public var cloudAccountID: String?
+    public var cloudDriveID: String?
 
     public init(name: String, backend: DriveBackendKind = .juicefs, metadataURL: String? = nil,
                 localRoot: String? = nil, libraryPath: String? = nil, mountPoint: String? = nil,
                 cacheLimitBytes: Int64 = 1_073_741_824, minFreeBytes: Int64 = 5_368_709_120,
                 blockSize: Int = 1_048_576, maxJournalBytes: Int64 = 4_294_967_296,
                 credentialID: String? = nil, objectCredentialID: String? = nil, connectionID: String? = nil,
-                displayName: String? = nil) {
+                displayName: String? = nil, cloudIssuer: String? = nil, cloudAccountID: String? = nil, cloudDriveID: String? = nil) {
         self.name = name; self.backend = backend; self.metadataURL = metadataURL
         self.displayName = displayName
         self.localRoot = localRoot; self.libraryPath = libraryPath; self.mountPoint = mountPoint
         self.cacheLimitBytes = cacheLimitBytes; self.minFreeBytes = minFreeBytes
         self.blockSize = blockSize; self.maxJournalBytes = maxJournalBytes; self.credentialID = credentialID
         self.objectCredentialID = objectCredentialID; self.connectionID = connectionID
+        self.cloudIssuer = cloudIssuer; self.cloudAccountID = cloudAccountID; self.cloudDriveID = cloudDriveID
     }
 
     public func validate() throws {
@@ -56,7 +61,25 @@ public struct DriveProfile: Codable, Equatable, Sendable {
             guard objectCredentialID == nil else { throw DriveError(EINVAL, "Select one storage credential source") }
         }
         if let metadataURL { try Self.validatePublicMetadataURL(metadataURL) }
+        if backend != .paraairCloud {
+            guard cloudIssuer == nil, cloudAccountID == nil, cloudDriveID == nil else {
+                throw DriveError(EINVAL, "Only ParaAir Cloud profiles can name a ParaAir Cloud account or drive")
+            }
+        }
         switch backend {
+        case .paraairCloud:
+            guard let cloudIssuer, let cloudAccountID, let cloudDriveID else {
+                throw DriveError(EINVAL, "ParaAir Cloud profile requires a service, account and drive")
+            }
+            _ = try ParaAirCloudIssuer.validate(cloudIssuer)
+            try ConnectionStore.validateID(cloudAccountID)
+            guard UUID(uuidString: cloudDriveID) != nil, cloudDriveID == cloudDriveID.lowercased() else {
+                throw DriveError(EINVAL, "Invalid ParaAir Cloud drive identifier")
+            }
+            guard blockSize == ParaAirCloudConfiguration.chunkSize else { throw DriveError(EINVAL, "ParaAir Cloud drives use 4 MiB blocks") }
+            guard metadataURL == nil, localRoot == nil, libraryPath == nil, credentialID == nil, objectCredentialID == nil, connectionID == nil else {
+                throw DriveError(EINVAL, "ParaAir Cloud profile cannot contain storage credentials, metadata or local paths")
+            }
         case .local:
             guard let localRoot else { throw DriveError(EINVAL, "Local fixture profile requires an explicit fixture root") }
             try Self.validateLocalPath(localRoot, field: "fixture root")
@@ -98,6 +121,7 @@ public struct DriveProfile: Codable, Equatable, Sendable {
 
     public func targetsSameStorage(as other: DriveProfile) -> Bool {
         backend == other.backend && metadataURL == other.metadataURL && localRoot == other.localRoot && credentialID == other.credentialID && objectCredentialID == other.objectCredentialID && connectionID == other.connectionID
+            && cloudIssuer == other.cloudIssuer && cloudDriveID == other.cloudDriveID
     }
 
     private static func validateLocalPath(_ value: String, field: String) throws {
@@ -278,8 +302,33 @@ public final class KeychainSecretStore {
     }
 }
 
+/// What `Engine.open` needs beyond the profile. Tests inject a vault and URL configuration.
+public struct EngineOpenDependencies: @unchecked Sendable {
+    public var cloudVault: any ConnectionVault
+    public var cloudConfiguration: URLSessionConfiguration
+    public var cloudPolicy: ParaAirCloudTransportPolicy
+    public var cloudSessionOptions: ParaAirCloudSession.Options
+    public init(cloudVault: any ConnectionVault, cloudConfiguration: URLSessionConfiguration,
+                cloudPolicy: ParaAirCloudTransportPolicy, cloudSessionOptions: ParaAirCloudSession.Options = .init()) {
+        self.cloudVault = cloudVault; self.cloudConfiguration = cloudConfiguration
+        self.cloudPolicy = cloudPolicy; self.cloudSessionOptions = cloudSessionOptions
+    }
+    /// One configuration object for the process, so engines share a ParaAir Cloud session.
+    private static let liveConfiguration = URLSessionConfiguration.ephemeral
+    public static var live: EngineOpenDependencies {
+        EngineOpenDependencies(cloudVault: DeferredCloudVault(), cloudConfiguration: liveConfiguration, cloudPolicy: .current)
+    }
+}
+
+/// Touches the Keychain only when a ParaAir Cloud profile actually needs its tokens.
+private struct DeferredCloudVault: ConnectionVault {
+    func load(id: String) throws -> ConnectionSecrets { try CloudAccountStore.liveVault.load(id: id) }
+    func save(_ secrets: ConnectionSecrets, id: String) throws { try CloudAccountStore.liveVault.save(secrets, id: id) }
+    func remove(id: String) throws { try CloudAccountStore.liveVault.remove(id: id) }
+}
+
 public extension Engine {
-    static func open(profile: DriveProfile, stateRoot: URL) throws -> Engine {
+    static func open(profile: DriveProfile, stateRoot: URL, dependencies: EngineOpenDependencies = .live) throws -> Engine {
         try profile.validate()
         let root = stateRoot.standardizedFileURL.resolvingSymlinksInPath()
         let directory = root.appendingPathComponent("volumes/" + profile.name, isDirectory: true)
@@ -290,8 +339,23 @@ public extension Engine {
             }
         }
         try ProfileStateBinding.bindConfiguration(profile, directory: directory)
+        // Without Keychain or network: a readable account record must name this profile's service.
+        func checkIssuer(_ account: CloudAccount) throws {
+            guard account.issuer == profile.cloudIssuer else {
+                throw DriveError(EXDEV, "This drive belongs to another ParaAir Cloud service. Sign in to that service or create a new drive.")
+            }
+        }
+        if profile.backend == .paraairCloud, let account = try? CloudAccountStore(root: root).load(profile.cloudAccountID!) { try checkIssuer(account) }
         let makeBackend: () throws -> StorageBackend = {
             switch profile.backend {
+            case .paraairCloud:
+                try checkIssuer(try CloudAccountStore(root: root).load(profile.cloudAccountID!))
+                let session = try ParaAirCloudSession.shared(root: root, accountID: profile.cloudAccountID!, vault: dependencies.cloudVault,
+                                                             configuration: dependencies.cloudConfiguration, policy: dependencies.cloudPolicy,
+                                                             options: dependencies.cloudSessionOptions)
+                return try ParaAirCloudBackend(driveID: profile.cloudDriveID!, session: session, bindVolume: {
+                    try ProfileStateBinding.bindVolume($0, directory: directory)
+                })
             case .local:
                 let source = URL(fileURLWithPath: profile.localRoot!).resolvingSymlinksInPath()
                 if Bundle.main.bundleIdentifier == "dev.streamdrive.app.filesystem", !ProfileStateBinding.isInside(source, root) {
@@ -325,28 +389,36 @@ public extension Engine {
                 return backend
             }
         }
-        return try Engine(backend: LazyProfileBackend(makeBackend), stateDirectory: directory,
+        let backend = LazyProfileBackend(makeBackend)
+        // ParaAir Cloud holds no lock across network I/O, so one instance serves reads and uploads
+        // and its quota cooldown and capacity cache see both (spec 6.10 step 9).
+        return try Engine(backend: backend, stateDirectory: directory,
                           cacheLimitBytes: profile.cacheLimitBytes, minFreeBytes: profile.minFreeBytes,
                           blockSize: profile.blockSize, maxJournalBytes: profile.maxJournalBytes,
-                          publishingBackend: LazyProfileBackend(makeBackend))
+                          publishingBackend: profile.backend == .paraairCloud ? backend : LazyProfileBackend(makeBackend),
+                          tuning: profile.backend == .paraairCloud ? .paraairCloud : .byo)
     }
 }
 
+/// Connects on first use. The lock covers only creating the backend; operations
+/// run outside it so one slow call never serializes the others.
 private final class LazyProfileBackend: StorageBackend {
-    private let lock = NSRecursiveLock()
+    private let lock = NSLock()
     private let make: () throws -> StorageBackend
     private var connected: StorageBackend?
+    private var closed = false
     init(_ make: @escaping () throws -> StorageBackend) { self.make = make }
     deinit { try? close() }
-    private func withBackend<T>(_ action: (StorageBackend) throws -> T) throws -> T {
+    private func current() throws -> StorageBackend {
         lock.lock(); defer { lock.unlock() }
-        if connected == nil {
-            do { connected = try make() }
-            catch let error as DriveError where error.code == EXDEV { throw error }
-            catch { throw DriveError(EIO, "Storage backend is unavailable: " + error.localizedDescription) }
-        }
-        return try action(connected!)
+        guard !closed else { throw DriveError(EBADF, "Storage backend is closed", disposition: .attemptNotDispatched) }
+        if let connected { return connected }
+        // Nothing has been sent to storage yet, so a commit can safely retry.
+        do { let made = try make(); connected = made; return made }
+        catch let error as DriveError where error.code == EXDEV { throw error.with(.attemptNotDispatched) }
+        catch { throw DriveError(EIO, "Storage backend is unavailable: " + error.localizedDescription, disposition: .attemptNotDispatched) }
     }
+    private func withBackend<T>(_ action: (StorageBackend) throws -> T) throws -> T { try action(current()) }
     func stat(_ path: String) throws -> FileEntry { try withBackend { try $0.stat(path) } }
     func list(_ path: String) throws -> [FileEntry] { try withBackend { try $0.list(path) } }
     func read(_ path: String, offset: Int64, length: Int) throws -> Data { try withBackend { try $0.read(path, offset: offset, length: length) } }
@@ -356,14 +428,19 @@ private final class LazyProfileBackend: StorageBackend {
     func move(_ source: String, to destination: String) throws { try withBackend { try $0.move(source, to: destination) } }
     func remove(_ path: String, directory: Bool) throws { try withBackend { try $0.remove(path, directory: directory) } }
     func transferMetrics() throws -> TransferMetrics? { try withBackend { try $0.transferMetrics() } }
+    // Forwarded explicitly; the protocol defaults would hide the backend's answers.
+    func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus {
+        try withBackend { try $0.commitStatus(transactionID: transactionID, path: path, expectedVersion: expectedVersion) }
+    }
+    func capacity() throws -> VolumeCapacity? { try withBackend { try $0.capacity() } }
     func close() throws {
-        lock.lock(); defer { lock.unlock() }
-        if let connected { try connected.close() }
-        connected = nil
+        lock.lock(); closed = true; let backend = connected; connected = nil; lock.unlock()
+        try backend?.close()
     }
 }
 
 private enum ProfileStateBinding {
+    /// Nil fields are omitted, so digests of existing profiles are unchanged.
     private struct Configuration: Encodable {
         var backend: DriveBackendKind
         var metadataURL: String?
@@ -373,10 +450,13 @@ private enum ProfileStateBinding {
         var connectionID: String?
         var localDevice: UInt64?
         var localInode: UInt64?
+        var cloudIssuer: String?
+        var cloudDriveID: String?
     }
     static func bindConfiguration(_ profile: DriveProfile, directory: URL) throws {
         var value = Configuration(backend: profile.backend, metadataURL: profile.metadataURL,
-                                  localRoot: profile.localRoot, credentialID: profile.credentialID, objectCredentialID: profile.objectCredentialID, connectionID: profile.connectionID)
+                                  localRoot: profile.localRoot, credentialID: profile.credentialID, objectCredentialID: profile.objectCredentialID, connectionID: profile.connectionID,
+                                  cloudIssuer: profile.cloudIssuer, cloudDriveID: profile.cloudDriveID)
         if let local = profile.localRoot {
             let resolved = URL(fileURLWithPath: local).resolvingSymlinksInPath().path
             var attributes = Darwin.stat()
@@ -400,7 +480,7 @@ private enum ProfileStateBinding {
         }
     }
     static func bindVolume(_ identity: String, directory: URL) throws {
-        guard !identity.isEmpty, identity.utf8.count <= 256, !identity.contains("\0") else { throw DriveError(EIO, "JuiceFS volume identity is unavailable") }
+        guard !identity.isEmpty, identity.utf8.count <= 256, !identity.contains("\0") else { throw DriveError(EIO, "Storage volume identity is unavailable") }
         let lock = try StateLock(directory.appendingPathComponent("identity.lock"))
         try lock.withLock { try bind(identity, to: directory.appendingPathComponent("volume.identity")) }
     }

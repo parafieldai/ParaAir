@@ -34,16 +34,20 @@ public struct OAuthConfiguration: Sendable {
     public let scopes: [String]
     public let additionalAuthorizationParameters: [String: String]
     public let expectedIssuer: URL?
+    /// Development builds only: also accept `http://127.0.0.1:<port>` endpoints and issuer.
+    public let allowsLoopbackHTTP: Bool
 
     public init(authorizationEndpoint: URL, tokenEndpoint: URL, clientID: String, redirectURI: URL,
-                scopes: [String], additionalAuthorizationParameters: [String: String] = [:], expectedIssuer: URL? = nil) throws {
-        func validHTTPS(_ url: URL) -> Bool {
-            guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
-            return c.scheme == "https" && !(c.host ?? "").isEmpty && c.user == nil && c.password == nil && c.fragment == nil
+                scopes: [String], additionalAuthorizationParameters: [String: String] = [:], expectedIssuer: URL? = nil,
+                allowsLoopbackHTTP: Bool = false) throws {
+        func validEndpoint(_ url: URL) -> Bool {
+            guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false), c.user == nil, c.password == nil, c.fragment == nil else { return false }
+            if c.scheme == "https" { return !(c.host ?? "").isEmpty }
+            return oauthIsLoopbackHTTP(url, allowed: allowsLoopbackHTTP)
         }
         let redirect = URLComponents(url: redirectURI, resolvingAgainstBaseURL: false)
         let reserved: Set<String> = ["response_type", "client_id", "redirect_uri", "scope", "state", "code_challenge", "code_challenge_method", "code_verifier", "client_secret", "access_token", "refresh_token"]
-        guard validHTTPS(authorizationEndpoint), validHTTPS(tokenEndpoint),
+        guard validEndpoint(authorizationEndpoint), validEndpoint(tokenEndpoint),
               !clientID.isEmpty, clientID.utf8.count <= 1024, !clientID.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
               redirect?.scheme == "http", redirect?.host == "127.0.0.1", let port = redirect?.port, (0...65535).contains(port),
               redirect?.user == nil, redirect?.password == nil, redirect?.query == nil, redirect?.fragment == nil,
@@ -51,20 +55,27 @@ public struct OAuthConfiguration: Sendable {
               additionalAuthorizationParameters.keys.allSatisfy({ !reserved.contains($0) && !$0.isEmpty }),
               scopes.reduce(0, { $0 + $1.utf8.count }) <= 8192,
               additionalAuthorizationParameters.reduce(0, { $0 + $1.key.utf8.count + $1.value.utf8.count }) <= 8192,
-              expectedIssuer.map(validHTTPS) ?? true else { throw OAuthError.invalidConfiguration }
+              expectedIssuer.map(validEndpoint) ?? true else { throw OAuthError.invalidConfiguration }
         let endpointItems = URLComponents(url: authorizationEndpoint, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard !endpointItems.contains(where: { reserved.contains($0.name) }), Set(endpointItems.map(\.name)).count == endpointItems.count,
               !endpointItems.contains(where: { additionalAuthorizationParameters[$0.name] != nil }) else { throw OAuthError.invalidConfiguration }
         self.authorizationEndpoint = authorizationEndpoint; self.tokenEndpoint = tokenEndpoint
         self.clientID = clientID; self.redirectURI = redirectURI; self.scopes = scopes
         self.additionalAuthorizationParameters = additionalAuthorizationParameters; self.expectedIssuer = expectedIssuer
+        self.allowsLoopbackHTTP = allowsLoopbackHTTP
     }
 
     public func replacingRedirectURI(_ uri: URL) throws -> OAuthConfiguration {
         try OAuthConfiguration(authorizationEndpoint: authorizationEndpoint, tokenEndpoint: tokenEndpoint, clientID: clientID,
                                redirectURI: uri, scopes: scopes, additionalAuthorizationParameters: additionalAuthorizationParameters,
-                               expectedIssuer: expectedIssuer)
+                               expectedIssuer: expectedIssuer, allowsLoopbackHTTP: allowsLoopbackHTTP)
     }
+}
+
+/// `http://127.0.0.1:<port>` with no credentials, only when the build allows loopback HTTP.
+func oauthIsLoopbackHTTP(_ url: URL, allowed: Bool) -> Bool {
+    guard allowed, let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+    return c.scheme == "http" && c.host == "127.0.0.1" && c.port != nil && c.user == nil && c.password == nil
 }
 
 public struct OAuthTokens: Codable, Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {

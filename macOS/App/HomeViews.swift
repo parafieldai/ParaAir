@@ -70,6 +70,9 @@ struct DriveHomeContent: View {
                 if input.hasDrive {
                     Section("Drive") {
                         LabeledContent("Storage", value: details.storageSummary ?? "Saved storage connection")
+                        if let usage = input.cloudUsage.map({ CloudUsagePresentation.make($0.workspace, state: $0.state) }) {
+                            PlanRows(usage: usage)
+                        }
                         LabeledContent("In Finder") {
                             Text(input.mounted ? (details.mountPath ?? "Mounted") : "Not connected")
                                 .font(input.mounted ? .body.monospaced() : .body)
@@ -230,7 +233,7 @@ private struct ActionRow: View {
     }
 }
 
-private struct NoticeRow: View {
+struct NoticeRow: View {
     let notice: HomePresentation.Notice
 
     var body: some View {
@@ -243,6 +246,33 @@ private struct NoticeRow: View {
                 .foregroundStyle(StatusLabel.color(notice.tone))
         }
         .font(.callout)
+    }
+}
+
+/// The plan size leads; the used figure and its bar support it. Rows appear only when
+/// `/v1/me` supplied the values, so a failed summary never shows as zero.
+private struct PlanRows: View {
+    let usage: CloudUsagePresentation
+
+    var body: some View {
+        if let plan = usage.planSize {
+            LabeledContent("Plan") {
+                Text(plan).font(.title3.weight(.semibold)).monospacedDigit().foregroundStyle(.primary)
+            }
+        }
+        if let used = usage.usedSize {
+            LabeledContent("Used") {
+                HStack(spacing: 10) {
+                    if let fraction = usage.fraction {
+                        ProgressView(value: fraction)
+                            .tint(fraction >= 1 ? .orange : nil)
+                            .frame(width: 120)
+                            .accessibilityHidden(true)
+                    }
+                    Text(used).monospacedDigit().frame(minWidth: 64, alignment: .trailing)
+                }
+            }
+        }
     }
 }
 

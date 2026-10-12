@@ -85,52 +85,86 @@ public final class LocalDirectoryBackend: StorageBackend {
         let count = getxattr(url.path, marker, &bytes, bytes.count, 0, XATTR_NOFOLLOW)
         return count > 0 ? String(bytes: bytes.prefix(count), encoding: .utf8) : nil
     }
+    /// Dispositions: failures before the receipt check never reached publication;
+    /// failures after it and before the publishing rename leave this transaction
+    /// unpublished for good; the rename and anything after it are ambiguous.
     public func commit(_ commit: FileCommit) throws -> FileEntry {
-        try lock.withLock {
-            let destination = try location(commit.path)
-            guard commit.path != "/", commit.finalSize >= 0, commit.baseVisibleSize >= 0,
-                  commit.baseVisibleSize <= commit.finalSize, UUID(uuidString: commit.transactionID) != nil else { throw DriveError(EINVAL, "Invalid fixture commit") }
-            if receipt(destination) == commit.transactionID { return try inspect(commit.path) }
-            let current: FileEntry?
-            do { current = try inspect(commit.path) }
-            catch let error as DriveError where error.code == ENOENT { current = nil }
-            guard current?.version == commit.expectedVersion else { throw DriveError(ESTALE, "Remote file changed; local writes were retained") }
-            if let current, current.kind != .file { throw DriveError(EISDIR, "Cannot replace a directory") }
-            let stage = internalRoot.appendingPathComponent("stage-" + UUID().uuidString)
-            defer { try? FileManager.default.removeItem(at: stage) }
-            if current != nil { try FileManager.default.copyItem(at: destination, to: stage) }
-            let fd = Darwin.open(stage.path, O_RDWR | O_CREAT | O_NOFOLLOW, mode_t(commit.mode))
-            guard fd >= 0 else { throw DriveError(errno, "Cannot stage fixture commit") }; defer { Darwin.close(fd) }
-            guard Darwin.ftruncate(fd, off_t(commit.baseVisibleSize)) == 0, Darwin.ftruncate(fd, off_t(commit.finalSize)) == 0 else { throw DriveError(errno, "Cannot set fixture size") }
-            for extent in commit.extents {
-                guard extent.offset >= 0, extent.length >= 0, extent.length <= commit.finalSize,
-                      extent.offset <= commit.finalSize - extent.length else { throw DriveError(EINVAL, "Invalid fixture write extent") }
-                let source = Darwin.open(extent.blobURL.path, O_RDONLY | O_NOFOLLOW)
-                guard source >= 0 else { throw DriveError(errno, "Journal payload unavailable") }; defer { Darwin.close(source) }
-                var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
-                var at: Int64 = 0
-                while at < extent.length {
-                    let count = Int(min(Int64(buffer.count), extent.length - at))
-                    let n = Darwin.pread(source, &buffer, count, off_t(at))
-                    if n < 0 { if errno == EINTR { continue }; throw DriveError(errno, "Cannot read journal payload") }
-                    guard n > 0 else { throw DriveError(EIO, "Journal payload is short") }
-                    try buffer.withUnsafeBytes { bytes in
-                        var done = 0
-                        while done < n {
-                            let wrote = Darwin.pwrite(fd, bytes.baseAddress!.advanced(by: done), n - done, off_t(extent.offset + at + Int64(done)))
-                            if wrote < 0 { if errno == EINTR { continue }; throw DriveError(errno, "Cannot write fixture stage") }
-                            guard wrote > 0 else { throw DriveError(EIO, "Fixture write made no progress") }; done += wrote
-                        }
-                    }
-                    at += Int64(n)
-                }
+        enum Phase { case checking, staging, publishing }
+        var phase = Phase.checking
+        do {
+            return try lock.withLock {
+                let destination = try location(commit.path)
+                guard commit.path != "/", commit.finalSize >= 0, commit.baseVisibleSize >= 0,
+                      commit.baseVisibleSize <= commit.finalSize, UUID(uuidString: commit.transactionID) != nil else { throw DriveError(EINVAL, "Invalid fixture commit") }
+                if receipt(destination) == commit.transactionID { phase = .publishing; return try inspect(commit.path) }
+                phase = .staging
+                let stage = internalRoot.appendingPathComponent("stage-" + UUID().uuidString)
+                defer { try? FileManager.default.removeItem(at: stage) }
+                try prepare(commit, destination: destination, stage: stage)
+                phase = .publishing
+                guard Darwin.rename(stage.path, destination.path) == 0 else { throw DriveError(errno, "Cannot publish fixture commit") }
+                try DurableIO.syncDirectory(destination.deletingLastPathComponent())
+                return try inspect(commit.path)
             }
-            let token = Data(commit.transactionID.utf8)
-            let marked = token.withUnsafeBytes { fsetxattr(fd, marker, $0.baseAddress, token.count, 0, 0) }
-            guard marked == 0, Darwin.fsync(fd) == 0 else { throw DriveError(errno, "Cannot persist fixture commit") }
-            guard Darwin.rename(stage.path, destination.path) == 0 else { throw DriveError(errno, "Cannot publish fixture commit") }
-            try DurableIO.syncDirectory(destination.deletingLastPathComponent())
-            return try inspect(commit.path)
+        } catch {
+            let failure = error as? DriveError ?? DriveError(EIO, "Fixture commit failed")
+            switch phase {
+            case .checking: throw failure.with(.attemptNotDispatched)
+            case .staging: throw failure.with(.transactionAbsent)
+            case .publishing: throw failure
+            }
+        }
+    }
+    /// Checks the expected version and writes the complete, marked stage file.
+    private func prepare(_ commit: FileCommit, destination: URL, stage: URL) throws {
+        let current: FileEntry?
+        do { current = try inspect(commit.path) }
+        catch let error as DriveError where error.code == ENOENT { current = nil }
+        guard current?.version == commit.expectedVersion else { throw DriveError(ESTALE, "Remote file changed; local writes were retained") }
+        if let current, current.kind != .file { throw DriveError(EISDIR, "Cannot replace a directory") }
+        if current != nil { try FileManager.default.copyItem(at: destination, to: stage) }
+        let fd = Darwin.open(stage.path, O_RDWR | O_CREAT | O_NOFOLLOW, mode_t(commit.mode))
+        guard fd >= 0 else { throw DriveError(errno, "Cannot stage fixture commit") }; defer { Darwin.close(fd) }
+        guard Darwin.ftruncate(fd, off_t(commit.baseVisibleSize)) == 0, Darwin.ftruncate(fd, off_t(commit.finalSize)) == 0 else { throw DriveError(errno, "Cannot set fixture size") }
+        for extent in commit.extents {
+            guard extent.offset >= 0, extent.length >= 0, extent.length <= commit.finalSize,
+                  extent.offset <= commit.finalSize - extent.length else { throw DriveError(EINVAL, "Invalid fixture write extent") }
+            let source = Darwin.open(extent.blobURL.path, O_RDONLY | O_NOFOLLOW)
+            guard source >= 0 else { throw DriveError(errno, "Journal payload unavailable") }; defer { Darwin.close(source) }
+            var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+            var at: Int64 = 0
+            while at < extent.length {
+                let count = Int(min(Int64(buffer.count), extent.length - at))
+                let n = Darwin.pread(source, &buffer, count, off_t(at))
+                if n < 0 { if errno == EINTR { continue }; throw DriveError(errno, "Cannot read journal payload") }
+                guard n > 0 else { throw DriveError(EIO, "Journal payload is short") }
+                try buffer.withUnsafeBytes { bytes in
+                    var done = 0
+                    while done < n {
+                        let wrote = Darwin.pwrite(fd, bytes.baseAddress!.advanced(by: done), n - done, off_t(extent.offset + at + Int64(done)))
+                        if wrote < 0 { if errno == EINTR { continue }; throw DriveError(errno, "Cannot write fixture stage") }
+                        guard wrote > 0 else { throw DriveError(EIO, "Fixture write made no progress") }; done += wrote
+                    }
+                }
+                at += Int64(n)
+            }
+        }
+        let token = Data(commit.transactionID.utf8)
+        let marked = token.withUnsafeBytes { fsetxattr(fd, marker, $0.baseAddress, token.count, 0, 0) }
+        guard marked == 0, Darwin.fsync(fd) == 0 else { throw DriveError(errno, "Cannot persist fixture commit") }
+    }
+    /// The receipt check under the commit lock: never uploads.
+    public func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus {
+        try lock.withLock {
+            let destination = try location(path)
+            if receipt(destination) == transactionID { return .applied(try inspect(path)) }
+            let current: FileEntry?
+            do { current = try inspect(path) }
+            catch let error as DriveError where error.code == ENOENT { current = nil }
+            // Commits run only under this lock, so an unpublished transaction can't land later.
+            if let current, current.kind == .file, current.version == expectedVersion { return .absent }
+            if current == nil, expectedVersion == nil { return .absent }
+            throw DriveError(ESTALE, "Remote file changed; local writes were retained")
         }
     }
     public func createDirectory(_ path: String) throws -> FileEntry {

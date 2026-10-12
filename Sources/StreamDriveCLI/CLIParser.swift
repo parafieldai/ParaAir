@@ -26,6 +26,9 @@ enum CLICommand: Equatable {
     case unpin(profile: String, path: String)
     case uploads(profile: String, retry: Bool)
     case doctor(profile: String?)
+    case cloudAccounts
+    case trash(profile: String)
+    case restore(profile: String, nodeID: Int64, to: String?)
 }
 
 struct CLIUsageError: Error, LocalizedError, Equatable {
@@ -77,12 +80,18 @@ enum CLIParser {
             try noExtraArguments(commandArguments, command: name)
             command = .connections
         case "connect":
-            let options = try parseOptions(commandArguments, valueNames: ["metadata-url", "library", "mount-point", "fixture-root", "credential-id", "connection", "cache-mib", "min-free-mib", "block-size", "journal-mib"], switchNames: ["replace"])
+            let options = try parseOptions(commandArguments, valueNames: ["metadata-url", "library", "mount-point", "fixture-root", "credential-id", "connection", "cache-mib", "min-free-mib", "block-size", "journal-mib", "cloud-account", "cloud-drive"], switchNames: ["replace"])
             commandArguments = options.positionals
             let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
             try noExtraArguments(commandArguments, command: name)
             for flag in ["cache-mib", "min-free-mib", "block-size", "journal-mib"] {
                 if let value = options.values[flag] { _ = try integer(value, option: flag, allowsZero: flag == "min-free-mib") }
+            }
+            if options.values["cloud-drive"] != nil, options.values["cloud-account"] == nil { throw usage("--cloud-drive requires --cloud-account") }
+            for flag in ["cloud-account", "cloud-drive"] {
+                if let value = options.values[flag], UUID(uuidString: value) == nil || value != value.lowercased() {
+                    throw usage("--\(flag) requires a lowercase identifier")
+                }
             }
             command = .connect(ConnectArguments(profile: profile, values: options.values, overwrite: options.switches.contains("replace")))
         case "mount":
@@ -120,6 +129,23 @@ enum CLIParser {
             try noExtraArguments(commandArguments, command: name)
             let limit = try options.values["limit-mib"].map { try integer($0, option: "limit-mib") }
             command = .cache(profile: profile, trim: options.switches.contains("evict"), limitMiB: limit)
+        case "cloud-accounts":
+            try noExtraArguments(commandArguments, command: name)
+            command = .cloudAccounts
+        case "trash":
+            let options = try parseOptions(commandArguments)
+            commandArguments = options.positionals
+            let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
+            try noExtraArguments(commandArguments, command: name)
+            command = .trash(profile: profile)
+        case "restore":
+            let options = try parseOptions(commandArguments, valueNames: ["to"])
+            commandArguments = options.positionals
+            let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
+            guard commandArguments.count == 1, let node = Int64(commandArguments[0]), node > 0, node < 1 << 53 else {
+                throw usage("Usage: paraair restore PROFILE NODE_ID [--to PATH]")
+            }
+            command = .restore(profile: profile, nodeID: node, to: options.values["to"])
         case "uploads":
             let options = try parseOptions(commandArguments, switchNames: ["retry"])
             commandArguments = options.positionals

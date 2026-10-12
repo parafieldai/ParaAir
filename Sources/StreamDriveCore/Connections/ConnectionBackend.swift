@@ -41,59 +41,132 @@ extension StorageConnection {
     }
 }
 
+/// One authorized native session for a connection. JuiceFSBackend in production.
+protocol ConnectionSession: StorageBackend {
+    func volumeIdentity() throws -> String
+}
+extension JuiceFSBackend: ConnectionSession {}
+
 /// A connection's authorization may rotate independently of its mounted volume.
 /// File operations are path based, so a new native session can replace an old
 /// session between operations without invalidating application file handles.
+///
+/// `lock` covers only choosing the session; calls run outside it. A replaced
+/// session finishes its in-flight calls, then closes on a utility queue.
 final class ConnectionBackend: StorageBackend {
-    private let libraryURL: URL
-    private let metadataURL: String
+    typealias OpenSession = (StorageConnection, ConnectionSecrets) throws -> ConnectionSession
+    /// A session and the calls currently using it.
+    private final class Session {
+        let backend: ConnectionSession
+        let inFlight = DispatchGroup()
+        init(_ backend: ConnectionSession) { self.backend = backend }
+    }
+    /// A session entered for one call, with the traffic of sessions retired before it.
+    private struct Lease { let session: Session; let retired: TransferMetrics }
+    private static let retirement = DispatchQueue(label: "dev.streamdrive.connection.retire", qos: .utility)
     private let connectionID: String
     private let store: ConnectionStore
     private let vault: any ConnectionVault
     private let bindVolume: (String) throws -> Void
-    private let lock = NSRecursiveLock()
-    private var backend: JuiceFSBackend?
+    private let openSession: OpenSession
+    private let now: () -> Date
+    private let lock = NSLock()
+    private var session: Session?
     private var fingerprint: Data?
-    private var retiredBytes: Int64 = 0
-    private var retiredGets: Int64 = 0
+    /// When credentials last checked out, the record file they came from, and their expiry.
+    private var checked: (at: Date, stamp: ConnectionStore.RecordStamp, expiresAt: Date?)?
+    private var retired = TransferMetrics()
     private var closed = false
 
-    init(libraryURL: URL, metadataURL: String, connectionID: String, store: ConnectionStore,
-         vault: any ConnectionVault = KeychainConnectionVault(), bindVolume: @escaping (String) throws -> Void) throws {
-        self.libraryURL = libraryURL; self.metadataURL = metadataURL; self.connectionID = connectionID
-        self.store = store; self.vault = vault; self.bindVolume = bindVolume
-        _ = try current()
+    convenience init(libraryURL: URL, metadataURL: String, connectionID: String, store: ConnectionStore,
+                     vault: any ConnectionVault = KeychainConnectionVault(), bindVolume: @escaping (String) throws -> Void) throws {
+        try self.init(connectionID: connectionID, store: store, vault: vault, bindVolume: bindVolume, openSession: { record, secrets in
+            try JuiceFSBackend(libraryURL: libraryURL, metadataURL: metadataURL, connection: record, secrets: secrets)
+        })
+    }
+    init(connectionID: String, store: ConnectionStore, vault: any ConnectionVault, bindVolume: @escaping (String) throws -> Void,
+         openSession: @escaping OpenSession, now: @escaping () -> Date = { Date() }) throws {
+        self.connectionID = connectionID; self.store = store; self.vault = vault
+        self.bindVolume = bindVolume; self.openSession = openSession; self.now = now
+        let lease = try acquire()
+        lease.session.inFlight.leave()
     }
     deinit { try? close() }
 
-    private func current() throws -> JuiceFSBackend {
-        guard !closed else { throw DriveError(EBADF, "Storage connection is closed") }
-        let (record, secrets) = try store.credentials(connectionID, vault: vault)
-        let configuration = try record.nativeConfiguration(secrets: secrets)
-        let encoded = try JSONSerialization.data(withJSONObject: configuration, options: [.sortedKeys])
-        let nextFingerprint = Data(SHA256.hash(data: encoded))
-        if let backend, fingerprint == nextFingerprint { return backend }
-        let next = try JuiceFSBackend(libraryURL: libraryURL, metadataURL: metadataURL, connection: record, secrets: secrets)
-        do { try bindVolume(next.volumeIdentity()) }
-        catch { try? next.close(); throw error }
-        if let old = backend {
-            // Capture completed network work before replacing its counters.
-            let metrics: JuiceFSBackend.Metrics
-            do { metrics = try old.metrics() }
-            catch { try? next.close(); throw error }
-            retiredBytes += metrics.objectReadBytes; retiredGets += metrics.objectGetRequests
-            backend = next; fingerprint = nextFingerprint
-            // close invalidates its handle even on an error. The replacement is
-            // already identity checked; never leave a closed session current.
-            try? old.close()
-            return next
-        }
-        backend = next; fingerprint = nextFingerprint
-        return next
+    /// Credentials are re-read when the record file changes, every 15 s, and on
+    /// every call within 30 s of expiry, not on every call.
+    private func isCurrent(_ stamp: ConnectionStore.RecordStamp?, at clock: Date) -> Bool {
+        guard session != nil, let checked, let stamp, checked.stamp == stamp else { return false }
+        let age = clock.timeIntervalSince(checked.at)
+        guard age >= 0, age < 15 else { return false }
+        return checked.expiresAt.map { $0.timeIntervalSince(clock) > 30 } ?? true
     }
-    private func perform<T>(_ action: (JuiceFSBackend) throws -> T) throws -> T {
+    /// Chooses the session for one call and enters it. Call `leave()` on its group after the call.
+    private func acquire() throws -> Lease {
         lock.lock(); defer { lock.unlock() }
-        return try action(current())
+        guard !closed else { throw DriveError(EBADF, "Storage connection is closed") }
+        let stamp = store.recordStamp(connectionID), clock = now()
+        if let current = session, isCurrent(stamp, at: clock) {
+            current.inFlight.enter()
+            return Lease(session: current, retired: retired)
+        }
+        let record: StorageConnection, secrets: ConnectionSecrets, nextFingerprint: Data
+        do {
+            (record, secrets) = try store.credentials(connectionID, vault: vault)
+            let configuration = try record.nativeConfiguration(secrets: secrets)
+            nextFingerprint = Data(SHA256.hash(data: try JSONSerialization.data(withJSONObject: configuration, options: [.sortedKeys])))
+        } catch {
+            // Credentials that no longer check out (disconnect, sign-out, a changed
+            // target) stop all further I/O on the old session.
+            if let old = session { retire(old) }
+            session = nil; fingerprint = nil; checked = nil
+            throw error
+        }
+        let expiry = [record.provider == .cloudflareR2 ? secrets.oauth?.expiresAt : nil, secrets.storageExpiresAt].compactMap { $0 }.min()
+        let checkedNow = stamp.map { (at: clock, stamp: $0, expiresAt: expiry) }
+        if let current = session, fingerprint == nextFingerprint {
+            checked = checkedNow
+            current.inFlight.enter()
+            return Lease(session: current, retired: retired)
+        }
+        let next = Session(try openSession(record, secrets))
+        do { try bindVolume(next.backend.volumeIdentity()) }
+        catch { try? next.backend.close(); throw error }
+        if let old = session { retire(old) }
+        session = next; fingerprint = nextFingerprint; checked = checkedNow
+        next.inFlight.enter()
+        return Lease(session: next, retired: retired)
+    }
+    /// Under `lock`: counts the old session's traffic now, closes it once its
+    /// in-flight calls finish, then counts what they added. Totals only grow.
+    private func retire(_ old: Session) {
+        let first = (try? old.backend.transferMetrics()) ?? nil
+        if let first { add(first) }
+        Self.retirement.async { [weak self] in
+            _ = old.inFlight.wait(timeout: .now() + 120)
+            let last = (try? old.backend.transferMetrics()) ?? nil
+            try? old.backend.close()
+            guard let self, let first, let last else { return }
+            self.lock.withLock {
+                self.add(TransferMetrics(objectReadBytes: max(0, last.objectReadBytes - first.objectReadBytes),
+                                         objectGetRequests: max(0, last.objectGetRequests - first.objectGetRequests)))
+            }
+        }
+    }
+    private func add(_ value: TransferMetrics) {
+        retired.objectReadBytes += value.objectReadBytes; retired.objectGetRequests += value.objectGetRequests
+    }
+    /// Retries once when the call hit a handle closed by rotation or close.
+    private func perform<T>(_ action: (StorageBackend) throws -> T) throws -> T {
+        let lease = try acquire()
+        defer { lease.session.inFlight.leave() }
+        do { return try action(lease.session.backend) }
+        catch let error as DriveError where error.code == EBADF {
+            let next = try acquire()
+            defer { next.session.inFlight.leave() }
+            guard next.session !== lease.session else { throw error }
+            return try action(next.session.backend)
+        }
     }
     func stat(_ path: String) throws -> FileEntry { try perform { try $0.stat(path) } }
     func list(_ path: String) throws -> [FileEntry] { try perform { try $0.list(path) } }
@@ -101,24 +174,50 @@ final class ConnectionBackend: StorageBackend {
     func readSnapshot(_ path: String, version: String, offset: Int64, length: Int) throws -> Data {
         try perform { try $0.readSnapshot(path, version: version, offset: offset, length: length) }
     }
-    func commit(_ value: FileCommit) throws -> FileEntry { try perform { try $0.commit(value) } }
+    func commit(_ value: FileCommit) throws -> FileEntry {
+        // A credential or session failure here happens before anything is sent.
+        func lease() throws -> Lease {
+            do { return try acquire() }
+            catch let error as DriveError { throw error.with(.attemptNotDispatched) }
+            catch { throw DriveError(EIO, "Storage connection is unavailable", disposition: .attemptNotDispatched) }
+        }
+        let first = try lease()
+        defer { first.session.inFlight.leave() }
+        do { return try first.session.backend.commit(value) }
+        catch let error as DriveError where error.code == EBADF && error.disposition == .attemptNotDispatched {
+            let next = try lease()
+            defer { next.session.inFlight.leave() }
+            guard next.session !== first.session else { throw error }
+            return try next.session.backend.commit(value)
+        }
+    }
+    func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus {
+        try perform { try $0.commitStatus(transactionID: transactionID, path: path, expectedVersion: expectedVersion) }
+    }
     func createDirectory(_ path: String) throws -> FileEntry { try perform { try $0.createDirectory(path) } }
     func move(_ source: String, to destination: String) throws { try perform { try $0.move(source, to: destination) } }
     func remove(_ path: String, directory: Bool) throws { try perform { try $0.remove(path, directory: directory) } }
+    /// Retired sessions' traffic plus the current session's, from one consistent lease.
     func transferMetrics() throws -> TransferMetrics? {
-        try perform {
-            let metrics = try $0.metrics()
-            return TransferMetrics(objectReadBytes: retiredBytes + metrics.objectReadBytes, objectGetRequests: retiredGets + metrics.objectGetRequests)
-        }
+        let lease = try acquire()
+        defer { lease.session.inFlight.leave() }
+        let current = try lease.session.backend.transferMetrics() ?? TransferMetrics()
+        return TransferMetrics(objectReadBytes: lease.retired.objectReadBytes + current.objectReadBytes,
+                               objectGetRequests: lease.retired.objectGetRequests + current.objectGetRequests)
     }
     func close() throws {
-        lock.lock(); defer { lock.unlock() }
-        closed = true
-        try backend?.close(); backend = nil
+        let current = lock.withLock { () -> Session? in
+            closed = true
+            defer { session = nil; fingerprint = nil; checked = nil }
+            return session
+        }
+        try current?.backend.close()
     }
 }
 
 public enum ConnectedDrive {
+    /// Block size of new connected drives (see `profile`).
+    public static let blockSize = 4_194_304
     /// Only initializes a fresh local metadata database and a unique managed
     /// object prefix. Existing ordinary bucket files are never imported/deleted.
     public static func create(name: String, connectionID: String, stateRoot: URL, libraryURL: URL,
@@ -135,11 +234,17 @@ public enum ConnectedDrive {
         let backend = try JuiceFSBackend.initializeCloud(libraryURL: libraryURL, metadataURL: metadata,
                                                         connection: record, secrets: secrets)
         try backend.close()
-        let profile = DriveProfile(name: name, metadataURL: "sqlite3://" + metadata.path,
-                                   libraryPath: libraryURL.path, mountPoint: stateRoot.deletingLastPathComponent().appendingPathComponent("ParaAir-" + name + "-" + String(connectionID.prefix(8))).path,
-                                   connectionID: connectionID)
+        let profile = Self.profile(name: name, connectionID: connectionID, metadata: metadata, libraryURL: libraryURL, stateRoot: stateRoot)
         // A failed save retains the new database for recovery; never format it a second time.
         try profiles.save(profile)
         return profile
+    }
+
+    /// New connected drives use 4 MiB blocks, matching JuiceFS's 4 MiB objects so
+    /// one cache fill costs one object fetch. Existing profiles keep their stored size.
+    public static func profile(name: String, connectionID: String, metadata: URL, libraryURL: URL, stateRoot: URL) -> DriveProfile {
+        DriveProfile(name: name, metadataURL: "sqlite3://" + metadata.path, libraryPath: libraryURL.path,
+                     mountPoint: stateRoot.deletingLastPathComponent().appendingPathComponent("ParaAir-" + name + "-" + String(connectionID.prefix(8))).path,
+                     blockSize: blockSize, connectionID: connectionID)
     }
 }

@@ -54,6 +54,21 @@ public struct TransferMetrics: Codable, Sendable {
     }
 }
 
+/// Outcome of a failed commit attempt. Defaults to `.ambiguous`, the only value
+/// that never permits reusing or rotating a transaction identity unsafely.
+/// - attemptNotDispatched: nothing that could publish reached the storage service.
+/// - transactionAbsent: the transaction is not published and never can be.
+public enum CommitDisposition: String, Codable, Sendable { case ambiguous, attemptNotDispatched, transactionAbsent }
+
+/// Answer from the backend's commit fence about one transaction identity.
+public enum CommitStatus: Equatable, Sendable { case applied(FileEntry), absent, unknown }
+
+public struct VolumeCapacity: Equatable, Sendable {
+    public var totalBytes: Int64
+    public var availableBytes: Int64
+    public init(totalBytes: Int64, availableBytes: Int64) { self.totalBytes = totalBytes; self.availableBytes = availableBytes }
+}
+
 /// The sole transport boundary. Reads are bounded ranges; commits must stage then
 /// atomically replace under a cooperative volume lock and reject stale versions.
 /// transactionID identifies an acknowledged commit after a client crash.
@@ -68,6 +83,13 @@ public protocol StorageBackend: AnyObject {
     func remove(_ path: String, directory: Bool) throws
     func close() throws
     func transferMetrics() throws -> TransferMetrics?
+    /// Resolves a sealed transaction under the backend's commit fence; never uploads.
+    /// `.applied` when this transaction is published; `.absent` when it is not and can
+    /// never be published later. Throws ESTALE when neither the receipt nor
+    /// `expectedVersion` is current.
+    func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus
+    /// Quota-style volume size, or nil when the backend cannot report one.
+    func capacity() throws -> VolumeCapacity?
 }
 
 public extension StorageBackend {
@@ -79,12 +101,19 @@ public extension StorageBackend {
         guard try stat(path).version == version else { throw DriveError(ESTALE, "File changed during range read") }
         return bytes
     }
+    func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus { .unknown }
+    func capacity() throws -> VolumeCapacity? { nil }
 }
 
 public struct DriveError: Error, LocalizedError, Sendable {
     public let code: Int32
     public let message: String
-    public init(_ code: Int32, _ message: String) { self.code = code; self.message = message }
+    /// Only meaningful for errors thrown by `commit`.
+    public let disposition: CommitDisposition
+    public init(_ code: Int32, _ message: String, disposition: CommitDisposition = .ambiguous) {
+        self.code = code; self.message = message; self.disposition = disposition
+    }
+    public func with(_ disposition: CommitDisposition) -> DriveError { DriveError(code, message, disposition: disposition) }
     public var errorDescription: String? { message }
 }
 

@@ -105,7 +105,34 @@ type response struct {
 	Entries        []entry  `json:"entries,omitempty"`
 	Data           []byte   `json:"data,omitempty"`
 	Metrics        *metrics `json:"metrics,omitempty"`
+	// How far a failed commit got; empty means ambiguous (it may have published).
+	Disposition string `json:"disposition,omitempty"`
+	// commitStatus answer: "applied" or "absent".
+	CommitState string `json:"commitState,omitempty"`
 }
+
+const (
+	attemptNotDispatched = "attemptNotDispatched"
+	transactionAbsent    = "transactionAbsent"
+)
+
+// dispositionError tells the Swift engine whether a failed commit can be retried
+// under a new identity. It wraps, and never replaces, the errno.
+type dispositionError struct {
+	err         error
+	disposition string
+}
+
+func (d *dispositionError) Error() string { return d.err.Error() }
+func (d *dispositionError) Unwrap() error { return d.err }
+func withDisposition(err error, disposition string) error {
+	var existing *dispositionError
+	if err == nil || disposition == "" || errors.As(err, &existing) {
+		return err
+	}
+	return &dispositionError{err: err, disposition: disposition}
+}
+
 type metrics struct {
 	ObjectReadBytes      int64                `json:"objectReadBytes"`
 	ObjectGetRequests    int64                `json:"objectGetRequests"`
@@ -140,8 +167,14 @@ func (s *countingStorage) Get(ctx context.Context, key string, off, limit int64,
 	return &countingReader{r, &s.bytes}, nil
 }
 
+// Every operation holds life shared and close holds it exclusively, so close
+// waits for in-flight calls and every later call sees closed. mutation keeps
+// commits and namespace changes of one engine serial: the cooperative commit
+// lock is reentrant for one owner, so it cannot do that alone.
 type engine struct {
-	sync.Mutex
+	life         sync.RWMutex
+	mutation     sync.Mutex
+	closed       bool
 	fs           *fs.FileSystem
 	meta         meta.Meta
 	ctx          meta.Context
@@ -186,7 +219,12 @@ func errResponse(err error) response {
 	if errors.As(err, &en) {
 		code = int(en)
 	}
-	return response{Errno: code, Error: "native operation failed"}
+	out := response{Errno: code, Error: "native operation failed"}
+	var disposition *dispositionError
+	if errors.As(err, &disposition) {
+		out.Disposition = disposition.disposition
+	}
+	return out
 }
 func eno(e syscall.Errno) error {
 	if e == 0 {
@@ -455,8 +493,12 @@ func connect(c config) (*engine, error) {
 	connected = true
 	return e, nil
 }
+
+// commitLockWait bounds how long a mutation waits for another client's commit.
+var commitLockWait = 10 * time.Second
+
 func (e *engine) lockCommit() error {
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(commitLockWait)
 	for {
 		err := e.meta.Flock(e.ctx, e.lockInode, e.owner, syscall.F_WRLCK, false)
 		if err == 0 {
@@ -474,7 +516,14 @@ func (e *engine) lockCommit() error {
 func (e *engine) unlockCommit() {
 	_ = e.meta.Flock(e.ctx, e.lockInode, e.owner, syscall.F_UNLCK, false)
 }
-func (e *engine) commit(r request) (*entry, error) {
+
+// Failures before the receipt check never reached publication. After it, and
+// before the publishing rename, this transaction is unpublished for good: a
+// later call with the same identity restages from scratch. The rename onward is
+// ambiguous.
+func (e *engine) commit(r request) (result *entry, err error) {
+	disposition := attemptNotDispatched
+	defer func() { err = withDisposition(err, disposition) }()
 	if r.BaseVisibleSize < 0 || r.BaseVisibleSize > r.Size {
 		return nil, syscall.EINVAL
 	}
@@ -494,6 +543,9 @@ func (e *engine) commit(r request) (*entry, error) {
 		if code == 0 && string(done) == r.OperationID {
 			return current, nil
 		}
+	}
+	disposition = transactionAbsent
+	if current != nil {
 		if current.Kind != "file" {
 			return nil, syscall.EISDIR
 		}
@@ -607,10 +659,109 @@ func (e *engine) commit(r request) (*entry, error) {
 		return nil, code
 	}
 	// Other StreamDrive clients share the lock; external JuiceFS writers must be quiesced.
+	disposition = ""
 	if code := e.fs.Rename(e.ctx, stage, r.Path, 0); code != 0 {
 		return nil, code
 	}
 	return e.stat(r.Path)
+}
+
+// readSnapshot reads one range of exactly the expected version: stat, open,
+// check the opened inode, read, stat again. Any change in between is ESTALE, so
+// a range never mixes bytes of two versions.
+func (e *engine) readSnapshot(r request) ([]byte, error) {
+	if r.Offset < 0 || r.Length < 0 || r.Length > maxRead {
+		return nil, syscall.EINVAL
+	}
+	before, err := e.stat(r.Path)
+	if err != nil {
+		return nil, err
+	}
+	if before.Kind != "file" {
+		return nil, syscall.EISDIR
+	}
+	if before.Version != r.ExpectedVersion {
+		return nil, syscall.ESTALE
+	}
+	f, code := e.fs.Open(e.ctx, r.Path, vfs.MODE_MASK_R)
+	if code == syscall.ENOENT {
+		return nil, syscall.ESTALE
+	}
+	if code != 0 {
+		return nil, code
+	}
+	defer f.Close(e.ctx)
+	if uint64(f.Inode()) != before.Inode {
+		return nil, syscall.ESTALE
+	}
+	data := make([]byte, r.Length)
+	n, er := f.Pread(e.ctx, data, r.Offset)
+	if er != nil && er != io.EOF {
+		return nil, er
+	}
+	e.readBytes.Add(int64(n))
+	after, err := e.stat(r.Path)
+	if errors.Is(err, syscall.ENOENT) {
+		return nil, syscall.ESTALE
+	}
+	if err != nil {
+		return nil, err
+	}
+	if after.Version != r.ExpectedVersion {
+		return nil, syscall.ESTALE
+	}
+	return data[:n], nil
+}
+
+// close waits for in-flight calls, then releases the session. Later calls,
+// including ones that looked the handle up before it closed, get EBADF.
+func (e *engine) close(handle uint64) response {
+	e.life.Lock()
+	defer e.life.Unlock()
+	if e.closed {
+		return errResponse(syscall.EBADF)
+	}
+	e.closed = true
+	engines.Lock()
+	delete(engines.values, handle)
+	engines.Unlock()
+	if err := e.fs.Close(); err != nil {
+		return errResponse(err)
+	}
+	return response{OK: true}
+}
+
+// testHookAfterLocks, set only by tests, runs once an operation holds its locks.
+var testHookAfterLocks func(op string)
+
+// commitStatus answers, under the commit lock, whether a transaction published.
+// It never writes file contents. "absent" also removes a stage left by a crashed
+// attempt, so that identity can never publish later.
+func (e *engine) commitStatus(r request) (*entry, string, error) {
+	if r.OperationID == "" || len(r.OperationID) > 128 || strings.ContainsAny(r.OperationID, "/\x00") {
+		return nil, "", syscall.EINVAL
+	}
+	if err := e.lockCommit(); err != nil {
+		return nil, "", err
+	}
+	defer e.unlockCommit()
+	current, err := e.stat(r.Path)
+	if err != nil && !errors.Is(err, syscall.ENOENT) {
+		return nil, "", err
+	}
+	if current != nil {
+		done, code := e.fs.GetXattr(e.ctx, r.Path, "user.streamdrive.operation")
+		if code == 0 && string(done) == r.OperationID {
+			return current, "applied", nil
+		}
+	}
+	if (current != nil && current.Kind == "file" && current.Version == r.ExpectedVersion) || (current == nil && r.ExpectedVersion == "") {
+		if code := e.fs.Delete(e.ctx, internalRoot+"/stage-"+r.OperationID); code != 0 && code != syscall.ENOENT {
+			return nil, "", code
+		}
+		return nil, "absent", nil
+	}
+	return nil, "", syscall.ESTALE
 }
 func dispatch(r request) response {
 	if r.Op == "connect" {
@@ -625,33 +776,49 @@ func dispatch(r request) response {
 		engines.Unlock()
 		return response{OK: true, Handle: id, ObjectPrefix: e.meta.GetFormat().Name + "/", VolumeIdentity: e.meta.GetFormat().UUID}
 	}
+	// A commit rejected before it reaches the engine was never dispatched.
+	rejected := func(err error) response {
+		if r.Op == "commit" {
+			err = withDisposition(err, attemptNotDispatched)
+		}
+		return errResponse(err)
+	}
 	engines.Lock()
 	e := engines.values[r.Handle]
 	engines.Unlock()
 	if e == nil {
-		return errResponse(syscall.EBADF)
+		return rejected(syscall.EBADF)
 	}
-	e.Lock()
-	defer e.Unlock()
+	if r.Op == "close" {
+		return e.close(r.Handle)
+	}
+	// Reads run concurrently. Commits and namespace changes of this engine run
+	// one at a time, and never block reads.
+	e.life.RLock()
+	defer e.life.RUnlock()
+	if e.closed {
+		return rejected(syscall.EBADF)
+	}
+	switch r.Op {
+	case "commit", "commitStatus", "mkdir", "remove", "rename":
+		e.mutation.Lock()
+		defer e.mutation.Unlock()
+	}
+	if testHookAfterLocks != nil {
+		testHookAfterLocks(r.Op)
+	}
 	var err error
-	if r.Op != "close" && r.Op != "metrics" && r.Op != "identity" {
+	if r.Op != "metrics" && r.Op != "identity" {
 		r.Path, err = normalized(r.Path)
 		if err != nil {
-			return errResponse(err)
+			return rejected(err)
 		}
-	}
-	if r.Op != "close" && r.Op != "metrics" && r.Op != "identity" {
 		if err := e.checkPublicPath(r.Path); err != nil {
-			return errResponse(err)
+			return rejected(err)
 		}
 	}
 	out := response{OK: true}
 	switch r.Op {
-	case "close":
-		err = e.fs.Close()
-		engines.Lock()
-		delete(engines.values, r.Handle)
-		engines.Unlock()
 	case "stat":
 		out.Entry, err = e.stat(r.Path)
 	case "list":
@@ -694,8 +861,12 @@ func dispatch(r request) response {
 		if er != nil && er != io.EOF {
 			err = er
 		}
+	case "readSnapshot":
+		out.Data, err = e.readSnapshot(r)
 	case "commit":
 		out.Entry, err = e.commit(r)
+	case "commitStatus":
+		out.Entry, out.CommitState, err = e.commitStatus(r)
 	case "mkdir":
 		if er := e.lockCommit(); er != nil {
 			err = er

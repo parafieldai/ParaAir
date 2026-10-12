@@ -3,21 +3,24 @@ import Foundation
 public struct URLSessionOAuthTransport: OAuthTransport {
     public let timeout: TimeInterval
     public let maximumResponseBytes: Int
+    /// Development builds only: also send to `http://127.0.0.1:<port>`.
+    public let allowsLoopbackHTTP: Bool
     private let configurationFactory: @Sendable () -> URLSessionConfiguration
-    public init(timeout: TimeInterval = 30, maximumResponseBytes: Int = 1_048_576) {
-        self.timeout = timeout.isFinite ? min(max(timeout, 1), 120) : 30
-        self.maximumResponseBytes = min(max(maximumResponseBytes, 1024), 4_194_304)
-        configurationFactory = { .ephemeral }
+    public init(timeout: TimeInterval = 30, maximumResponseBytes: Int = 1_048_576, allowsLoopbackHTTP: Bool = false) {
+        self.init(timeout: timeout, maximumResponseBytes: maximumResponseBytes, allowsLoopbackHTTP: allowsLoopbackHTTP,
+                  configurationFactory: { .ephemeral })
     }
-    init(timeout: TimeInterval = 30, maximumResponseBytes: Int = 1_048_576,
+    init(timeout: TimeInterval = 30, maximumResponseBytes: Int = 1_048_576, allowsLoopbackHTTP: Bool = false,
          configurationFactory: @escaping @Sendable () -> URLSessionConfiguration) {
         self.timeout = timeout.isFinite ? min(max(timeout, 1), 120) : 30
         self.maximumResponseBytes = min(max(maximumResponseBytes, 1024), 4_194_304)
+        self.allowsLoopbackHTTP = allowsLoopbackHTTP
         self.configurationFactory = configurationFactory
     }
 
     public func send(_ request: URLRequest) async throws -> OAuthHTTPResponse {
-        guard let url = request.url, url.scheme == "https", url.user == nil, url.password == nil else {
+        guard let url = request.url, url.scheme == "https" || oauthIsLoopbackHTTP(url, allowed: allowsLoopbackHTTP),
+              url.user == nil, url.password == nil else {
             throw OAuthError.invalidConfiguration
         }
         let operation = OAuthRequestOperation(timeout: timeout, limit: maximumResponseBytes, configuration: configurationFactory())

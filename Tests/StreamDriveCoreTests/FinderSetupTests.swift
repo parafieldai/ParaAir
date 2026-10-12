@@ -94,6 +94,107 @@ final class FinderSetupTests: XCTestCase {
         XCTAssertFalse(coordinator.hasPendingContinuation)
     }
 
+    private func readiness(credentialCheckFinished: Bool = true, storageBlocked: Bool = false, extensionState: FinderExtensionState = .enabled,
+                           checkingExtension: Bool = false, mounted: Bool = false, mounting: Bool = false) -> AutoMountReadiness {
+        AutoMountReadiness(credentialCheckFinished: credentialCheckFinished, storageBlocked: storageBlocked, extensionState: extensionState,
+                           checkingExtension: checkingExtension, mounted: mounted, mounting: mounting)
+    }
+
+    func testReadinessGatesContinuationAndKeepsItPending() async {
+        let coordinator = makeCoordinator { [self.module()] }
+        _ = await coordinator.refresh()
+        coordinator.requestContinuation(for: "root/profile")
+        let blocked = [readiness(credentialCheckFinished: false), readiness(storageBlocked: true),
+                       readiness(extensionState: .disabled), readiness(extensionState: .unchecked),
+                       readiness(checkingExtension: true), readiness(mounting: true)]
+        for gate in blocked {
+            XCTAssertFalse(gate.canStartMount, gate.description)
+            XCTAssertFalse(coordinator.takeContinuation(for: "root/profile", readiness: gate), gate.description)
+            XCTAssertTrue(coordinator.hasPendingContinuation, "A blocked gate must keep the continuation: \(gate)")
+        }
+        XCTAssertFalse(coordinator.takeContinuation(for: "other-root/profile", readiness: readiness()))
+        XCTAssertTrue(coordinator.hasPendingContinuation)
+        XCTAssertTrue(readiness().canStartMount)
+        XCTAssertTrue(coordinator.takeContinuation(for: "root/profile", readiness: readiness()))
+        XCTAssertFalse(coordinator.hasPendingContinuation)
+        XCTAssertFalse(coordinator.takeContinuation(for: "root/profile", readiness: readiness()))
+    }
+
+    func testReadinessCannotOverrideCoordinatorDiscovery() async {
+        // The coordinator's own discovery result still gates a ready-looking value.
+        var modules: [[FinderExtensionModule]] = [[module(enabled: false)], [module()]]
+        let coordinator = makeCoordinator { modules.removeFirst() }
+        _ = await coordinator.refresh()
+        coordinator.requestContinuation(for: "root/profile")
+        XCTAssertFalse(coordinator.takeContinuation(for: "root/profile", readiness: readiness()))
+        XCTAssertTrue(coordinator.hasPendingContinuation)
+        _ = await coordinator.refresh()
+        XCTAssertTrue(coordinator.takeContinuation(for: "root/profile", readiness: readiness()))
+    }
+
+    func testContinuationIsClearedWhenAlreadyMounted() async {
+        let coordinator = makeCoordinator { [self.module(enabled: false)] }
+        _ = await coordinator.refresh()
+        coordinator.requestContinuation(for: "root/profile")
+        // Mounted wins over every other gate: nothing remains to continue.
+        let mounted = readiness(credentialCheckFinished: false, storageBlocked: true, extensionState: .disabled, mounted: true)
+        XCTAssertFalse(mounted.canStartMount)
+        XCTAssertFalse(coordinator.takeContinuation(for: "root/profile", readiness: mounted))
+        XCTAssertFalse(coordinator.hasPendingContinuation)
+        XCTAssertFalse(coordinator.takeContinuation(for: "root/profile", readiness: readiness()))
+    }
+
+    func testReadinessDescriptionNamesBlockingGate() {
+        let cases: [(AutoMountReadiness, String?)] = [
+            (readiness(credentialCheckFinished: false, storageBlocked: true), "credentials-pending"),
+            (readiness(storageBlocked: true, extensionState: .disabled), "storage-blocked"),
+            (readiness(extensionState: .disabled), "extension-disabled"),
+            (readiness(extensionState: .notDiscovered), "extension-notDiscovered"),
+            (readiness(checkingExtension: true, mounting: true), "checking-extension"),
+            (readiness(mounted: true, mounting: true), "mounted"),
+            (readiness(mounting: true), "mounting"),
+            (readiness(), nil),
+        ]
+        for (value, gate) in cases {
+            XCTAssertEqual(value.blockedGate, gate)
+            XCTAssertEqual(value.canStartMount, gate == nil)
+            XCTAssertTrue(value.description.hasPrefix("gate=" + (gate ?? "ready") + " "), value.description)
+            XCTAssertTrue(value.description.contains("storageBlocked=\(value.storageBlocked)"), value.description)
+            XCTAssertFalse(value.description.contains("/"), "Readiness descriptions carry no paths")
+        }
+    }
+
+    func testCloudSignInKeepsTheDriveItLeavesMountingAtLogin() {
+        let byo = "/Users/u/Library/Application Support/StreamDrive"
+        let cloud = "/Users/u/Library/Application Support/ParaAir/Cloud Drives/a1"
+        let other = "/Users/u/state/test", empty = "/Users/u/state/empty"
+        var drives: Set<String> = [byo, cloud, other]
+        var login = LoginMountFolders()
+        XCTAssertEqual(login.targets(selected: byo, hasDrive: drives.contains), [byo])
+        // Signing in to ParaAir Cloud from the BYO folder switches to the cloud drive's own folder.
+        login.adopt(cloud, leaving: byo, previousHasDrive: true)
+        XCTAssertEqual(login.targets(selected: cloud, hasDrive: drives.contains), [cloud, byo],
+                       "the BYO drive must still mount at the next login")
+        // The setting is saved and read back as plain paths.
+        login = LoginMountFolders(kept: login.kept)
+        XCTAssertEqual(login.targets(selected: cloud, hasDrive: drives.contains), [cloud, byo])
+        // Choosing the BYO folder again keeps the cloud drive mounting too.
+        login.choose(byo, leaving: cloud, previousHasDrive: true)
+        XCTAssertEqual(login.targets(selected: byo, hasDrive: drives.contains), [byo, cloud])
+        // Choosing an unrelated folder replaces the selected one as before; kept drives stay.
+        login.choose(other, leaving: byo, previousHasDrive: true)
+        XCTAssertEqual(login.targets(selected: other, hasDrive: drives.contains), [other, cloud])
+        // Adopting within the same folder, or leaving a folder without a drive, keeps nothing new.
+        login.adopt(other, leaving: other, previousHasDrive: true)
+        login.choose(empty, leaving: other, previousHasDrive: true)
+        login.adopt(other, leaving: empty, previousHasDrive: false)
+        XCTAssertEqual(login.targets(selected: other, hasDrive: drives.contains), [other, cloud])
+        // A kept folder whose drive is gone drops out.
+        drives.remove(cloud)
+        XCTAssertEqual(login.targets(selected: other, hasDrive: drives.contains), [other])
+        XCTAssertEqual(login.kept, [])
+    }
+
     private func resolve(_ modules: [FinderExtensionModule]) -> FinderExtensionState {
         FinderExtensionState.resolve(modules, bundleIdentifier: identifier, expectedPath: path)
     }

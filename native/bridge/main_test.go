@@ -14,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func fixture(t *testing.T) (*engine, config) {
@@ -475,5 +476,424 @@ func TestABIErrorsNeverIncludeRawProviderMessages(t *testing.T) {
 	result := errResponse(fmt.Errorf("provider rejected https://private-user:private-password@example.invalid"))
 	if strings.Contains(result.Error, "private-") || strings.Contains(result.Error, "example.invalid") {
 		t.Fatal("ABI exposed provider secrets")
+	}
+}
+
+func register(t *testing.T, e *engine) uint64 {
+	t.Helper()
+	engines.Lock()
+	engines.next++
+	id := engines.next
+	engines.values[id] = e
+	engines.Unlock()
+	t.Cleanup(func() { engines.Lock(); delete(engines.values, id); engines.Unlock() })
+	return id
+}
+func commitRequest(handle uint64, p, version, operation string, data []byte) request {
+	return request{Op: "commit", Handle: handle, Path: p, ExpectedVersion: version, OperationID: operation, Size: int64(len(data)), BaseVisibleSize: int64(len(data)), Mode: 0644, Patches: []patch{{Data: data, Length: int64(len(data))}}}
+}
+func TestCommitFailureBeforeReceiptIsAttemptNotDispatched(t *testing.T) {
+	e, c := fixture(t)
+	id := register(t, e)
+	invalid := commitRequest(id, "/file", "", "invalid", []byte("data"))
+	invalid.BaseVisibleSize = 10
+	for name, r := range map[string]request{
+		"invalid sizes":  invalid,
+		"reserved path":  commitRequest(id, "/.streamdrive/lock", "", "reserved", []byte("data")),
+		"unknown handle": commitRequest(id+1000, "/file", "", "unknown", []byte("data")),
+	} {
+		if out := dispatch(r); out.OK || out.Disposition != attemptNotDispatched {
+			t.Fatalf("%s: %+v", name, out)
+		}
+	}
+	// Another client keeps the commit lock past the deadline: EBUSY before the receipt check.
+	other, err := connect(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.fs.Close()
+	if err := other.lockCommit(); err != nil {
+		t.Fatal(err)
+	}
+	previous := commitLockWait
+	commitLockWait = 100 * time.Millisecond
+	defer func() { commitLockWait = previous; other.unlockCommit() }()
+	out := dispatch(commitRequest(id, "/file", "", "busy", []byte("data")))
+	if out.OK || out.Errno != int(syscall.EBUSY) || out.Disposition != attemptNotDispatched {
+		t.Fatalf("lock timeout: %+v", out)
+	}
+	if _, err := e.stat("/file"); !errors.Is(err, syscall.ENOENT) {
+		t.Fatalf("rejected commit published: %v", err)
+	}
+	// Other operations never carry a commit disposition.
+	if out := dispatch(request{Op: "stat", Handle: id + 1000, Path: "/"}); out.OK || out.Disposition != "" {
+		t.Fatalf("stat on unknown handle: %+v", out)
+	}
+}
+func TestStaleCommitIsTransactionAbsent(t *testing.T) {
+	e, _ := fixture(t)
+	id := register(t, e)
+	first := write(t, e, "/file", "", "first", []byte("original"))
+	second := write(t, e, "/file", first.Version, "second", []byte("replaced"))
+	if code := e.fs.Mkdir(e.ctx, "/directory", 0755, 0022); code != 0 {
+		t.Fatal(code)
+	}
+	missingPatch := commitRequest(id, "/file", second.Version, "missing-patch", nil)
+	missingPatch.Size, missingPatch.BaseVisibleSize = 8, 8
+	missingPatch.Patches = []patch{{LocalFile: filepath.Join(t.TempDir(), "missing"), Length: 8}}
+	for name, tc := range map[string]struct {
+		r     request
+		errno syscall.Errno
+	}{
+		"stale version":   {commitRequest(id, "/file", first.Version, "stale", []byte("stale!!!")), syscall.ESTALE},
+		"create existing": {commitRequest(id, "/file", "", "create", []byte("new")), syscall.ESTALE},
+		"missing base":    {commitRequest(id, "/absent", second.Version, "absent", []byte("new")), syscall.ESTALE},
+		"directory":       {commitRequest(id, "/directory", "", "directory", []byte("new")), syscall.EISDIR},
+		"staging failure": {missingPatch, syscall.ENOENT},
+	} {
+		out := dispatch(tc.r)
+		if out.OK || out.Errno != int(tc.errno) || out.Disposition != transactionAbsent {
+			t.Fatalf("%s: %+v", name, out)
+		}
+		if _, code := e.fs.Stat(e.ctx, internalRoot+"/stage-"+tc.r.OperationID); code != syscall.ENOENT {
+			t.Fatalf("%s left its stage behind: %v", name, code)
+		}
+	}
+	if got := read(t, e, "/file", 0, 8); string(got) != "replaced" {
+		t.Fatalf("rejected commits changed content: %q", got)
+	}
+}
+func TestRenameFailureIsAmbiguous(t *testing.T) {
+	e, _ := fixture(t)
+	id := register(t, e)
+	// The parent is missing, so only the publishing rename fails.
+	out := dispatch(commitRequest(id, "/missing-parent/file", "", "orphan", []byte("data")))
+	if out.OK || out.Errno != int(syscall.ENOENT) || out.Disposition != "" {
+		t.Fatalf("rename failure must stay ambiguous: %+v", out)
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("disposition")) {
+		t.Fatalf("ambiguous failures omit the disposition: %s", encoded)
+	}
+}
+func TestCommitStatusAppliedAbsentAndStale(t *testing.T) {
+	e, _ := fixture(t)
+	id := register(t, e)
+	status := func(p, operation, version string) response {
+		return dispatch(request{Op: "commitStatus", Handle: id, Path: p, OperationID: operation, ExpectedVersion: version})
+	}
+	first := write(t, e, "/file", "", "first", []byte("original"))
+	if out := status("/file", "first", ""); !out.OK || out.CommitState != "applied" || out.Entry == nil || out.Entry.Version != first.Version {
+		t.Fatalf("applied: %+v", out)
+	}
+	// A crashed attempt left its stage. Reporting it absent removes the stage, so it can never publish.
+	f, code := e.fs.Create(e.ctx, internalRoot+"/stage-crashed", 0600, 0022)
+	if code != 0 {
+		t.Fatal(code)
+	}
+	_ = f.Close(e.ctx)
+	if out := status("/file", "crashed", first.Version); !out.OK || out.CommitState != "absent" || out.Entry != nil {
+		t.Fatalf("absent: %+v", out)
+	}
+	if _, code := e.fs.Stat(e.ctx, internalRoot+"/stage-crashed"); code != syscall.ENOENT {
+		t.Fatalf("absent left the crashed stage: %v", code)
+	}
+	if out := status("/new", "never", ""); !out.OK || out.CommitState != "absent" {
+		t.Fatalf("absent new file: %+v", out)
+	}
+	write(t, e, "/file", first.Version, "second", []byte("replaced"))
+	for name, out := range map[string]response{
+		"changed file":      status("/file", "crashed", first.Version),
+		"missing file":      status("/new", "never", first.Version),
+		"created elsewhere": status("/file", "never", ""),
+	} {
+		if out.OK || out.Errno != int(syscall.ESTALE) || out.CommitState != "" {
+			t.Fatalf("%s: %+v", name, out)
+		}
+	}
+	if out := status("/file", "", ""); out.OK || out.Errno != int(syscall.EINVAL) {
+		t.Fatalf("empty identity: %+v", out)
+	}
+	if got := read(t, e, "/file", 0, 8); string(got) != "replaced" {
+		t.Fatalf("commitStatus changed content: %q", got)
+	}
+}
+func TestSuccessfulCommitAndReplayCarryNoDisposition(t *testing.T) {
+	e, _ := fixture(t)
+	id := register(t, e)
+	r := commitRequest(id, "/file", "", "once", []byte("payload"))
+	first := dispatch(r)
+	replay := dispatch(r)
+	for _, out := range []response{first, replay} {
+		if !out.OK || out.Disposition != "" || out.CommitState != "" || out.Entry == nil {
+			t.Fatalf("successful commit: %+v", out)
+		}
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(encoded, []byte("disposition")) || bytes.Contains(encoded, []byte("commitState")) {
+			t.Fatalf("success response carries commit status fields: %s", encoded)
+		}
+	}
+	if replay.Entry.Version != first.Entry.Version {
+		t.Fatal("replay changed version")
+	}
+	if got := read(t, e, "/file", 0, 7); string(got) != "payload" {
+		t.Fatalf("content: %q", got)
+	}
+}
+
+// Readers, commits and namespace changes share one handle; run with -race.
+func TestConcurrentReadsAndCommitsAreRaceFree(t *testing.T) {
+	e, _ := fixture(t)
+	id := register(t, e)
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 4096)
+	stable := write(t, e, "/stable", "", "stable", payload)
+	var group sync.WaitGroup
+	failures := make(chan string, 64)
+	for reader := 0; reader < 4; reader++ {
+		group.Add(1)
+		go func(reader int) {
+			defer group.Done()
+			for i := 0; i < 25; i++ {
+				offset := int64((reader*7919 + i*4093) % (len(payload) - 100))
+				if out := dispatch(request{Op: "read", Handle: id, Path: "/stable", Offset: offset, Length: 100}); !out.OK || !bytes.Equal(out.Data, payload[offset:offset+100]) {
+					failures <- fmt.Sprintf("read at %d: %+v", offset, out.Errno)
+					return
+				}
+				if out := dispatch(request{Op: "readSnapshot", Handle: id, Path: "/stable", Offset: offset, Length: 100, ExpectedVersion: stable.Version}); !out.OK || !bytes.Equal(out.Data, payload[offset:offset+100]) {
+					failures <- fmt.Sprintf("readSnapshot at %d: %+v", offset, out.Errno)
+					return
+				}
+				for _, op := range []string{"stat", "list", "metrics", "identity"} {
+					if out := dispatch(request{Op: op, Handle: id, Path: "/"}); !out.OK {
+						failures <- fmt.Sprintf("%s: %d", op, out.Errno)
+						return
+					}
+				}
+			}
+		}(reader)
+	}
+	for writer := 0; writer < 2; writer++ {
+		group.Add(1)
+		go func(writer int) {
+			defer group.Done()
+			p, version := fmt.Sprintf("/written-%d", writer), ""
+			for i := 0; i < 10; i++ {
+				out := dispatch(commitRequest(id, p, version, fmt.Sprintf("w%d-%d", writer, i), []byte(fmt.Sprintf("round %02d", i))))
+				if !out.OK || out.Entry == nil {
+					failures <- fmt.Sprintf("commit %s %d: %d", p, i, out.Errno)
+					return
+				}
+				version = out.Entry.Version
+				if status := dispatch(request{Op: "commitStatus", Handle: id, Path: p, OperationID: fmt.Sprintf("w%d-%d", writer, i), ExpectedVersion: version}); !status.OK || status.CommitState != "applied" {
+					failures <- fmt.Sprintf("commitStatus %s %d: %+v", p, i, status)
+					return
+				}
+			}
+		}(writer)
+	}
+	group.Add(1)
+	go func() {
+		defer group.Done()
+		for i := 0; i < 10; i++ {
+			for _, r := range []request{
+				{Op: "mkdir", Handle: id, Path: "/folder"},
+				{Op: "rename", Handle: id, Path: "/folder", Destination: "/moved"},
+				{Op: "remove", Handle: id, Path: "/moved", Directory: true},
+			} {
+				if out := dispatch(r); !out.OK {
+					failures <- fmt.Sprintf("%s %d: %d", r.Op, i, out.Errno)
+					return
+				}
+			}
+		}
+	}()
+	group.Wait()
+	close(failures)
+	for failure := range failures {
+		t.Fatal(failure)
+	}
+	for writer := 0; writer < 2; writer++ {
+		if got := read(t, e, fmt.Sprintf("/written-%d", writer), 0, 8); string(got) != "round 09" {
+			t.Fatalf("writer %d final content %q", writer, got)
+		}
+	}
+}
+
+func TestReadSnapshotRejectsChangedVersion(t *testing.T) {
+	e, _ := fixture(t)
+	id := register(t, e)
+	snapshot := func(p, version string, offset int64, length int) response {
+		return dispatch(request{Op: "readSnapshot", Handle: id, Path: p, Offset: offset, Length: length, ExpectedVersion: version})
+	}
+	first := write(t, e, "/file", "", "first", []byte("original"))
+	if out := snapshot("/file", first.Version, 2, 4); !out.OK || string(out.Data) != "igin" {
+		t.Fatalf("current version: %+v", out)
+	}
+	if out := snapshot("/file", first.Version, 6, 100); !out.OK || string(out.Data) != "al" {
+		t.Fatalf("range past the end: %+v", out)
+	}
+	before := e.readBytes.Load()
+	second := write(t, e, "/file", first.Version, "second", []byte("replaced"))
+	if out := snapshot("/file", first.Version, 2, 4); out.OK || out.Errno != int(syscall.ESTALE) || out.Data != nil {
+		t.Fatalf("changed version: %+v", out)
+	}
+	if e.readBytes.Load() != before {
+		t.Fatal("a rejected snapshot read content")
+	}
+	if out := snapshot("/file", second.Version, 2, 4); !out.OK || string(out.Data) != "plac" {
+		t.Fatalf("new version: %+v", out)
+	}
+	// A rename over the path keeps the size but changes the inode, so the version too.
+	write(t, e, "/other", "", "other", []byte("replaced"))
+	if out := dispatch(request{Op: "rename", Handle: id, Path: "/other", Destination: "/file"}); !out.OK {
+		t.Fatalf("rename: %+v", out)
+	}
+	if out := snapshot("/file", second.Version, 0, 8); out.OK || out.Errno != int(syscall.ESTALE) {
+		t.Fatalf("replaced file: %+v", out)
+	}
+	if code := e.fs.Mkdir(e.ctx, "/directory", 0755, 0022); code != 0 {
+		t.Fatal(code)
+	}
+	for name, tc := range map[string]struct {
+		out   response
+		errno syscall.Errno
+	}{
+		"directory":      {snapshot("/directory", "", 0, 1), syscall.EISDIR},
+		"missing":        {snapshot("/missing", first.Version, 0, 1), syscall.ENOENT},
+		"too long":       {snapshot("/file", second.Version, 0, maxRead+1), syscall.EINVAL},
+		"negative":       {snapshot("/file", second.Version, -1, 1), syscall.EINVAL},
+		"reserved":       {snapshot("/.streamdrive/lock", "", 0, 1), syscall.EACCES},
+		"empty version":  {snapshot("/file", "", 0, 1), syscall.ESTALE},
+		"unknown handle": {dispatch(request{Op: "readSnapshot", Handle: id + 1000, Path: "/file", Length: 1}), syscall.EBADF},
+	} {
+		if tc.out.OK || tc.out.Errno != int(tc.errno) || tc.out.Disposition != "" {
+			t.Fatalf("%s: %+v", name, tc.out)
+		}
+	}
+}
+
+func TestCloseWaitsForInFlightReadsAndRejectsLaterCalls(t *testing.T) {
+	_, c := fixture(t)
+	closing, err := connect(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := register(t, closing)
+	stored := write(t, closing, "/file", "", "file", []byte("payload!"))
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	testHookAfterLocks = func(op string) {
+		if op == "read" {
+			once.Do(func() { close(entered); <-release })
+		}
+	}
+	readDone, closeDone, lateDone := make(chan response, 1), make(chan response, 1), make(chan response, 1)
+	go func() { readDone <- dispatch(request{Op: "read", Handle: id, Path: "/file", Length: 8}) }()
+	<-entered
+	go func() { closeDone <- dispatch(request{Op: "close", Handle: id}) }()
+	select {
+	case out := <-closeDone:
+		t.Fatalf("close did not wait for the in-flight read: %+v", out)
+	case <-time.After(200 * time.Millisecond):
+	}
+	// A call that arrives while close waits is held back, then rejected.
+	go func() { lateDone <- dispatch(request{Op: "stat", Handle: id, Path: "/file"}) }()
+	select {
+	case out := <-lateDone:
+		if out.OK {
+			t.Fatalf("a call during close used the closing session: %+v", out)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if out := <-readDone; !out.OK || string(out.Data) != "payload!" {
+		t.Fatalf("in-flight read: %+v", out)
+	}
+	if out := <-closeDone; !out.OK {
+		t.Fatalf("close: %+v", out)
+	}
+	if out := <-lateDone; out.OK || out.Errno != int(syscall.EBADF) {
+		t.Fatalf("call during close: %+v", out)
+	}
+	testHookAfterLocks = nil
+	if out := dispatch(request{Op: "read", Handle: id, Path: "/file", Length: 8}); out.OK || out.Errno != int(syscall.EBADF) {
+		t.Fatalf("read after close: %+v", out)
+	}
+	if out := dispatch(commitRequest(id, "/file", stored.Version, "late", []byte("late"))); out.OK || out.Errno != int(syscall.EBADF) || out.Disposition != attemptNotDispatched {
+		t.Fatalf("commit after close: %+v", out)
+	}
+	if out := dispatch(request{Op: "close", Handle: id}); out.OK || out.Errno != int(syscall.EBADF) {
+		t.Fatalf("second close: %+v", out)
+	}
+	// A caller that looked the session up before it closed is rejected by the flag,
+	// without touching the released session.
+	stale := register(t, closing)
+	if out := dispatch(request{Op: "stat", Handle: stale, Path: "/file"}); out.OK || out.Errno != int(syscall.EBADF) {
+		t.Fatalf("stale lookup: %+v", out)
+	}
+	if out := dispatch(commitRequest(stale, "/file", stored.Version, "stale", []byte("x"))); out.OK || out.Disposition != attemptNotDispatched {
+		t.Fatalf("stale commit: %+v", out)
+	}
+}
+
+func TestMutationsStaySerializedWithinOneEngine(t *testing.T) {
+	e, _ := fixture(t)
+	id := register(t, e)
+	base := write(t, e, "/file", "", "base", []byte("original"))
+	write(t, e, "/remove-me", "", "remove-me", []byte("x"))
+	write(t, e, "/rename-me", "", "rename-me", []byte("x"))
+	defer func() { testHookAfterLocks = nil }()
+	for _, tc := range []struct {
+		name string
+		r    request
+	}{
+		{"commit", commitRequest(id, "/new", "", "serialized", []byte("data"))},
+		{"commitStatus", request{Op: "commitStatus", Handle: id, Path: "/file", OperationID: "base", ExpectedVersion: base.Version}},
+		{"remove", request{Op: "remove", Handle: id, Path: "/remove-me"}},
+		{"rename", request{Op: "rename", Handle: id, Path: "/rename-me", Destination: "/renamed"}},
+		{"mkdir", request{Op: "mkdir", Handle: id, Path: "/second-folder"}},
+	} {
+		held, release, entered := make(chan struct{}), make(chan struct{}), make(chan struct{}, 4)
+		var once sync.Once
+		testHookAfterLocks = func(op string) {
+			if op == "mkdir" {
+				first := false
+				once.Do(func() { first = true; close(held) })
+				if first {
+					<-release
+					return
+				}
+			}
+			if op == tc.r.Op {
+				entered <- struct{}{}
+			}
+		}
+		holder, follower := make(chan response, 1), make(chan response, 1)
+		go func() { holder <- dispatch(request{Op: "mkdir", Handle: id, Path: "/held-" + tc.name}) }()
+		<-held
+		go func() { follower <- dispatch(tc.r) }()
+		// Reads keep flowing while a mutation holds the engine.
+		if out := dispatch(request{Op: "read", Handle: id, Path: "/file", Length: 8}); !out.OK || string(out.Data) != "original" {
+			t.Fatalf("%s: read during a mutation: %+v", tc.name, out)
+		}
+		select {
+		case <-entered:
+			t.Fatalf("%s ran while another mutation held the engine", tc.name)
+		case <-time.After(150 * time.Millisecond):
+		}
+		close(release)
+		if out := <-holder; !out.OK {
+			t.Fatalf("%s: holder: %+v", tc.name, out)
+		}
+		if out := <-follower; !out.OK {
+			t.Fatalf("%s: follower: %+v", tc.name, out)
+		}
+		testHookAfterLocks = nil
 	}
 }

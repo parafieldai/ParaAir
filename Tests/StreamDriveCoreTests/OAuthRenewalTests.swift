@@ -47,12 +47,12 @@ final class OAuthRenewalTests: XCTestCase {
         let networkRequests = await transport.count
         XCTAssertEqual(networkRequests, 0)
     }
-    private func fixture() throws -> URL {
+    private func fixture(registration: Bool = true) throws -> URL {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent(".build/connection-tests/" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        try CloudflareClientRegistration(clientID: "registered-public-client").save(stateRoot: root)
+        if registration { try CloudflareClientRegistration(clientID: "registered-public-client").save(stateRoot: root) }
         return root
     }
     private func record(provider: ConnectionProvider = .cloudflareR2) -> StorageConnection {
@@ -115,6 +115,34 @@ final class OAuthRenewalTests: XCTestCase {
         let report = await ConnectionRenewal(root: root, vault: vault, transport: transport).renewDueConnections()
         XCTAssertTrue(report.renewed.isEmpty)
         XCTAssertEqual(try vault.load(id: record.id).oauth?.refreshToken, "new-sign-in-refresh")
+        // A change during renewal leaves working credentials, so it must not block mounting.
+        XCTAssertEqual(report.outcomes[record.id], .changed)
+        XCTAssertFalse(try XCTUnwrap(report.outcomes[record.id]).blocksAutoMount)
+    }
+
+    func testPersistentBindingMismatchBlocksAutoMount() async throws {
+        // A restored or edited record whose saved credentials belong to another target:
+        // the extension refuses them (EXDEV), so mounting must wait for a new sign-in.
+        let root = try fixture(), store = ConnectionStore(root: root), vault = TestConnectionVault(), record = record()
+        let previous = ConnectionSecrets(binding: String(repeating: "0", count: 64),
+                                         oauth: OAuthTokens(accessToken: "prior-access", refreshToken: "prior-refresh",
+                                                            expiresAt: Date().addingTimeInterval(3600)),
+                                         storageExpiresAt: Date().addingTimeInterval(3600))
+        try store.save(record); try vault.save(previous, id: record.id)
+        XCTAssertThrowsError(try store.credentials(record.id, vault: vault)) { XCTAssertEqual(($0 as? DriveError)?.code, EXDEV) }
+        let transport = RenewalTransport([refreshed])
+        let renewal = ConnectionRenewal(root: root, vault: vault, transport: transport)
+        for _ in 0..<2 {
+            let report = await renewal.renewDueConnections()
+            let outcome = try XCTUnwrap(report.outcomes[record.id])
+            XCTAssertTrue(outcome.blocksAutoMount, "outcome \(outcome) would let a mount start with refused credentials")
+            XCTAssertNotEqual(outcome, .changed)
+            let message = try XCTUnwrap(report.errors[record.id])
+            XCTAssertFalse(message.contains("changed during renewal"), message)
+            XCTAssertTrue(report.renewed.isEmpty)
+        }
+        XCTAssertEqual(try vault.load(id: record.id).oauth, previous.oauth)
+        let count = await transport.count; XCTAssertEqual(count, 0)
     }
 
     func testOverlappingRenewalsIssueOneRequestAndCancellationPreventsSave() async throws {
@@ -159,5 +187,85 @@ final class OAuthRenewalTests: XCTestCase {
         let restored = try JSONDecoder().decode(AWSAccessSession.self, from: saved.providerSession!)
         XCTAssertEqual(restored.refreshToken, "aws-rotated-refresh")
         XCTAssertEqual(saved.s3?.accessKey, "prior-key"); XCTAssertEqual(saved.storageExpiresAt, previous.storageExpiresAt)
+    }
+
+    private let registrationMessage = "This build has no Cloudflare OAuth client registration, so sign-in can't be renewed. Add the public client ID in Storage Settings, or rebuild with STREAMDRIVE_CLOUDFLARE_CLIENT_ID."
+
+    func testMissingCloudflareRegistrationIsReportedDistinctlyWithoutNetwork() async throws {
+        let root = try fixture(registration: false), store = ConnectionStore(root: root), vault = TestConnectionVault(), record = record()
+        let previous = r2Secrets(record, expiry: Date().addingTimeInterval(30))
+        try store.save(record); try vault.save(previous, id: record.id)
+        let transport = RenewalTransport([refreshed])
+        let renewal = ConnectionRenewal(root: root, vault: vault, transport: transport)
+        let report = await renewal.renewDueConnections()
+        XCTAssertEqual(report.outcomes[record.id], .registrationMissing)
+        XCTAssertTrue(try XCTUnwrap(report.outcomes[record.id]).blocksAutoMount)
+        XCTAssertEqual(report.errors[record.id], registrationMessage)
+        XCTAssertTrue(report.renewed.isEmpty)
+        XCTAssertEqual(try vault.load(id: record.id).oauth, previous.oauth)
+        // The distinct outcome is stable across timer passes and never reaches the network.
+        let again = await renewal.renewDueConnections()
+        XCTAssertEqual(again.outcomes[record.id], .registrationMissing)
+        let count = await transport.count; XCTAssertEqual(count, 0)
+        // Adding the registration lets the next pass renew.
+        try CloudflareClientRegistration(clientID: "registered-public-client").save(stateRoot: root)
+        let renewed = await renewal.renewDueConnections()
+        XCTAssertEqual(renewed.outcomes[record.id], .renewed)
+        XCTAssertEqual(renewed.renewed, [record.id])
+    }
+
+    func testMissingRegistrationIsWarnedBeforeTokenIsDue() async throws {
+        let root = try fixture(registration: false), store = ConnectionStore(root: root), vault = TestConnectionVault()
+        let r2 = record(), aws = record(provider: .awsS3), date = Date()
+        try store.save(r2); try vault.save(r2Secrets(r2, expiry: date.addingTimeInterval(3600)), id: r2.id)
+        let session = AWSAccessSession(region: "us-east-1", startURL: URL(string: aws.startURL!)!, accessToken: "aws-access", refreshToken: "aws-refresh",
+                                       expiresAt: date.addingTimeInterval(3600), clientID: "aws-client", clientSecret: "aws-client-secret", registrationExpiresAt: date.addingTimeInterval(7200))
+        try store.save(aws)
+        try vault.save(ConnectionSecrets(binding: aws.credentialBinding, s3: try S3Credentials(accessKey: "key", secretKey: "secret", sessionToken: "session"),
+                                         storageExpiresAt: date.addingTimeInterval(3600), providerSession: try JSONEncoder().encode(session)), id: aws.id)
+        let transport = RenewalTransport([])
+        let report = await ConnectionRenewal(root: root, vault: vault, transport: transport, now: { date }).renewDueConnections()
+        let warning = try XCTUnwrap(report.outcomes[r2.id])
+        XCTAssertEqual(warning, .registrationMissingNotYetDue)
+        XCTAssertFalse(warning.blocksAutoMount, "A token that still works must not block mounting")
+        XCTAssertEqual(report.errors[r2.id], registrationMessage)
+        // Only Cloudflare connections need the OAuth client registration.
+        XCTAssertEqual(report.outcomes[aws.id], .notDue)
+        XCTAssertNil(report.errors[aws.id])
+        let count = await transport.count; XCTAssertEqual(count, 0)
+    }
+
+    func testTransientRenewalFailureDoesNotBlockAutoMount() async throws {
+        let root = try fixture(), store = ConnectionStore(root: root), vault = TestConnectionVault(), record = record()
+        let previous = r2Secrets(record, expiry: Date().addingTimeInterval(60))
+        try store.save(record); try vault.save(previous, id: record.id)
+        for (replies, expected) in [([OAuthHTTPResponse](), RenewalOutcome.transientFailure),
+                                    ([response("unavailable", status: 503)], .transientFailure),
+                                    ([response(#"{"error":"invalid_grant"}"#, status: 400)], .authorizationEnded)] {
+            let report = await ConnectionRenewal(root: root, vault: vault, transport: RenewalTransport(replies)).renewDueConnections()
+            let outcome = try XCTUnwrap(report.outcomes[record.id])
+            XCTAssertEqual(outcome, expected)
+            XCTAssertEqual(outcome.blocksAutoMount, expected == .authorizationEnded)
+            XCTAssertNotNil(report.errors[record.id], "Transient failures are still shown as a notice")
+            XCTAssertEqual(try vault.load(id: record.id).oauth, previous.oauth)
+        }
+    }
+
+    func testUnreadableConnectionRecordDoesNotStopRenewalOfOthers() async throws {
+        let root = try fixture(), store = ConnectionStore(root: root), vault = TestConnectionVault(), record = record(), date = Date()
+        try store.save(record); try vault.save(r2Secrets(record, expiry: date.addingTimeInterval(60)), id: record.id)
+        // A record written by a newer build (unknown provider) and a truncated one.
+        let foreign = UUID().uuidString.lowercased(), damaged = UUID().uuidString.lowercased()
+        let directory = root.appendingPathComponent("connections")
+        try Data(#"{"schemaVersion":1,"id":"\#(foreign)","provider":"paraairCloud","name":"Future","state":"storageReady","updatedAt":0}"#.utf8)
+            .write(to: directory.appendingPathComponent(foreign + ".json"))
+        try Data("{".utf8).write(to: directory.appendingPathComponent(damaged + ".json"))
+        let transport = RenewalTransport([refreshed])
+        let report = await ConnectionRenewal(root: root, vault: vault, transport: transport, now: { date }).renewDueConnections()
+        XCTAssertEqual(report.unreadableRecords, 2)
+        XCTAssertNil(report.errors["connections"])
+        XCTAssertEqual(report.renewed, [record.id])
+        XCTAssertEqual(report.outcomes, [record.id: .renewed])
+        XCTAssertEqual(try vault.load(id: record.id).oauth?.refreshToken, "new-refresh")
     }
 }

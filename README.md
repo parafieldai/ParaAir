@@ -6,7 +6,7 @@ A development implementation of a CLI-first streaming drive for macOS 26+, with 
 
 **ParaAir now opens in Finder and appears in Favorites and Locations at `/Volumes/ParaAir` on this Mac.** The October 9 fix supplies the mandatory FSKit flags/access-time attributes; native mounting, bookmark resolution, directory listing and a real sidebar click pass with the existing R2 connection. The native API is the default on macOS 27+ with its entitlement; macOS 26 retains the helper route. Local tests, the bounded R2 backend test and earlier mounted range reads pass. This is a development alpha; other cloud/NAS backends, media applications and a notarized clean-Mac installation remain unvalidated. Remaining release gates are listed under [Acceptance matrix and remaining gates](#acceptance-matrix-and-remaining-gates).
 
-ParaAir Cloud, a hosted subscription that removes provider accounts and bucket setup, is planned but not implemented. [`pricing/`](pricing/) holds the reproducible cost model used to compare storage providers. The early-access page in [`site/`](site/) is published at [paraair.pages.dev](https://paraair.pages.dev/).
+ParaAir Cloud, a hosted subscription that removes provider accounts and bucket setup, has a beta client in this repository; its service is not in this repository and is not deployed. See [ParaAir Cloud (beta) client](#paraair-cloud-beta-client). [`pricing/`](pricing/) holds the reproducible cost model used to compare storage providers. The early-access page in [`site/`](site/) is published at [paraair.pages.dev](https://paraair.pages.dev/).
 
 ParaAir is licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE).
 
@@ -67,6 +67,42 @@ The home window and menu bar panel are pure views of a `HomePresentation` value 
 
 ```sh
 bash scripts/render-ui-snapshots.sh .runtime/ui-snapshots
+```
+
+## ParaAir Cloud (beta) client
+
+ParaAir Cloud is invite-only storage from Parafield Inc. The Mac talks to it over HTTPS with OAuth tokens only: no bucket, provider key or database credential is stored on the Mac, and JuiceFS is not involved. Files are uploaded as 4 MiB content-addressed chunks; reads fetch only the chunks they touch, with a short-lived read token.
+
+**The service is not in this repository.** Its Worker lives in an ignored `cloud/` folder until it has a private home, and nothing is deployed. The public API contract the client implements is [`contract/paraair-cloud-v1/`](contract/paraair-cloud-v1/). Unit tests use an in-memory fake of the same contract; `scripts/cloud-e2e.sh` runs the client end to end against the Worker under local `wrangler dev` (sign-in, drive attach and create, upload, range reads, partial overwrite, conflict, quota, trash restore through the CLI, token refresh, sign-out). Nothing has run against a deployed service.
+
+A build shows the ParaAir Cloud section in Storage Settings only when it knows a service address (Info.plist `ParaAirCloudBaseURL`). Without one the section says ParaAir Cloud isn't available in this build and offers no buttons. With one:
+
+- **Sign In to ParaAir Cloud…** opens the browser for an email code and consent, then returns through a loopback PKCE redirect. The read-only sign-in link can be copied into another browser profile, as with Cloudflare.
+- The account record is `<state folder>/cloud-accounts/<id>.json`; tokens are in the Keychain service `dev.streamdrive.cloud`. A cloud drive gets its own state folder, `~/Library/Application Support/ParaAir/Cloud Drives/<account id>/`, unless the current folder is empty. After the drive choice the app switches to that folder and continues Finder setup.
+- The app renews sign-ins for every state folder it has used, not only the selected one, so a BYO drive's token keeps renewing after switching to a cloud drive. That drive also keeps connecting at login while **Connect the drive when ParaAir opens** is on.
+- **Choose State Folder…** replaces the selected folder as before, except that choosing a folder kept this way keeps the one it replaces, so going back to an R2 drive doesn't drop the cloud drive. If a kept drive doesn't connect at login, the home window names its state folder.
+- A cloud drive that becomes ready while another drive is still connecting is switched to once that finishes.
+- Storage Settings and the home window show the plan size, the space used and, in Storage Settings, recovery retention and this month's transfer. Every figure comes from the service; if it can't be reached, they are hidden behind "Plan and usage are unavailable right now." and Retry.
+- The home window counts files waiting to upload, files blocked because the plan is full or sign-in ended, and files that changed on another device. Newly blocked or conflicting files also post one notification.
+- **Sign Out…** says how many files haven't uploaded yet and offers Upload First.
+
+CLI support (see `paraair help connect`): `paraair cloud-accounts`, `paraair connect NAME --cloud-account ID --cloud-drive ID`, `paraair trash NAME` and `paraair restore NAME NODE_ID [--to PATH]`.
+
+Loopback development builds, for a local `wrangler dev` service only:
+
+| Variable | Effect |
+|---|---|
+| `PARAAIR_CLOUD_BASE_URL` | `scripts/build-app.sh` writes it as `ParaAirCloudBaseURL` into the app, CLI and extension. It must be `https://host` or `http://127.0.0.1:PORT`. |
+| `STREAMDRIVE_ALLOW_DEV_CLOUD=1` | Required to put a loopback address into a signed build; the script warns when it is used. A loopback address also sets `ParaAirCloudAllowLoopbackHTTP` and an App Transport Security exception for `127.0.0.1` only. |
+| `PARAAIR_CLOUD_ALLOW_LOOPBACK_HTTP=1` | Debug builds and `swift test` only: allows `http://127.0.0.1:PORT` without an Info.plist. |
+
+A loopback build also shows **Developer service address** in Storage Settings, which saves `<state folder>/paraair-cloud-service.json`; release builds ignore that file.
+
+```sh
+swift test --build-system native --jobs 4 --filter 'ParaAirCloud|CloudAccount|CloudDrive'   # fake service
+bash scripts/cloud-e2e.sh            # needs the cloud/ checkout; starts wrangler dev locally, deploys nothing
+PARAAIR_E2E_PORT=8788 bash scripts/cloud-e2e.sh   # when 127.0.0.1:8787 is taken; the issuer follows the port
+log show --last 30m --info --predicate 'subsystem BEGINSWITH "dev.streamdrive"'   # sign-in, renewal and mount logs
 ```
 
 ## CLI workflow

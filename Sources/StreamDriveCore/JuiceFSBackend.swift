@@ -38,7 +38,9 @@ public final class JuiceFSBackend: StorageBackend {
     private typealias Free = @convention(c) (UnsafeMutablePointer<CChar>?) -> Void
     private let callNative: Call
     private let freeNative: Free
-    private let lock = NSRecursiveLock()
+    /// Guards `handle` only. Calls run outside it: the bridge serializes what must be
+    /// serial, and close waits there for in-flight calls.
+    private let lock = NSLock()
     private var handle: UInt64 = 0
 
     /// Optional live-test payload budget. One identifier shares cumulative
@@ -140,11 +142,13 @@ public final class JuiceFSBackend: StorageBackend {
 
     deinit { try? close() }
 
-    private func request(_ fields: [String: Any], requiresHandle: Bool = true) throws -> [String: Any] {
-        lock.lock(); defer { lock.unlock() }
-        if requiresHandle && handle == 0 { throw DriveError(EBADF, "JuiceFS connection is closed") }
+    private func request(_ fields: [String: Any], requiresHandle: Bool = true, handle explicit: UInt64? = nil) throws -> [String: Any] {
+        let current = explicit ?? lock.withLock { handle }
+        if requiresHandle && current == 0 {
+            throw DriveError(EBADF, "JuiceFS connection is closed", disposition: fields["op"] as? String == "commit" ? .attemptNotDispatched : .ambiguous)
+        }
         var value = fields
-        value["handle"] = handle
+        value["handle"] = current
         let encoded = try JSONSerialization.data(withJSONObject: value)
         guard let json = String(data: encoded, encoding: .utf8) else { throw DriveError(EINVAL, "Invalid native request") }
         let result = try json.withCString { source -> [String: Any] in
@@ -161,7 +165,9 @@ public final class JuiceFSBackend: StorageBackend {
             // Native/provider errors may contain credential-bearing URLs. The
             // public boundary returns only the POSIX code and fixed operation.
             let description = String(cString: strerror(code))
-            throw DriveError(code, "JuiceFS \(fields["op"] as? String ?? "operation") failed: \(description)")
+            // The bridge reports how far a failed commit got; older bridges omit it.
+            let disposition = (result["disposition"] as? String).flatMap(CommitDisposition.init(rawValue:)) ?? .ambiguous
+            throw DriveError(code, "JuiceFS \(fields["op"] as? String ?? "operation") failed: \(description)", disposition: disposition)
         }
         return result
     }
@@ -198,22 +204,58 @@ public final class JuiceFSBackend: StorageBackend {
         guard let bytes = Data(base64Encoded: encoded) else { throw DriveError(EIO, "Invalid native read response") }
         return bytes
     }
+    /// One range of exactly `version`, checked by the bridge around its read. A
+    /// library without the operation (ENOSYS) gets the same check from here.
+    public func readSnapshot(_ path: String, version: String, offset: Int64, length: Int) throws -> Data {
+        guard offset >= 0, length >= 0, length <= 8 * 1024 * 1024, offset <= Int64.max - Int64(length) else {
+            throw DriveError(EINVAL, "Read range must be nonnegative and at most 8 MiB")
+        }
+        let reply: [String: Any]
+        do {
+            reply = try request(["op": "readSnapshot", "path": canonicalPath(path), "offset": offset, "length": length,
+                                 "expectedVersion": version])
+        } catch let error as DriveError where error.code == ENOSYS {
+            guard try stat(path).version == version else { throw DriveError(ESTALE, "File changed before range read") }
+            let bytes = try read(path, offset: offset, length: length)
+            guard try stat(path).version == version else { throw DriveError(ESTALE, "File changed during range read") }
+            return bytes
+        }
+        guard let encoded = reply["data"] as? String else { return Data() }
+        guard let bytes = Data(base64Encoded: encoded) else { throw DriveError(EIO, "Invalid native read response") }
+        return bytes
+    }
     public func commit(_ commit: FileCommit) throws -> FileEntry {
-        guard commit.finalSize >= 0, commit.baseVisibleSize >= 0, commit.baseVisibleSize <= commit.finalSize else {
-            throw DriveError(EINVAL, "Invalid commit sizes")
-        }
-        let patches: [[String: Any]] = try commit.extents.map { extent in
-            guard extent.offset >= 0, extent.length >= 0, extent.length <= commit.finalSize,
-                  extent.offset <= commit.finalSize - extent.length, extent.blobURL.isFileURL else {
-                throw DriveError(EINVAL, "Invalid commit extent")
+        let fields: [String: Any]
+        do {
+            guard commit.finalSize >= 0, commit.baseVisibleSize >= 0, commit.baseVisibleSize <= commit.finalSize else {
+                throw DriveError(EINVAL, "Invalid commit sizes")
             }
-            return ["offset": extent.offset, "length": extent.length, "localFile": extent.blobURL.path]
+            let patches: [[String: Any]] = try commit.extents.map { extent in
+                guard extent.offset >= 0, extent.length >= 0, extent.length <= commit.finalSize,
+                      extent.offset <= commit.finalSize - extent.length, extent.blobURL.isFileURL else {
+                    throw DriveError(EINVAL, "Invalid commit extent")
+                }
+                return ["offset": extent.offset, "length": extent.length, "localFile": extent.blobURL.path]
+            }
+            fields = ["op": "commit", "path": try canonicalPath(commit.path), "operationID": commit.transactionID,
+                      "expectedVersion": commit.expectedVersion ?? "", "size": commit.finalSize,
+                      "baseVisibleSize": commit.baseVisibleSize, "mode": commit.mode & 0o7777, "patches": patches]
+        } catch let error as DriveError { throw error.with(.attemptNotDispatched) }
+        return try entry(request(fields)["entry"])
+    }
+    /// Asks the bridge's commit fence about a transaction. A bridge without the
+    /// operation (ENOSYS) cannot answer, which is `.unknown`.
+    public func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus {
+        let reply: [String: Any]
+        do {
+            reply = try request(["op": "commitStatus", "path": canonicalPath(path), "operationID": transactionID,
+                                 "expectedVersion": expectedVersion ?? ""])
+        } catch let error as DriveError where error.code == ENOSYS { return .unknown }
+        switch reply["commitState"] as? String {
+        case "applied": return .applied(try entry(reply["entry"]))
+        case "absent": return .absent
+        default: return .unknown
         }
-        return try entry(request([
-            "op": "commit", "path": canonicalPath(commit.path), "operationID": commit.transactionID,
-            "expectedVersion": commit.expectedVersion ?? "", "size": commit.finalSize,
-            "baseVisibleSize": commit.baseVisibleSize, "mode": commit.mode & 0o7777, "patches": patches,
-        ])["entry"])
     }
     public func createDirectory(_ path: String) throws -> FileEntry {
         try entry(request(["op": "mkdir", "path": canonicalPath(path)])["entry"])
@@ -242,10 +284,10 @@ public final class JuiceFSBackend: StorageBackend {
         let value = try metrics()
         return TransferMetrics(objectReadBytes: value.objectReadBytes, objectGetRequests: value.objectGetRequests)
     }
+    /// Later calls fail with EBADF at once; the bridge finishes in-flight calls first.
     public func close() throws {
-        lock.lock(); defer { lock.unlock() }
-        guard handle != 0 else { return }
-        defer { handle = 0 }
-        _ = try request(["op": "close"])
+        let old = lock.withLock { () -> UInt64 in defer { handle = 0 }; return handle }
+        guard old != 0 else { return }
+        _ = try request(["op": "close"], handle: old)
     }
 }

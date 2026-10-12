@@ -6,19 +6,32 @@ import StreamDriveCore
 @MainActor
 struct ConnectionsView: View {
     @StateObject private var model: ConnectionsModel
+    @StateObject private var cloud: CloudAccountModel
     @Binding private var reconnectRequest: String?
     @State private var pendingDisconnect: StorageConnection?
     @Environment(\.openWindow) private var openWindow
+    private let onCloudDriveReady: (URL) -> Void
 
+    /// `cloudAccount` is the app's model for this state folder, so a drive choice survives
+    /// closing the window; without one the view makes its own.
     init(stateRoot: URL, reconnectRequest: Binding<String?> = .constant(nil),
          vault: any ConnectionVault = KeychainConnectionVault(),
-         onSaved: @escaping (StorageConnection) -> Void = { _ in }) {
+         cloudAccount: CloudAccountModel? = nil,
+         onSaved: @escaping (StorageConnection) -> Void = { _ in },
+         onCloudDriveReady: @escaping (URL) -> Void = { _ in }) {
         _model = StateObject(wrappedValue: ConnectionsModel(stateRoot: stateRoot, vault: vault, onSaved: onSaved))
+        _cloud = StateObject(wrappedValue: cloudAccount ?? CloudAccountModel(stateRoot: stateRoot))
         _reconnectRequest = reconnectRequest
+        self.onCloudDriveReady = onCloudDriveReady
     }
 
     var body: some View {
         Form {
+            CloudAccountSection(model: cloud) { root in
+                onCloudDriveReady(root)
+                openWindow(id: "connections")
+            }
+
             if !model.savedConnections.isEmpty {
                 Section {
                     ForEach(model.savedConnections) { connection in
@@ -50,7 +63,7 @@ struct ConnectionsView: View {
                 TextField("Name", text: $model.connectionName, prompt: Text("Shown in ParaAir"))
                     .disabled(model.isBusy)
             } header: {
-                Text(model.isReconnecting ? "Sign in again" : (model.savedConnections.isEmpty ? "Add your storage" : "Add storage"))
+                Text(model.isReconnecting ? "Sign in again" : "Add your own storage")
             } footer: {
                 Text("Choose your storage, authorize access, then pick the bucket ParaAir should use.")
                     .foregroundStyle(.secondary)
@@ -109,10 +122,16 @@ struct ConnectionsView: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 620, idealWidth: 680, minHeight: 620)
-        .onAppear { model.reload(); applyReconnectRequest() }
+        .onAppear {
+            model.reload(); applyReconnectRequest()
+            cloud.reload(); cloud.reloadSummary(maxAge: 60)
+        }
         .onChange(of: reconnectRequest) { applyReconnectRequest() }
         .onChange(of: model.isBusy) { applyReconnectRequest() }
-        .onDisappear { model.cancel() }
+        .onDisappear { model.cancel(); cloud.cancelSignIn() }
+        // One browser preference for both sign-ins in this window.
+        .onChange(of: model.openDefaultBrowserAutomatically) { _, value in cloud.openDefaultBrowserAutomatically = value }
+        .onChange(of: cloud.openDefaultBrowserAutomatically) { _, value in model.openDefaultBrowserAutomatically = value }
         .confirmationDialog(pendingDisconnect.map { "Disconnect \($0.name)?" } ?? "Disconnect?",
                             isPresented: Binding(get: { pendingDisconnect != nil },
                                                  set: { if !$0 { pendingDisconnect = nil } }),
@@ -312,7 +331,7 @@ private struct SavedConnectionRow: View {
     }
 }
 
-private struct BrowserSignInLinkField: NSViewRepresentable {
+struct BrowserSignInLinkField: NSViewRepresentable {
     let value: String
 
     func makeNSView(context: Context) -> NSTextField {
@@ -320,12 +339,20 @@ private struct BrowserSignInLinkField: NSViewRepresentable {
         field.isEditable = false
         field.isSelectable = true
         field.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        field.lineBreakMode = .byClipping
+        field.lineBreakMode = .byTruncatingMiddle
+        field.cell?.usesSingleLineMode = true
+        // The URL is long; let the row decide the width instead of the text.
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setAccessibilityLabel("Browser sign-in link")
         return field
     }
 
     func updateNSView(_ field: NSTextField, context: Context) { field.stringValue = value }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView field: NSTextField, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 240, height: field.intrinsicContentSize.height)
+    }
 }
 
 @MainActor

@@ -86,23 +86,110 @@ final class Database {
 
 final class StateLock {
     private let local = NSRecursiveLock()
-    private let fd: Int32
+    private let url: URL
+    private let replaceable: Bool
+    private var fd: Int32
     private var depth = 0
+    /// A replaceable lock file may be unlinked by its holder (`removeFileWhileHeld`).
+    /// Every acquisition then checks that it locked the file currently at `url`.
+    init(_ url: URL, replaceable: Bool = false) throws {
+        self.url = url; self.replaceable = replaceable
+        fd = try Self.open(url)
+    }
+    deinit { if fd >= 0 { Darwin.close(fd) } }
+    private static func open(_ url: URL) throws -> Int32 {
+        let fd = Darwin.open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw DriveError(errno, "Cannot lock drive state") }
+        return fd
+    }
+    /// Only meaningful for assertions: true while the calling thread holds this lock.
+    var isHeldByCurrentThread: Bool {
+        guard local.try() else { return false }
+        defer { local.unlock() }
+        return depth > 0
+    }
+    func withLock<T>(_ body: () throws -> T) throws -> T { try withLock(timeout: nil, body) }
+    /// A nil timeout waits indefinitely. Otherwise both the in-process lock and the
+    /// cross-process flock (polled every 20 ms) give up with EBUSY at the deadline.
+    func withLock<T>(timeout: TimeInterval?, _ body: () throws -> T) throws -> T {
+        let deadline = timeout.map { DispatchTime.now() + max(0, $0) }
+        if let timeout {
+            guard local.lock(before: Date(timeIntervalSinceNow: max(0, timeout))) else { throw DriveError(EBUSY, "Drive state is busy") }
+        } else { local.lock() }
+        defer { local.unlock() }
+        if depth == 0 { try acquire(deadline: deadline) }
+        depth += 1
+        defer { depth -= 1; if depth == 0 { flock(fd, LOCK_UN) } }
+        return try body()
+    }
+    private func acquire(deadline: DispatchTime?) throws {
+        while true {
+            // After a failed reopen there is no descriptor; never flock or close a
+            // number the process may have handed to another file since.
+            if fd < 0 { fd = try Self.open(url) }
+            if let deadline {
+                while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+                    let failure = errno
+                    if failure == EINTR { continue }
+                    guard failure == EWOULDBLOCK else { throw DriveError(failure, "Cannot acquire drive state lock") }
+                    guard DispatchTime.now() < deadline else { throw DriveError(EBUSY, "Drive state is busy") }
+                    usleep(20_000)
+                }
+            } else {
+                while flock(fd, LOCK_EX) != 0 {
+                    if errno != EINTR { throw DriveError(errno, "Cannot acquire drive state lock") }
+                }
+            }
+            guard replaceable, !locksLinkedFile() else { return }
+            // The previous holder unlinked this file; lock the one now at `url`.
+            flock(fd, LOCK_UN); Darwin.close(fd); fd = -1
+        }
+    }
+    private func locksLinkedFile() -> Bool {
+        var held = Darwin.stat(), linked = Darwin.stat()
+        guard fstat(fd, &held) == 0, lstat(url.path, &linked) == 0 else { return false }
+        return held.st_dev == linked.st_dev && held.st_ino == linked.st_ino
+    }
+    /// Unlinks a replaceable lock file. Call only while holding the lock; waiters
+    /// and other processes move to a fresh file at the same path.
+    func removeFileWhileHeld() {
+        guard replaceable else { return }
+        local.lock(); defer { local.unlock() }
+        guard depth > 0 else { return }
+        _ = Darwin.unlink(url.path)
+    }
+}
+
+/// A cross-process shared flock with an in-process holder count: the first holder
+/// takes LOCK_SH and the last releases it. A LOCK_EX holder on the same file (an
+/// older binary) excludes every shared holder, and they exclude it.
+final class SharedStateLock {
+    private let local = NSLock()
+    private let fd: Int32
+    private var holders = 0
     init(_ url: URL) throws {
         fd = Darwin.open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw DriveError(errno, "Cannot lock drive state") }
     }
     deinit { Darwin.close(fd) }
-    func withLock<T>(_ body: () throws -> T) throws -> T {
+    func withShared<T>(_ body: () throws -> T) throws -> T {
+        try acquire()
+        defer { release() }
+        return try body()
+    }
+    private func acquire() throws {
         local.lock(); defer { local.unlock() }
-        if depth == 0 {
-            while flock(fd, LOCK_EX) != 0 {
-                if errno != EINTR { throw DriveError(errno, "Cannot acquire drive state lock") }
+        if holders == 0 {
+            while flock(fd, LOCK_SH) != 0 {
+                if errno != EINTR { throw DriveError(errno, "Cannot acquire drive upload lock") }
             }
         }
-        depth += 1
-        defer { depth -= 1; if depth == 0 { flock(fd, LOCK_UN) } }
-        return try body()
+        holders += 1
+    }
+    private func release() {
+        local.lock(); defer { local.unlock() }
+        holders -= 1
+        if holders == 0 { flock(fd, LOCK_UN) }
     }
 }
 

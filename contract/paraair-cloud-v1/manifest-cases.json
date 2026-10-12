@@ -1,0 +1,20 @@
+{
+  "chunkSize": 8,
+  "cases": [
+    {"name": "create-empty", "base": null, "baseVisibleSize": 0, "finalSize": 0, "extents": []},
+    {"name": "create-two-chunks", "base": null, "baseVisibleSize": 0, "finalSize": 13,
+     "extents": [{"offset": 0, "data": "Hello, chunks"}]},
+    {"name": "overwrite-middle", "base": "0123456789abcdefghij", "baseVisibleSize": 20, "finalSize": 20,
+     "extents": [{"offset": 10, "data": "XYZ"}]},
+    {"name": "truncate-then-extend", "base": "ABCDEFGHIJKLMNOPQRST", "baseVisibleSize": 5, "finalSize": 20,
+     "extents": [{"offset": 18, "data": "yz"}]},
+    {"name": "shrink-last-partial", "base": "0123456789abcdefghij", "baseVisibleSize": 12, "finalSize": 12,
+     "extents": []},
+    {"name": "extend-partial-last-unchanged", "base": "0123456789ab", "baseVisibleSize": 12, "finalSize": 20,
+     "extents": [{"offset": 16, "data": "WXYZ"}]},
+    {"name": "overlapping-extents-later-wins", "base": "0123456789abcdefghijklmn", "baseVisibleSize": 24, "finalSize": 24,
+     "extents": [{"offset": 2, "data": "aaaaaaaa"}, {"offset": 4, "data": "BB"}, {"offset": 6, "data": "cccc"}]},
+    {"name": "sparse-gap-zeros", "base": null, "baseVisibleSize": 0, "finalSize": 30,
+     "extents": [{"offset": 0, "data": "head"}, {"offset": 26, "data": "tail"}]}
+  ]
+}

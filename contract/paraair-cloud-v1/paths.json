@@ -1,0 +1,12 @@
+{
+  "cases": [
+    {"input": "//photos//image.jpg/", "swift": "/photos/image.jpg", "server": "/photos/image.jpg"},
+    {"input": "/../secret", "swift": 13, "server": 13},
+    {"input": "relative", "swift": 22, "server": 22},
+    {"input": "/a/./b", "swift": 13, "server": 13},
+    {"input": "/.streamdrive/locks", "swift": 13, "server": 13},
+    {"input": "/a\u0000b", "swift": 22, "server": 22},
+    {"input": "/a/\u0301b", "swift": "/a/\u0301b", "server": 22},
+    {"input": "/x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "swift": "/x/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": 63}
+  ]
+}

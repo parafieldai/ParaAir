@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import FSKit
+import os
 import StreamDriveCore
 
 /// A timeout reports an uncertain operation without launching another one.
@@ -17,6 +18,7 @@ final class NativeMountOperation {
     private var started = false
     private var activeResource: FSPathURLResource?
     private(set) var isWaiting = true
+    private let log = Logger(subsystem: "dev.streamdrive.app", category: "mount")
 
     init(report: @escaping (Event) -> Void) { self.report = report }
 
@@ -36,6 +38,7 @@ final class NativeMountOperation {
             throw DriveError(EINVAL, "Native mounting requires one saved drive in this state directory")
         }
         started = true
+        log.notice("native start")
         let resource = try Self.scopedResource(stateRoot: stateRoot)
         guard resource.url.startAccessingSecurityScopedResource() else {
             throw DriveError(EACCES, "Cannot grant the filesystem access to its saved state directory")
@@ -55,6 +58,7 @@ final class NativeMountOperation {
             options: []) { [self] url, error in
                 Task { @MainActor in self.finish(url: url, error: error, profileName: profiles[0].finderName) }
             }
+        log.notice("native mountSingleVolume dispatched")
     }
 
     /// A bare path carries no sandbox grant. FSKit successfully transports an
@@ -78,6 +82,7 @@ final class NativeMountOperation {
     func markPending() {
         guard isWaiting, !reportedPending else { return }
         reportedPending = true
+        log.notice("native mount pending notice shown")
         report(.pending)
     }
 
@@ -87,12 +92,19 @@ final class NativeMountOperation {
         activeResource?.url.stopAccessingSecurityScopedResource()
         activeResource = nil
         timer?.cancel(); timer = nil
-        if let error { report(.finished(.failure(error))); return }
+        if let error {
+            // Domain and code only: descriptions can carry paths.
+            let nsError = error as NSError
+            log.error("native finish failed domain=\(nsError.domain, privacy: .public) code=\(nsError.code)")
+            report(.finished(.failure(error))); return
+        }
         guard let url, url.isFileURL,
               url.standardizedFileURL.path == "/Volumes/" + profileName else {
+            log.error("native finish unexpected location")
             report(.finished(.failure(DriveError(EIO, "macOS did not return the expected ParaAir volume location"))))
             return
         }
+        log.notice("native finish ok")
         report(.finished(.success(url)))
     }
 

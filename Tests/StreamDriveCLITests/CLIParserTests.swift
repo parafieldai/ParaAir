@@ -64,4 +64,21 @@ final class CLIParserTests: XCTestCase {
     func testExtraPositionalsAreRejected() {
         XCTAssertThrowsError(try CLIParser.parse(["mount", "home", "unexpected"]))
     }
+
+    func testCloudOptionsParse() throws {
+        let account = "0f8fad5b-d9cb-469f-a165-70867728950e", drive = "3f0c2a7e-6b1d-4e0a-9c2f-1d2e3f4a5b6c"
+        XCTAssertEqual(try CLIParser.parse(["connect", "studio", "--cloud-account", account, "--cloud-drive=" + drive]).command,
+                       .connect(ConnectArguments(profile: "studio", values: ["cloud-account": account, "cloud-drive": drive], overwrite: false)))
+        XCTAssertEqual(try CLIParser.parse(["cloud-accounts", "--json"]).command, .cloudAccounts)
+        XCTAssertEqual(try CLIParser.parse(["trash", "studio"]).command, .trash(profile: "studio"))
+        XCTAssertEqual(try CLIParser.parse(["restore", "studio", "42"]).command, .restore(profile: "studio", nodeID: 42, to: nil))
+        XCTAssertEqual(try CLIParser.parse(["restore", "--profile", "studio", "42", "--to", "/a b.mov"]).command,
+                       .restore(profile: "studio", nodeID: 42, to: "/a b.mov"))
+        for invalid in [["connect", "studio", "--cloud-drive", drive], ["connect", "studio", "--cloud-account", account.uppercased()],
+                        ["connect", "studio", "--cloud-account", "../x"], ["restore", "studio"], ["restore", "studio", "0"],
+                        ["restore", "studio", "-1"], ["restore", "studio", "42", "43"], ["restore", "studio", "9007199254740992"],
+                        ["trash"], ["trash", "studio", "extra"], ["cloud-accounts", "extra"]] {
+            XCTAssertThrowsError(try CLIParser.parse(invalid), invalid.joined(separator: " "))
+        }
+    }
 }

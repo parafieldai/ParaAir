@@ -18,9 +18,26 @@ struct HomeInputs: Equatable {
     var creatingDrive = false
     var error: String?
     var mountMessage: String?
+    /// A waiting folder switch, or a drive in another state folder that didn't connect at login.
+    var folderNotice: String?
     var sidebarMessage: String?
+    var storageKind: StorageKind = .ownBucket
+    var uploadActivity: UploadActivity?
+    var cloudUsage: CloudUsage?
 
     var hasDrive: Bool { driveName != nil }
+}
+
+/// Where the drive's files live: a bucket the user connected, or ParaAir Cloud.
+enum StorageKind: Equatable { case ownBucket, paraairCloud }
+
+/// Progress of the `/v1/me` plan and usage summary.
+enum CloudSummaryState: Equatable { case idle, loading, loaded, failed }
+
+/// The workspace whose plan and usage the drive counts against, with its load state.
+struct CloudUsage: Equatable {
+    var workspace: ParaAirCloudMe.Workspace?
+    var state: CloudSummaryState
 }
 
 /// What the home window and menu bar panel show. Presentation only: every action maps
@@ -78,9 +95,9 @@ struct HomePresentation: Equatable {
                                primary: .init(action: .createDrive, title: "Create Drive…"))
             } else {
                 result = .init(status: .init(title: "Not set up yet",
-                                             detail: "Connect a storage bucket once. ParaAir sets up the drive, its cache and Finder.",
+                                             detail: "Sign in to ParaAir Cloud or connect your own storage bucket. ParaAir sets up the drive, its cache and Finder.",
                                              tone: .neutral),
-                               primary: .init(action: .addStorage, title: "Add Storage…"))
+                               primary: .init(action: .addStorage, title: "Set Up Storage…"))
             }
         } else if input.mounted {
             if let issue = input.connectionIssue {
@@ -124,7 +141,7 @@ struct HomePresentation: Equatable {
             result.steps = [
                 .init(id: 1, title: "Add your storage",
                       detail: input.hasDrive && input.credentialCheckFinished && input.connectionIssue != nil
-                          ? "Sign in again in Storage Settings." : "Cloudflare R2 or another S3-compatible bucket.",
+                          ? "Sign in again in Storage Settings." : "ParaAir Cloud, Cloudflare R2 or another S3-compatible bucket.",
                       state: storageDone ? .done : (input.hasDrive && !input.credentialCheckFinished ? .upcoming : .current)),
                 .init(id: 2, title: "Create your drive", detail: "Name it however you like.",
                       state: input.hasDrive ? .done : (storageDone ? .current : .upcoming)),
@@ -138,11 +155,35 @@ struct HomePresentation: Equatable {
 
         if let error = input.error { result.notices.append(.init(id: "error", text: error, tone: .problem)) }
         if let message = input.mountMessage { result.notices.append(.init(id: "mount", text: message, tone: .attention)) }
+        if let notice = input.folderNotice { result.notices.append(.init(id: "folder", text: notice, tone: .attention)) }
         if let renewal = input.renewalError, input.connectionIssue == nil {
             result.notices.append(.init(id: "renewal", text: renewal, tone: .attention))
         }
         if let message = input.sidebarMessage { result.notices.append(.init(id: "sidebar", text: message, tone: .neutral)) }
+        if let activity = input.uploadActivity {
+            result.notices += uploadNotices(activity, cloud: input.storageKind == .paraairCloud, accessIssue: input.connectionIssue != nil)
+        }
         return result
+    }
+
+    /// Problems first. Quota and sign-in wording is specific to ParaAir Cloud. Files waiting
+    /// for a sign-in count as waiting when the status above already asks for one, and for
+    /// your own bucket, whose access the storage status explains.
+    private static func uploadNotices(_ activity: UploadActivity, cloud: Bool, accessIssue: Bool) -> [Notice] {
+        var notices: [Notice] = []
+        let signIn = cloud && !accessIssue
+        if signIn, activity.blockedAuth > 0 {
+            notices.append(.init(id: "upload-sign-in", text: UploadNotices.signIn(activity.blockedAuth), tone: .attention))
+        }
+        if cloud, activity.blockedQuota > 0 {
+            notices.append(.init(id: "upload-quota", text: UploadNotices.quota(activity.blockedQuota), tone: .attention))
+        }
+        if activity.conflicts > 0 {
+            notices.append(.init(id: "upload-conflicts", text: UploadNotices.conflicts(activity.conflicts), tone: .attention))
+        }
+        let waiting = activity.waiting + activity.failedOther + (cloud ? 0 : activity.blockedQuota) + (signIn ? 0 : activity.blockedAuth)
+        if waiting > 0 { notices.append(.init(id: "upload-waiting", text: UploadNotices.waiting(waiting), tone: .neutral)) }
+        return notices
     }
 
     private static func extensionStatus(_ state: FinderExtensionState) -> Status {
@@ -165,6 +206,70 @@ struct HomePresentation: Equatable {
             return .init(title: "Check System Settings",
                          detail: "Confirm ParaAir’s file system extension is switched on.", tone: .neutral)
         }
+    }
+}
+
+/// Copy for files that haven't reached storage yet, shared by the home window, the
+/// menu bar panel, notifications and the sign-out confirmation.
+enum UploadNotices {
+    static func files(_ count: Int) -> String { count == 1 ? "1 file" : "\(count) files" }
+    static func waiting(_ count: Int) -> String {
+        count == 1 ? "1 file is waiting to upload." : "\(count) files are waiting to upload."
+    }
+    static func quota(_ count: Int) -> String {
+        "Your ParaAir Cloud storage is full. \(files(count)) will upload when space is available."
+    }
+    static func signIn(_ count: Int) -> String { "Sign in to ParaAir Cloud to upload \(files(count))." }
+    static func conflicts(_ count: Int) -> String {
+        count == 1 ? "1 file changed on another device. Your copy is kept on this Mac."
+            : "\(count) files changed on another device. Your copies are kept on this Mac."
+    }
+    static func notUploaded(_ count: Int) -> String {
+        count == 1 ? "1 file on this Mac hasn’t uploaded yet." : "\(count) files on this Mac haven’t uploaded yet."
+    }
+}
+
+/// Plan and usage lines for ParaAir Cloud. Every value comes from `/v1/me`; when the
+/// summary is missing or failed, no figure is shown at all rather than a zero.
+struct CloudUsagePresentation: Equatable {
+    var planLine: String
+    var usedLine: String?
+    var fraction: Double?
+    var retainedLine: String?
+    var transferLine: String?
+    var notice: String?
+    /// The bare figures for the home window's Plan and Used rows.
+    var planSize: String?
+    var usedSize: String?
+
+    static let unavailable = "Plan and usage are unavailable right now."
+    static let checking = "Checking plan and usage…"
+
+    static func make(_ workspace: ParaAirCloudMe.Workspace?, state: CloudSummaryState) -> CloudUsagePresentation {
+        guard state != .failed, let plan = workspace?.plan, let usage = workspace?.usage, plan.storageLimitBytes > 0 else {
+            return .init(planLine: state == .idle || state == .loading ? checking : unavailable)
+        }
+        let limit = format(plan.storageLimitBytes), used = format(usage.storedBytes)
+        let days = plan.retentionDays == 1 ? "1 day" : "\(plan.retentionDays) days"
+        var result = CloudUsagePresentation(
+            planLine: limit + " plan", usedLine: used + " used",
+            fraction: min(1, max(0, Double(usage.storedBytes) / Double(plan.storageLimitBytes))),
+            retainedLine: "Kept for recovery: \(usage.retainedBytes > 0 ? format(usage.retainedBytes) : "none") (deleted files stay \(days))",
+            transferLine: "Transfer this month: \(format(usage.transferBytes)) of \(format(plan.transferAllowanceBytes))",
+            planSize: limit, usedSize: used)
+        if usage.throttled {
+            var day = Date.FormatStyle.dateTime.month(.wide).day()
+            day.timeZone = TimeZone(identifier: "UTC") ?? .current
+            result.notice = "This month’s transfer allowance is used up, so downloads are slower until \(usage.periodEnd.formatted(day))."
+        }
+        return result
+    }
+
+    static func format(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .decimal
+        formatter.allowsNonnumericFormatting = false
+        return formatter.string(fromByteCount: max(0, bytes))
     }
 }
 

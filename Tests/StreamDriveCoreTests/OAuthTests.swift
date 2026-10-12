@@ -214,4 +214,48 @@ final class OAuthTests: XCTestCase {
         task.cancel()
         do { _ = try await task.value; XCTFail("Expected cancellation") } catch { XCTAssertTrue(error is CancellationError) }
     }
+
+    func testLoopbackHTTPAllowedOnlyWhenConfigured() async throws {
+        let loopback = URL(string: "http://127.0.0.1:8787")!
+        func make(_ base: URL, allowed: Bool) throws -> OAuthConfiguration {
+            try OAuthConfiguration(authorizationEndpoint: base.appendingPathComponent("oauth/authorize"), tokenEndpoint: base.appendingPathComponent("oauth/token"),
+                                   clientID: "paraair-macos", redirectURI: URL(string: "http://127.0.0.1:0/oauth/callback")!, scopes: ["drive"],
+                                   expectedIssuer: base, allowsLoopbackHTTP: allowed)
+        }
+        XCTAssertThrowsError(try make(loopback, allowed: false)) { XCTAssertEqual($0 as? OAuthError, .invalidConfiguration) }
+        let allowed = try make(loopback, allowed: true)
+        XCTAssertTrue(allowed.allowsLoopbackHTTP)
+        XCTAssertTrue(try allowed.replacingRedirectURI(URL(string: "http://127.0.0.1:49731/oauth/callback")!).allowsLoopbackHTTP)
+        for other in ["http://localhost:8787", "http://127.0.0.1", "http://192.168.1.2:8787", "http://[::1]:8787"] {
+            XCTAssertThrowsError(try make(URL(string: other)!, allowed: true), other)
+        }
+        XCTAssertFalse(try make(URL(string: "https://cloud.example")!, allowed: false).allowsLoopbackHTTP)
+        XCTAssertFalse(try config().allowsLoopbackHTTP)
+        // A loopback issuer must match the iss parameter exactly.
+        let client = OAuthClient(configuration: try allowed.replacingRedirectURI(URL(string: "http://127.0.0.1:49731/oauth/callback")!),
+                                 transport: OAuthTestTransport([token()]))
+        let start = try await client.begin()
+        XCTAssertTrue(start.authorizationURL.absoluteString.hasPrefix("http://127.0.0.1:8787/oauth/authorize?"))
+        await expect(.invalidCallback) { _ = try await client.complete(callbackURL: self.callback(start, extra: ["iss": "http://127.0.0.1:8788"])) }
+        let tokens = try await client.complete(callbackURL: callback(start, extra: ["iss": "http://127.0.0.1:8787"]))
+        XCTAssertEqual(tokens.accessToken, "access-1")
+    }
+
+    func testTokenResponseParseIsShared() throws {
+        let now = Date(timeIntervalSince1970: 5000)
+        let parsed = try OAuthTokenResponse.parse(token(), now: now)
+        XCTAssertEqual(parsed.accessToken, "access-1"); XCTAssertEqual(parsed.refreshToken, "refresh-1")
+        XCTAssertEqual(parsed.expiresAt, now.addingTimeInterval(3600))
+        let denied = OAuthHTTPResponse(statusCode: 400, data: Data(#"{"error":"invalid_grant","error_description":"x"}"#.utf8))
+        XCTAssertThrowsError(try OAuthTokenResponse.parse(denied, now: now)) { XCTAssertEqual($0 as? OAuthError, .expired) }
+        XCTAssertThrowsError(try OAuthTokenResponse.parse(OAuthHTTPResponse(statusCode: 503, data: Data()), now: now)) {
+            XCTAssertEqual($0 as? OAuthError, .httpStatus(503))
+        }
+        for body in [#"{"access_token":"a","token_type":"MAC"}"#, #"{"access_token":"a b","token_type":"Bearer"}"#,
+                     #"{"access_token":"a","token_type":"Bearer","refresh_token":""}"#, #"{"access_token":"a","token_type":"Bearer","scope":1}"#] {
+            XCTAssertThrowsError(try OAuthTokenResponse.parse(OAuthHTTPResponse(statusCode: 200, data: Data(body.utf8)), now: now), body) {
+                XCTAssertEqual($0 as? OAuthError, .invalidTokenResponse)
+            }
+        }
+    }
 }

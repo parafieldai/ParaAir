@@ -123,4 +123,125 @@ final class NativeBackendTests: XCTestCase {
         XCTAssertEqual(try repeated.status().objectReadBytes, try engine.status().objectReadBytes)
     }
 
+    func testNativeCommitRejectionCarriesDisposition() throws {
+        let (_, root, backend) = try fixture()
+        let blob = root.appendingPathComponent("bytes")
+        try Data("original".utf8).write(to: blob)
+        let base = try backend.commit(FileCommit(transactionID: UUID().uuidString, path: "/file", expectedVersion: nil, finalSize: 8,
+            extents: [WriteExtent(offset: 0, length: 8, blobURL: blob)]))
+        func disposition(_ commit: FileCommit, _ errno: Int32, file: StaticString = #filePath, line: UInt = #line) -> CommitDisposition? {
+            do { _ = try backend.commit(commit); XCTFail("Commit unexpectedly succeeded", file: file, line: line); return nil }
+            catch let error as DriveError { XCTAssertEqual(error.code, errno, file: file, line: line); return error.disposition }
+            catch { XCTFail("Unexpected error \(error)", file: file, line: line); return nil }
+        }
+        // Rejected in Swift or by the bridge before the receipt check.
+        XCTAssertEqual(disposition(FileCommit(transactionID: UUID().uuidString, path: "/file", expectedVersion: base.version,
+                                              finalSize: 4, baseVisibleSize: 8, extents: []), EINVAL), .attemptNotDispatched)
+        XCTAssertEqual(disposition(FileCommit(transactionID: UUID().uuidString, path: "/.streamdrive/lock", expectedVersion: nil,
+                                              finalSize: 0, extents: []), EACCES), .attemptNotDispatched)
+        // Fenced after the receipt check: this identity can never publish.
+        XCTAssertEqual(disposition(FileCommit(transactionID: UUID().uuidString, path: "/file", expectedVersion: "stale-version",
+                                              finalSize: 8, extents: []), ESTALE), .transactionAbsent)
+        XCTAssertEqual(disposition(FileCommit(transactionID: UUID().uuidString, path: "/file", expectedVersion: base.version, finalSize: 8,
+                                              extents: [WriteExtent(offset: 0, length: 8, blobURL: root.appendingPathComponent("missing"))]), ENOENT),
+                       .transactionAbsent)
+        // Only the publishing rename failed: ambiguous.
+        XCTAssertEqual(disposition(FileCommit(transactionID: UUID().uuidString, path: "/missing-parent/file", expectedVersion: nil,
+                                              finalSize: 8, extents: [WriteExtent(offset: 0, length: 8, blobURL: blob)]), ENOENT), .ambiguous)
+        XCTAssertEqual(try backend.read("/file", offset: 0, length: 8), Data("original".utf8))
+        try backend.close()
+        XCTAssertEqual(disposition(FileCommit(transactionID: UUID().uuidString, path: "/file", expectedVersion: base.version,
+                                              finalSize: 8, extents: []), EBADF), .attemptNotDispatched)
+    }
+
+    /// The bridge reports a failed publishing rename as ambiguous; the engine settles it
+    /// through the commit fence, so a new file under a removed directory is a conflict.
+    func testEngineMarksNewFileUnderRemovedDirectoryAsConflict() throws {
+        let (_, root, backend) = try fixture()
+        let engine = try Engine(backend: backend, stateDirectory: root.appendingPathComponent("client-state"), minFreeBytes: 0)
+        _ = try engine.create("/d", directory: true)
+        _ = try engine.create("/d/x", directory: false)
+        try engine.write("/d/x", offset: 0, data: Data("hello".utf8))
+        // Another client removes the directory before the file uploads.
+        try backend.remove("/d", directory: true)
+        XCTAssertThrowsError(try engine.fsync("/d/x")) { XCTAssertEqual(($0 as? DriveError)?.code, ENOENT) }
+        let record = try XCTUnwrap(engine.uploads().first)
+        XCTAssertEqual(record.state, "conflict")
+        XCTAssertEqual(record.lastErrno, ENOENT)
+        XCTAssertEqual(try engine.read("/d/x", offset: 0, length: 5), Data("hello".utf8))
+    }
+
+    func testNativeCommitStatus() throws {
+        let (_, root, backend) = try fixture()
+        let blob = root.appendingPathComponent("bytes")
+        try Data("original".utf8).write(to: blob)
+        let transaction = UUID().uuidString
+        let base = try backend.commit(FileCommit(transactionID: transaction, path: "/file", expectedVersion: nil, finalSize: 8,
+            extents: [WriteExtent(offset: 0, length: 8, blobURL: blob)]))
+        XCTAssertEqual(try backend.commitStatus(transactionID: transaction, path: "/file", expectedVersion: nil), .applied(base))
+        let unpublished = UUID().uuidString
+        XCTAssertEqual(try backend.commitStatus(transactionID: unpublished, path: "/file", expectedVersion: base.version), .absent)
+        XCTAssertEqual(try backend.commitStatus(transactionID: unpublished, path: "/new", expectedVersion: nil), .absent)
+        _ = try backend.commit(FileCommit(transactionID: UUID().uuidString, path: "/file", expectedVersion: base.version, finalSize: 3, extents: []))
+        for (path, version) in [("/file", base.version as String?), ("/file", nil), ("/new", base.version)] {
+            XCTAssertThrowsError(try backend.commitStatus(transactionID: unpublished, path: path, expectedVersion: version)) {
+                XCTAssertEqual(($0 as? DriveError)?.code, ESTALE)
+            }
+        }
+        XCTAssertEqual(try backend.read("/file", offset: 0, length: 8), Data("ori".utf8))
+    }
+
+    func testNativeConcurrentReadsReturnCorrectRanges() throws {
+        let (_, root, backend) = try fixture()
+        // Every 4 KiB page carries its own index, so a misplaced range is visible.
+        var payload = Data(capacity: 8 * 1_048_576)
+        for page in 0..<(8 * 256) { payload.append(Data(repeating: UInt8(truncatingIfNeeded: page &* 31 &+ 7), count: 4096)) }
+        let blob = root.appendingPathComponent("payload")
+        try payload.write(to: blob)
+        let entry = try backend.commit(FileCommit(transactionID: UUID().uuidString, path: "/movie.bin", expectedVersion: nil,
+            finalSize: Int64(payload.count), extents: [WriteExtent(offset: 0, length: Int64(payload.count), blobURL: blob)]))
+        let failures = NSLock(); var problems: [String] = [], requested: Int64 = 0
+        DispatchQueue.concurrentPerform(iterations: 16) { worker in
+            for round in 0..<8 {
+                let offset = (worker * 524_287 + round * 1_048_573) % (payload.count - 70_000), length = 4096 + (worker * 977 + round * 131) % 65_536
+                let expected = payload.subdata(in: offset..<(offset + length))
+                do {
+                    let plain = try backend.read("/movie.bin", offset: Int64(offset), length: length)
+                    let snapshot = try backend.readSnapshot("/movie.bin", version: entry.version, offset: Int64(offset), length: length)
+                    failures.withLock { requested += Int64(2 * length) }
+                    if plain != expected || snapshot != expected { failures.withLock { problems.append("range \(offset)+\(length)") } }
+                    _ = try backend.stat("/movie.bin")
+                } catch { failures.withLock { problems.append("\(offset)+\(length): \(error)") } }
+            }
+        }
+        XCTAssertTrue(problems.isEmpty, problems.joined(separator: "; "))
+        XCTAssertEqual(try backend.metrics().applicationReadBytes, requested)
+    }
+
+    func testNativeReadSnapshotRejectsChangedVersion() throws {
+        let (_, root, backend) = try fixture()
+        let blob = root.appendingPathComponent("bytes")
+        try Data("original".utf8).write(to: blob)
+        let first = try backend.commit(FileCommit(transactionID: UUID().uuidString, path: "/file", expectedVersion: nil, finalSize: 8,
+            extents: [WriteExtent(offset: 0, length: 8, blobURL: blob)]))
+        XCTAssertEqual(try backend.readSnapshot("/file", version: first.version, offset: 2, length: 4), Data("igin".utf8))
+        try Data("replaced".utf8).write(to: blob)
+        let second = try backend.commit(FileCommit(transactionID: UUID().uuidString, path: "/file", expectedVersion: first.version, finalSize: 8,
+            extents: [WriteExtent(offset: 0, length: 8, blobURL: blob)]))
+        let objectBytes = try backend.metrics().objectReadBytes
+        XCTAssertThrowsError(try backend.readSnapshot("/file", version: first.version, offset: 2, length: 4)) {
+            XCTAssertEqual(($0 as? DriveError)?.code, ESTALE)
+        }
+        XCTAssertEqual(try backend.metrics().objectReadBytes, objectBytes, "A stale snapshot fetched content")
+        XCTAssertEqual(try backend.readSnapshot("/file", version: second.version, offset: 2, length: 4), Data("plac".utf8))
+        XCTAssertThrowsError(try backend.readSnapshot("/missing", version: first.version, offset: 0, length: 1)) {
+            XCTAssertEqual(($0 as? DriveError)?.code, ENOENT)
+        }
+        XCTAssertThrowsError(try backend.readSnapshot("/file", version: second.version, offset: 0, length: 8 * 1_048_576 + 1)) {
+            XCTAssertEqual(($0 as? DriveError)?.code, EINVAL)
+        }
+        // The engine retries a changed file and returns the new version only.
+        let engine = try Engine(backend: backend, stateDirectory: root.appendingPathComponent("client-state"), minFreeBytes: 0, blockSize: 4096)
+        XCTAssertEqual(try engine.read("/file", offset: 0, length: 8), Data("replaced".utf8))
+    }
 }

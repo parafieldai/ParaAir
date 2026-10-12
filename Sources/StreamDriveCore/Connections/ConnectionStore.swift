@@ -2,6 +2,7 @@ import Foundation
 import Security
 import CryptoKit
 import Darwin
+import os
 
 public enum ConnectionProvider: String, Codable, CaseIterable, Sendable {
     case cloudflareR2, awsS3, backblazeB2, customS3
@@ -180,13 +181,37 @@ public final class ConnectionStore: @unchecked Sendable {
         }
         try value.validate(); return value
     }
-    public func list() throws -> [StorageConnection] {
-        try check(directory, directory: true)
-        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .map { try load($0.deletingPathExtension().lastPathComponent) }
+    /// Identity of a saved record file. Every save replaces the file, so a changed
+    /// stamp tells a session to re-check credentials without decoding the record.
+    struct RecordStamp: Equatable { var device: Int32; var inode: UInt64; var seconds: Int; var nanoseconds: Int }
+    func recordStamp(_ id: String) -> RecordStamp? {
+        var info = Darwin.stat()
+        guard (try? Self.validateID(id)) != nil,
+              lstat(directory.appendingPathComponent(id + ".json").path, &info) == 0 else { return nil }
+        return RecordStamp(device: info.st_dev, inode: UInt64(info.st_ino),
+                           seconds: info.st_mtimespec.tv_sec, nanoseconds: info.st_mtimespec.tv_nsec)
     }
+    /// Readable records only. One damaged or foreign record must not hide the
+    /// others, or renewal of every remaining connection would stop.
+    public func list() throws -> [StorageConnection] { try listReport().records }
+    /// Records that load and validate, plus the file names of those skipped.
+    /// Only a missing or unsafe connections directory fails the whole listing.
+    public func listReport() throws -> (records: [StorageConnection], unreadable: [String]) {
+        try check(directory, directory: true)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return ([], []) }
+        var records: [StorageConnection] = [], unreadable: [String] = []
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for file in files {
+            do { records.append(try load(file.deletingPathExtension().lastPathComponent)) }
+            catch {
+                unreadable.append(file.lastPathComponent)
+                Self.log.notice("Skipped unreadable connection record \(file.lastPathComponent, privacy: .private(mask: .hash))")
+            }
+        }
+        return (records, unreadable)
+    }
+    private static let log = Logger(subsystem: "dev.streamdrive.core", category: "connections")
     /// Explicit user-authorized sign-in/reconnect. Keep renewal and disconnect
     /// serialized with credential replacement; failed persistence stays blocked.
     public func authorize(_ connection: StorageConnection, secrets: ConnectionSecrets,

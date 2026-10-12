@@ -13,7 +13,7 @@ let package = Package(
         .systemLibrary(name: "CSQLite", pkgConfig: "sqlite3"),
         .target(name: "StreamDriveCore", dependencies: ["CSQLite"]),
         .executableTarget(name: "StreamDriveCLI", dependencies: ["StreamDriveCore"]),
-        .testTarget(name: "StreamDriveCoreTests", dependencies: ["StreamDriveCore"]),
+        .testTarget(name: "StreamDriveCoreTests", dependencies: ["StreamDriveCore", "StreamDriveCLI"]),
         .testTarget(name: "StreamDriveCLITests", dependencies: ["StreamDriveCLI", "StreamDriveCore"])
     ],
     swiftLanguageModes: [.v5]
