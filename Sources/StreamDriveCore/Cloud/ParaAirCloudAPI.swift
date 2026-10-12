@@ -7,6 +7,8 @@ struct ParaAirCloudCallError: Error {
     var drive: DriveError
     var code: ParaAirCloudErrorCode?
     var missing: [String] = []
+    var retryAfterSeconds: Int? = nil
+    var requestID: String? = nil
 }
 
 /// Typed, blocking endpoint layer for spec 2.5. Retries transient failures,
@@ -293,6 +295,67 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
         }
     }
 
+    // MARK: Billing
+
+    /// `POST /v1/billing/checkout`: the page where the owner pays, already checked by `ParaAirCloudBillingLink`. One
+    /// attempt only: every call is a processor session counted against the workspace's hourly limit, and the user can
+    /// simply try again. The plan changes when the processor's webhook arrives; reload `/v1/me` afterwards.
+    public func billingCheckout(_ request: ParaAirCloudCheckoutRequest) throws -> URL {
+        try billing(portal: false) {
+            guard request.isValid else { throw invalidRequest() }
+            var call = Call(method: "POST", path: "/v1/billing/checkout", route: "POST /v1/billing/checkout", body: try request.body(),
+                            maxResponseBytes: 64 << 10)
+            call.attempts = 1
+            return try link(perform(call), kind: .checkout)
+        }
+    }
+
+    /// `POST /v1/billing/portal`: the processor's customer portal (payment method, cancel, resume, invoices).
+    public func billingPortal(workspaceID: String) throws -> URL {
+        try billing(portal: true) {
+            guard ParaAirCloudIDs.isWorkspaceID(workspaceID) else { throw invalidRequest() }
+            var call = Call(method: "POST", path: "/v1/billing/portal", route: "POST /v1/billing/portal",
+                            body: try json(["workspaceId": workspaceID]), maxResponseBytes: 64 << 10)
+            call.attempts = 1
+            return try link(perform(call), kind: .portal)
+        }
+    }
+
+    private func link(_ response: ParaAirCloudHTTP.Response, kind: ParaAirCloudBillingLink.Kind) throws -> URL {
+        struct Body: Decodable { var url: String }
+        let body = try decode(Body.self, response)
+        do { return try ParaAirCloudBillingLink.validate(body.url, kind: kind, issuer: http.baseURL) }
+        catch let error as DriveError { throw ParaAirCloudCallError(drive: error, code: nil) }
+    }
+
+    /// Billing answers reuse the error table (contract README "Billing"), whose fixed messages describe files; these
+    /// say what the code means for a plan. The errno and disposition stay those of the table.
+    private func billing<T>(portal: Bool, _ body: () throws -> T) throws -> T {
+        do { return try body() }
+        catch let error as ParaAirCloudCallError { throw Self.billingError(error, portal: portal) }
+    }
+
+    static func billingError(_ error: ParaAirCloudCallError, portal: Bool) -> DriveError {
+        let text: String
+        switch error.code {
+        case .notFound?:
+            text = portal ? "This workspace has no paid plan to manage" : "Paid plans aren’t available for this workspace right now"
+        case .forbidden?: text = "Only the workspace owner can change its plan"
+        case .busy?: text = "This workspace already has a paid plan. Use Manage Plan to change it"
+        case .invalidRequest?: text = "ParaAir Cloud didn’t accept that plan. For Team, choose at least one seat per member"
+        case .rateLimited?:
+            let minutes = error.retryAfterSeconds.map { max(1, ($0 + 59) / 60) }
+            text = "Too many payment pages were opened for this workspace. "
+                + (minutes.map { "Try again in \($0) minute\($0 == 1 ? "" : "s")" } ?? "Try again later")
+        case .unavailable?, .internal?, .storageUnavailable?:
+            text = "Payments can’t be reached right now. Try again in a few minutes"
+        default:
+            return error.drive
+        }
+        let suffix = error.requestID.flatMap(ParaAirCloudErrorMap.validRequestID).map { " (request \($0))" } ?? ""
+        return DriveError(error.drive.code, text + suffix, disposition: error.drive.disposition)
+    }
+
     // MARK: Transport
 
     /// Returns a 2xx response or throws `ParaAirCloudCallError`.
@@ -354,7 +417,8 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
                 }
             default: break
             }
-            throw ParaAirCloudCallError(drive: mapped, code: failure.code, missing: failure.missing)
+            throw ParaAirCloudCallError(drive: mapped, code: failure.code, missing: failure.missing,
+                                        retryAfterSeconds: failure.retryAfterSeconds, requestID: response.requestID)
         }
     }
 

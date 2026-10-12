@@ -98,6 +98,17 @@ final class FakeParaAirCloud: @unchecked Sendable {
     /// The service's clock minus this Mac's: read-token expiry and every reply's `Date` header use it.
     var clockOffset: TimeInterval = 0
     var retentionDays = 30
+    /// The service's `BILLING_PROVIDER`: "none" (billing off), "stripe" or "paddle".
+    var billingProvider = "none"
+    /// Paddle's sandbox (`PADDLE_ENVIRONMENT=sandbox`): portal links use the sandbox host.
+    var paddleSandbox = false
+    /// A service from before billing: `/v1/me` has no `billing` objects.
+    var omitsBilling = false
+    /// Plans with configured prices; checkout for any other plan is 503 `unavailable`, as with a partial price map.
+    var sellablePlans: Set<String> = ["personal", "team"]
+    /// Replaces the URL a checkout or portal reply carries (to test the client's host policy).
+    var checkoutURLOverride: String?
+    var portalURLOverride: String?
 
     private let lock = NSRecursiveLock()
     private var nextID: Int64 = 1
@@ -123,12 +134,32 @@ final class FakeParaAirCloud: @unchecked Sendable {
     private var authRequests: [String: AuthRequest] = [:]
     private var authCodes: [String: AuthCode] = [:]
     private(set) var outbox: [(to: String, code: String, createdAt: Date)] = []
+    private var billingSessions: [String: [Date]] = [:]
+    /// Accepted checkout bodies, in order.
+    private(set) var checkouts: [[String: Any]] = []
+
+    /// A workspace's subscription as the service's `billing_accounts` row would describe it.
+    struct BillingAccount {
+        var provider = "stripe"
+        var state = "active"
+        var plan = "personal"
+        var interval = "month"
+        var quantity = 1
+        var storageTb = 0
+        var periodEnd: Date? = Date(timeIntervalSince1970: 1_823_040_000)
+        var cancelAtPeriodEnd = false
+        var graceEndsAt: Date?
+        var readOnlyAt: Date?
+        var deletionAt: Date?
+        var hasCustomer = true
+    }
 
     private struct Fault { var route: String; var remaining: Int; var action: FaultAction }
     private enum FaultAction { case error(status: Int, code: String, retryAfter: Int?, missing: [String]?), transport(URLError.Code, after: Bool), hang, redirect(String), raw(Reply) }
     private struct User { let id: String; let email: String; let createdAt: Date; var disabled = false }
     private struct Workspace {
-        let id: String; var name: String; var members: [String: String]; var status = "active"
+        let id: String; var name: String; var members: [String: String]; var status = "active"; var kind = "personal"
+        var billing: BillingAccount?
         var quotaOverride: Int64?; var logical: Int64 = 0; var retained: Int64 = 0; var reserved: Int64 = 0
         var nodeCount = 0; var maxNodes = 1_000_000; var bytesIn: Int64 = 0; var bytesOut: Int64 = 0; var maxDrives = 10
         var quota: Int64 { quotaOverride ?? 1_000_000_000_000 }
@@ -232,6 +263,19 @@ final class FakeParaAirCloud: @unchecked Sendable {
     func dropChunk(workspaceID: String, sha256: String) { locked { chunks[workspaceID]?[sha256] = nil } }
     func isFenced(driveID: String, transactionID: String) -> Bool { locked { fences.contains(driveID + "|" + transactionID.lowercased()) } }
     func liveDriveCount(workspaceID: String) -> Int { locked { drives.values.filter { $0.workspace == workspaceID }.count } }
+
+    /// A team workspace owned by `owner`, with no drive.
+    @discardableResult
+    func createTeamWorkspace(owner: Account, name: String = "Studio") -> String {
+        locked {
+            var workspace = Workspace(id: "ws_" + Self.base32(), name: name, members: [owner.userID: "owner"])
+            workspace.kind = "team"
+            workspaces[workspace.id] = workspace
+            return workspace.id
+        }
+    }
+    func addMember(workspaceID: String, userID: String, role: String) { locked { workspaces[workspaceID]?.members[userID] = role } }
+    func setBilling(workspaceID: String, _ account: BillingAccount?) { locked { workspaces[workspaceID]?.billing = account } }
 
     /// The head content of a live file, assembled from its chunks.
     func contents(driveID: String, path: String) -> Data? {
@@ -377,6 +421,8 @@ final class FakeParaAirCloud: @unchecked Sendable {
                                  user: (id: String, grant: String)) throws -> Reply {
         switch route {
         case "GET /v1/me": return me(user)
+        case "POST /v1/billing/checkout": return try billingCheckout(user: user.id, body: body, headers: headers)
+        case "POST /v1/billing/portal": return try billingPortal(user: user.id, body: body, headers: headers)
         case "DELETE /v1/sessions/current":
             grants[user.grant]?.revoked = true
             return Reply(status: 204)
@@ -664,13 +710,100 @@ final class FakeParaAirCloud: @unchecked Sendable {
             "user": ["id": record.id, "email": record.email, "createdAt": Self.date(record.createdAt)],
             "session": ["id": grant.id, "clientId": ParaAirCloudConfiguration.clientID, "createdAt": Self.date(grant.createdAt), "expiresAt": Self.date(grant.expiresAt)],
             "workspaces": memberships.map { workspace -> [String: Any] in
-                ["id": workspace.id, "name": workspace.name, "kind": "personal", "role": workspace.members[user.id]!, "status": workspace.status,
-                 "plan": ["id": "beta", "name": "Beta", "storageLimitBytes": workspace.quota, "transferAllowanceBytes": workspace.quota * 3,
-                          "retentionDays": retentionDays, "retentionCapBytes": workspace.quota * 15 / 100, "seats": 1, "manageUrl": NSNull()],
-                 "usage": ["storedBytes": workspace.logical, "retainedBytes": workspace.retained, "reservedBytes": workspace.reserved,
-                           "transferBytes": workspace.bytesOut, "uploadedBytes": workspace.bytesIn,
-                           "periodStart": "2026-10-01T00:00:00.000Z", "periodEnd": "2026-11-01T00:00:00.000Z", "throttled": false, "reconciledAt": NSNull()]]
+                var object: [String: Any] = [
+                    "id": workspace.id, "name": workspace.name, "kind": workspace.kind, "role": workspace.members[user.id]!, "status": workspace.status,
+                    "plan": ["id": "beta", "name": "Beta", "storageLimitBytes": workspace.quota, "transferAllowanceBytes": workspace.quota * 3,
+                             "retentionDays": retentionDays, "retentionCapBytes": workspace.quota * 15 / 100, "seats": 1, "manageUrl": NSNull()],
+                    "usage": ["storedBytes": workspace.logical, "retainedBytes": workspace.retained, "reservedBytes": workspace.reserved,
+                              "transferBytes": workspace.bytesOut, "uploadedBytes": workspace.bytesIn,
+                              "periodStart": "2026-10-01T00:00:00.000Z", "periodEnd": "2026-11-01T00:00:00.000Z", "throttled": false, "reconciledAt": NSNull()]]
+                if !omitsBilling { object["billing"] = billingView(workspace, role: workspace.members[user.id]!) }
+                return object
             }])
+    }
+
+    // MARK: Billing (the service's src/billing/api.ts, with in-memory processors)
+
+    private static let liveBillingStates: Set<String> = ["active", "past_due", "deleting"]
+
+    /// `billingView` of the service: the subscription's processor else the configured one, owner-only actions.
+    private func billingView(_ workspace: Workspace, role: String) -> [String: Any] {
+        let configured = billingProvider == "none" ? nil : billingProvider
+        let account = workspace.billing
+        let owner = role == "owner"
+        var checkout = false, portal = false
+        if let configured, owner, workspace.status != "suspended" {
+            checkout = sellablePlans.contains(workspace.kind) && !(account.map { Self.liveBillingStates.contains($0.state) } ?? false)
+            portal = account.map { $0.provider == configured && $0.hasCustomer && $0.state != "deleting" && $0.state != "deleted" } ?? false
+        }
+        func date(_ value: Date?) -> Any { value.map(Self.date) ?? NSNull() }
+        guard let account else {
+            return ["provider": configured ?? "none", "status": "none", "plan": NSNull(), "interval": NSNull(), "seats": NSNull(),
+                    "extraStorageTb": 0, "currentPeriodEnd": NSNull(), "cancelAtPeriodEnd": false, "graceEndsAt": NSNull(),
+                    "readOnlyAt": NSNull(), "deletionAt": NSNull(), "checkoutAvailable": checkout, "portalAvailable": portal]
+        }
+        return ["provider": account.provider, "status": account.state, "plan": account.plan, "interval": account.interval,
+                "seats": account.quantity, "extraStorageTb": account.storageTb, "currentPeriodEnd": date(account.periodEnd),
+                "cancelAtPeriodEnd": account.cancelAtPeriodEnd, "graceEndsAt": account.state == "past_due" ? date(account.graceEndsAt) : NSNull(),
+                "readOnlyAt": date(account.readOnlyAt), "deletionAt": date(account.deletionAt),
+                "checkoutAvailable": checkout, "portalAvailable": portal]
+    }
+
+    /// `ownerOf`: 404 for non-members (existence never leaks), then suspended, then owner only, then 20 sessions an hour.
+    private func billingOwner(user: String, _ value: Any?) throws -> Workspace {
+        guard let id = value as? String, id.range(of: "^ws_[0-9A-Z]{26}$", options: .regularExpression) != nil,
+              let workspace = workspaces[id], let role = workspace.members[user] else { throw Fail(code: "workspace_not_found") }
+        guard workspace.status != "suspended" else { throw Fail(code: "suspended") }
+        guard role == "owner" else { throw Fail(code: "forbidden") }
+        let now = Date(), recent = (billingSessions[id] ?? []).filter { now.timeIntervalSince($0) < 3600 }
+        guard recent.count < 20 else {
+            throw Fail(code: "rate_limited", retryAfter: Int((3600 - now.timeIntervalSince1970.truncatingRemainder(dividingBy: 3600)).rounded(.up)))
+        }
+        billingSessions[id] = recent + [now]
+        return workspace
+    }
+
+    private func billingCheckout(user: String, body: Data, headers: [String: String]) throws -> Reply {
+        guard billingProvider != "none" else { throw Fail(code: "not_found") }
+        let request = try jsonBody(body, headers)
+        guard let plan = request["plan"] as? String, ["personal", "team"].contains(plan),
+              let interval = request["interval"] as? String, ["month", "year"].contains(interval) else { throw Fail(code: "invalid_request") }
+        func integer(_ key: String, _ range: ClosedRange<Int>) throws -> Int? {
+            guard let raw = request[key] else { return nil }
+            guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue == Double(number.intValue),
+                  range.contains(number.intValue) else { throw Fail(code: "invalid_request") }
+            return number.intValue
+        }
+        _ = try integer("extraStorageTb", 0...100)
+        let workspace = try billingOwner(user: user, request["workspaceId"])
+        guard workspace.kind == plan else { throw Fail(code: "invalid_request") }
+        var seats = 1
+        if plan == "team" {
+            seats = try integer("seats", 1...1000) ?? max(1, workspace.members.count)
+            guard seats >= workspace.members.count else { throw Fail(code: "invalid_request") }
+        } else if let given = try integer("seats", 1...1000), given != 1 {
+            throw Fail(code: "invalid_request")
+        }
+        guard sellablePlans.contains(plan) else { throw Fail(code: "unavailable") }
+        if let account = workspace.billing, Self.liveBillingStates.contains(account.state) { throw Fail(code: "busy") }
+        checkouts.append(request)
+        let url: String
+        if billingProvider == "paddle" {
+            url = issuerString + "/billing/pay?_ptxn=txn_" + Self.base32().lowercased()
+        } else {
+            url = "https://checkout.stripe.com/c/pay/cs_test_" + Self.base32() + "#fidkdWxOYHwnPyd1blpxYHZxWjA0SDdPUW5JbmFMck1wMmx9N2BLZjFE"
+        }
+        return json(200, ["url": checkoutURLOverride ?? url])
+    }
+
+    private func billingPortal(user: String, body: Data, headers: [String: String]) throws -> Reply {
+        guard billingProvider != "none" else { throw Fail(code: "not_found") }
+        let workspace = try billingOwner(user: user, try jsonBody(body, headers)["workspaceId"])
+        guard let account = workspace.billing, account.provider == billingProvider, account.hasCustomer else { throw Fail(code: "not_found") }
+        let url = billingProvider == "paddle"
+            ? "https://\(paddleSandbox ? "sandbox-" : "")customer-portal.paddle.com/cpl_01j7zbyqs3vah3aafp4jf62qaw?action=overview&token=pga_" + Self.token43()
+            : "https://billing.stripe.com/p/session?secret=test_" + Self.token43()
+        return json(200, ["url": portalURLOverride ?? url])
     }
 
     // MARK: Files

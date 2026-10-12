@@ -150,9 +150,21 @@ public struct ParaAirCloudMe: Codable, Equatable, Sendable {
         public var status: String
         public var plan: Plan?
         public var usage: Usage?
-        public init(id: String, name: String, kind: String, role: String, status: String, plan: Plan?, usage: Usage?) {
+        /// Absent before the service had billing; a malformed object is nil too, so billing UI fails closed.
+        public var billing: ParaAirCloudBilling?
+        enum CodingKeys: String, CodingKey { case id, name, kind, role, status, plan, usage, billing }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id); name = try c.decode(String.self, forKey: .name)
+            kind = try c.decode(String.self, forKey: .kind); role = try c.decode(String.self, forKey: .role)
+            status = try c.decode(String.self, forKey: .status)
+            plan = try c.decodeIfPresent(Plan.self, forKey: .plan); usage = try c.decodeIfPresent(Usage.self, forKey: .usage)
+            billing = (try? c.decodeIfPresent(ParaAirCloudBilling.self, forKey: .billing)) ?? nil
+        }
+        public init(id: String, name: String, kind: String, role: String, status: String, plan: Plan?, usage: Usage?,
+                    billing: ParaAirCloudBilling? = nil) {
             self.id = id; self.name = name; self.kind = kind; self.role = role; self.status = status
-            self.plan = plan; self.usage = usage
+            self.plan = plan; self.usage = usage; self.billing = billing
         }
     }
     public var user: User

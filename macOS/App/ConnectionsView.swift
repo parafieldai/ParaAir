@@ -132,6 +132,10 @@ struct ConnectionsView: View {
         // One browser preference for both sign-ins in this window.
         .onChange(of: model.openDefaultBrowserAutomatically) { _, value in cloud.openDefaultBrowserAutomatically = value }
         .onChange(of: cloud.openDefaultBrowserAutomatically) { _, value in model.openDefaultBrowserAutomatically = value }
+        // ParaAir Cloud plans. Every dismissal goes through closePlans, so a checkout still being created never opens.
+        .sheet(isPresented: Binding(get: { cloud.planSheetPresented }, set: { if !$0 { cloud.closePlans() } })) {
+            CloudPlanSheet(model: cloud)
+        }
         .confirmationDialog(pendingDisconnect.map { "Disconnect \($0.name)?" } ?? "Disconnect?",
                             isPresented: Binding(get: { pendingDisconnect != nil },
                                                  set: { if !$0 { pendingDisconnect = nil } }),

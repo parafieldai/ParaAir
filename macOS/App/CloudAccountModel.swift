@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Combine
 import Darwin
 import os
 import StreamDriveCore
@@ -27,6 +28,10 @@ final class CloudAccountModel: ObservableObject {
     typealias Uploader = @Sendable (URL, DriveProfile) throws -> UploadActivity
     /// The account's drives and summary, for choosing a drive in an already signed-in folder.
     typealias DriveLister = @Sendable (URL, CloudAccount) throws -> (drives: [ParaAirCloudDrive], me: ParaAirCloudMe)
+    /// `POST /v1/billing/checkout` and `POST /v1/billing/portal`: the page to open in the browser.
+    typealias CheckoutStarter = @Sendable (URL, CloudAccount, ParaAirCloudCheckoutRequest) throws -> URL
+    typealias PortalStarter = @Sendable (URL, CloudAccount, String) throws -> URL
+    enum CheckoutState: Equatable { case idle, working, opened(URL), failed(String) }
 
     nonisolated static let inviteOnly = "ParaAir Cloud is invite-only right now. Use the email address your invite was sent to."
 
@@ -41,6 +46,11 @@ final class CloudAccountModel: ObservableObject {
     @Published private(set) var hasDrive = false
     @Published var signOutRequested = false
     @Published var developerAddress = ""
+    @Published private(set) var planSheetPresented = false
+    @Published private(set) var checkout: CheckoutState = .idle
+    /// The workspace the last checkout was for, so the sheet can tell when its plan becomes active.
+    @Published private(set) var checkoutWorkspaceID: String?
+    @Published private(set) var billingBusy = false
 
     let stateRoot: URL
     let policy: ParaAirCloudTransportPolicy
@@ -52,6 +62,14 @@ final class CloudAccountModel: ObservableObject {
     private let summaryLoader: SummaryLoader
     private let uploader: Uploader
     private let driveLister: DriveLister
+    private let checkoutStarter: CheckoutStarter
+    private let portalStarter: PortalStarter
+    private let openURL: @MainActor (URL) -> Bool
+    private var billingWatch: Task<Void, Never>?
+    private var billingWatchID = UUID()
+    /// The checkout request whose reply may still open the browser; closing the sheet replaces it.
+    private var checkoutID = UUID()
+    private var activation: AnyCancellable?
     private var profile: DriveProfile?
     private var pending: ParaAirCloudSignIn.Result?
     private var workspaceID: String?
@@ -62,7 +80,8 @@ final class CloudAccountModel: ObservableObject {
     private let log = Logger(subsystem: "dev.streamdrive.app", category: "cloud")
 
     init(stateRoot: URL, dependencies: EngineOpenDependencies = .live, baseURL: (@MainActor (URL) -> URL?)? = nil,
-         summaryLoader: SummaryLoader? = nil, uploader: Uploader? = nil, driveLister: DriveLister? = nil) {
+         summaryLoader: SummaryLoader? = nil, uploader: Uploader? = nil, driveLister: DriveLister? = nil,
+         checkoutStarter: CheckoutStarter? = nil, portalStarter: PortalStarter? = nil, openURL: (@MainActor (URL) -> Bool)? = nil) {
         self.stateRoot = stateRoot.standardizedFileURL
         self.dependencies = dependencies
         policy = dependencies.cloudPolicy
@@ -71,8 +90,14 @@ final class CloudAccountModel: ObservableObject {
         self.summaryLoader = summaryLoader ?? Self.liveSummary(dependencies)
         self.uploader = uploader ?? Self.liveUploader(dependencies)
         self.driveLister = driveLister ?? Self.liveDriveLister(dependencies)
+        self.checkoutStarter = checkoutStarter ?? Self.liveCheckout(dependencies)
+        self.portalStarter = portalStarter ?? Self.livePortal(dependencies)
+        self.openURL = openURL ?? { NSWorkspace.shared.open($0) }
         reload()
         if policy.allowsLoopbackHTTP { developerAddress = self.baseURL?.absoluteString ?? "" }
+        // Back from the browser: the payment or portal change shows as soon as the service has it.
+        activation = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in MainActor.assumeIsolated { if self?.billingWatch != nil { self?.reloadSummary() } } }
     }
 
     // MARK: State
@@ -88,8 +113,14 @@ final class CloudAccountModel: ObservableObject {
         guard let me = summary else { return nil }
         return me.workspaces.first { $0.id == workspaceID } ?? me.workspaces.first { $0.kind == "personal" } ?? me.workspaces.first
     }
-    var usage: CloudUsage { CloudUsage(workspace: workspace, state: summaryState) }
+    var usage: CloudUsage { CloudUsage(workspace: workspace, state: summaryState, planChoiceAvailable: planChoiceAvailable) }
     var manageURL: URL? { workspace?.plan?.manageUrl }
+    /// Some workspace of the account offers checkout.
+    var planChoiceAvailable: Bool { summary?.workspaces.contains { $0.billing?.checkoutAvailable == true } ?? false }
+    var planChoice: CloudPlanChoice { CloudPlanChoice.make(summary, preferredWorkspaceID: workspace?.id) }
+    var billing: CloudBillingPresentation {
+        CloudBillingPresentation.make(workspace, state: summaryState, planChoiceAvailable: planChoiceAvailable)
+    }
 
     /// Rereads this folder's account record, drive and service address. A sign-in or
     /// drive choice in progress keeps its phase.
@@ -113,6 +144,7 @@ final class CloudAccountModel: ObservableObject {
         if signedInAccount == nil, summary != nil || summaryState != .idle {
             summary = nil; summaryState = .idle; summaryLoadedAt = nil; workspaceID = nil
         }
+        if signedInAccount == nil { endBilling() }
     }
 
     private func currentAccount() -> CloudAccount? {
@@ -351,6 +383,7 @@ final class CloudAccountModel: ObservableObject {
                 let tokens = try await ParaAirCloudBlocking.run { try CloudAccountStore(root: root).signOut(account.id, vault: vault) }
                 log.notice("cloud signed out uploadFirst=\(uploadFirst)")
                 summary = nil; summaryState = .idle; summaryLoadedAt = nil; workspaceID = nil
+                endBilling()
                 phase = .signedOut
                 reload()
                 // Best effort, after the record already says signed out (spec 3.5).
@@ -359,6 +392,118 @@ final class CloudAccountModel: ObservableObject {
                 }
             } catch { message = Self.message(error) }
         }
+    }
+
+    // MARK: Plans and billing
+
+    /// The one action the billing status offers; the home window routes its buttons here too.
+    func perform(_ action: CloudBillingPresentation.Action) {
+        switch action {
+        case .choosePlan: presentPlans()
+        case .updatePayment, .managePlan: openPortal()
+        }
+    }
+
+    func presentPlans() {
+        guard signedInAccount != nil, planChoiceAvailable else { return }
+        checkoutID = UUID(); checkout = .idle; checkoutWorkspaceID = nil
+        planSheetPresented = true
+    }
+
+    /// Asks the service for a checkout and opens it in the browser. Only an issuer payment page or a documented
+    /// processor checkout host is opened (ParaAirCloudBillingLink), checked here as well as in the API. A reply
+    /// that arrives after the sheet closed opens nothing.
+    func startCheckout(_ request: ParaAirCloudCheckoutRequest) {
+        guard let account = signedInAccount, planSheetPresented else { return }
+        if case .working = checkout { return }
+        let id = UUID(); checkoutID = id
+        checkout = .working; checkoutWorkspaceID = request.workspaceID
+        let root = stateRoot, starter = checkoutStarter
+        let baseline = summary?.workspaces.first { $0.id == request.workspaceID }?.billing
+        log.notice("cloud checkout requested plan=\(request.plan.rawValue, privacy: .public) interval=\(request.interval.rawValue, privacy: .public)")
+        Task {
+            do {
+                let url = try await ParaAirCloudBlocking.run { try starter(root, account, request) }
+                guard signedInAccount == account, checkoutID == id else { return }
+                let checked = try Self.billingLink(url, kind: .checkout, account: account)
+                guard openURL(checked) else { throw DriveError(EIO, "The payment page couldn’t be opened in your browser") }
+                checkout = .opened(checked)
+                watchBilling(workspaceID: request.workspaceID, baseline: baseline)
+            } catch {
+                guard signedInAccount == account, checkoutID == id else { return }
+                log.error("cloud checkout failed errno=\(Self.code(error))")
+                checkout = .failed(Self.message(error))
+            }
+        }
+    }
+
+    func reopenCheckout() {
+        guard case .opened(let url) = checkout else { return }
+        _ = openURL(url)
+    }
+
+    /// Closes the sheet. A checkout still being created is dropped: its page never opens.
+    func closePlans() {
+        planSheetPresented = false
+        checkoutID = UUID()
+        if checkout != .idle { checkout = .idle }
+    }
+
+    /// The processor's portal for the drive's workspace (payment method, cancel, resume, invoices). A service from
+    /// before billing may instead link a plan page (`plan.manageUrl`, parafield.ai only).
+    func openPortal() {
+        guard let account = signedInAccount, let workspace, !billingBusy else { return }
+        guard let billing = workspace.billing else {
+            if let manage = manageURL { _ = openURL(manage) }
+            return
+        }
+        guard billing.portalAvailable else { return }
+        billingBusy = true; message = nil
+        let root = stateRoot, starter = portalStarter, id = workspace.id
+        Task {
+            defer { billingBusy = false }
+            do {
+                let url = try await ParaAirCloudBlocking.run { try starter(root, account, id) }
+                guard signedInAccount == account else { return }
+                let checked = try Self.billingLink(url, kind: .portal, account: account)
+                guard openURL(checked) else { throw DriveError(EIO, "The billing page couldn’t be opened in your browser") }
+                log.notice("cloud billing portal opened")
+                watchBilling(workspaceID: id, baseline: billing)
+            } catch {
+                guard signedInAccount == account else { return }
+                log.error("cloud billing portal failed errno=\(Self.code(error))")
+                message = Self.message(error)
+            }
+        }
+    }
+
+    nonisolated static func billingLink(_ url: URL, kind: ParaAirCloudBillingLink.Kind, account: CloudAccount) throws -> URL {
+        try ParaAirCloudBillingLink.validate(url.absoluteString, kind: kind, issuer: try ParaAirCloudIssuer.validate(account.issuer))
+    }
+
+    /// Reloads `/v1/me` on a widening schedule (about 15 minutes in all) until the workspace's billing changes,
+    /// and whenever ParaAir becomes active again meanwhile. The webhook, not the browser, changes the plan.
+    private func watchBilling(workspaceID: String, baseline: ParaAirCloudBilling?) {
+        billingWatch?.cancel()
+        let account = signedInAccount, id = UUID()
+        billingWatchID = id
+        billingWatch = Task { [weak self] in
+            for delay in [3, 5, 10, 15, 30, 30, 60, 60, 120, 120, 180, 240] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self, !Task.isCancelled, account != nil, self.signedInAccount == account else { return }
+                if self.summary?.workspaces.first(where: { $0.id == workspaceID })?.billing != baseline { break }
+                self.reloadSummary()
+            }
+            if let self, self.billingWatchID == id { self.billingWatch = nil }
+        }
+    }
+
+    /// Signed out: no sheet, no checkout, no polling. Unchanged values are not reassigned (each set republishes).
+    private func endBilling() {
+        billingWatch?.cancel(); billingWatch = nil; billingWatchID = UUID(); checkoutID = UUID()
+        if planSheetPresented { planSheetPresented = false }
+        if checkout != .idle { checkout = .idle }
+        if checkoutWorkspaceID != nil { checkoutWorkspaceID = nil }
     }
 
     // MARK: Developer service address
@@ -398,6 +543,14 @@ final class CloudAccountModel: ObservableObject {
             let api = try api(root: root, accountID: account.id, dependencies: dependencies)
             return (try api.drives(), try api.me())
         }
+    }
+
+    nonisolated static func liveCheckout(_ dependencies: EngineOpenDependencies) -> CheckoutStarter {
+        { root, account, request in try api(root: root, accountID: account.id, dependencies: dependencies).billingCheckout(request) }
+    }
+
+    nonisolated static func livePortal(_ dependencies: EngineOpenDependencies) -> PortalStarter {
+        { root, account, workspaceID in try api(root: root, accountID: account.id, dependencies: dependencies).billingPortal(workspaceID: workspaceID) }
     }
 
     nonisolated static func liveUploader(_ dependencies: EngineOpenDependencies) -> Uploader {

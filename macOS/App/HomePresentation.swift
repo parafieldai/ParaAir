@@ -38,6 +38,12 @@ enum CloudSummaryState: Equatable { case idle, loading, loaded, failed }
 struct CloudUsage: Equatable {
     var workspace: ParaAirCloudMe.Workspace?
     var state: CloudSummaryState
+    /// Some workspace of the account offers checkout (the plan sheet has something to sell).
+    var planChoiceAvailable = false
+
+    var billing: CloudBillingPresentation {
+        CloudBillingPresentation.make(workspace, state: state, planChoiceAvailable: planChoiceAvailable)
+    }
 }
 
 /// What the home window and menu bar panel show. Presentation only: every action maps
@@ -106,6 +112,11 @@ struct HomePresentation: Equatable {
                                              tone: .attention),
                                primary: .init(action: .signInAgain, title: "Sign In Again…"),
                                offersOpenInFinder: true)
+            } else if input.storageKind == .paraairCloud, input.cloudUsage?.workspace?.status == "read_only" {
+                // The service fences uploads and commits (403 read_only); reads keep working.
+                result = .init(status: .init(title: "Connected, read-only",
+                                             detail: "You can open and download files, but changes don’t upload.", tone: .attention),
+                               primary: .init(action: .openInFinder, title: "Open in Finder"))
             } else {
                 result = .init(status: .init(title: "Connected",
                                              detail: "Files download in pieces as apps read them.", tone: .good),
@@ -159,6 +170,7 @@ struct HomePresentation: Equatable {
         if let renewal = input.renewalError, input.connectionIssue == nil {
             result.notices.append(.init(id: "renewal", text: renewal, tone: .attention))
         }
+        if let billing = input.cloudUsage?.billing.notice, input.storageKind == .paraairCloud { result.notices.append(billing) }
         if let message = input.sidebarMessage { result.notices.append(.init(id: "sidebar", text: message, tone: .neutral)) }
         if let activity = input.uploadActivity {
             result.notices += uploadNotices(activity, cloud: input.storageKind == .paraairCloud, accessIssue: input.connectionIssue != nil)

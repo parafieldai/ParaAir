@@ -98,6 +98,10 @@ extension MenuModel {
                 self?.reload()
                 Task { await self?.refreshExtensionStatus() }
             },
-            quit: { [weak self] in self?.quit() })
+            quit: { [weak self] in self?.quit() },
+            billing: { [weak self] action in
+                show("storage-settings")
+                self?.cloudAccount.perform(action)
+            })
     }
 }

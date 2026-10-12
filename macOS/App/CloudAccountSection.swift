@@ -4,7 +4,9 @@ import StreamDriveCore
 
 /// The first section of Storage Settings. Plan and usage figures come only from
 /// `/v1/me`: the plan size leads, the used amount and its bar support it, and a failed
-/// summary shows a message and Retry instead of zeros.
+/// summary shows a message and Retry instead of zeros. The billing lines, notice and
+/// buttons follow the plan size; choosing a plan opens CloudPlanSheet (presented by
+/// ConnectionsView, outside the form rows).
 struct CloudAccountSection: View {
     @ObservedObject var model: CloudAccountModel
     var onDriveReady: (URL) -> Void = { _ in }
@@ -117,6 +119,7 @@ struct CloudAccountSection: View {
 
     @ViewBuilder private func signedIn(_ account: CloudAccount) -> some View {
         let usage = CloudUsagePresentation.make(model.workspace, state: model.summaryState)
+        let billing = model.billing
         LabeledContent("Account") { Text(account.email).textSelection(.enabled) }
         if let used = usage.usedLine {
             VStack(alignment: .leading, spacing: 6) {
@@ -145,6 +148,8 @@ struct CloudAccountSection: View {
             if let notice = usage.notice {
                 NoticeRow(notice: .init(id: "throttled", text: notice, tone: .attention))
             }
+            CloudBillingRows(billing: billing)
+            if let notice = billing.notice { NoticeRow(notice: notice) }
         } else {
             HStack(spacing: 10) {
                 if model.summaryState == .failed {
@@ -165,6 +170,8 @@ struct CloudAccountSection: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.isBusy)
             }
+            CloudBillingButtons(controls: billing.controls, allowsProminence: model.hasDrive,
+                                disabled: model.isBusy || model.billingBusy, perform: model.perform)
             Button("Sign Out…", action: model.requestSignOut)
                 .disabled(model.isBusy)
                 .confirmationDialog("Sign out of ParaAir Cloud?", isPresented: $model.signOutRequested,
@@ -180,10 +187,7 @@ struct CloudAccountSection: View {
                     Text(pendingCount > 0 ? UploadNotices.notUploaded(pendingCount)
                          : "This Mac stops reaching ParaAir Cloud until you sign in again. Files already on this Mac stay here.")
                 }
-            if let manage = model.manageURL {
-                Button("Manage Plan…") { NSWorkspace.shared.open(manage) }
-            }
-            if model.isBusy { ProgressView().controlSize(.small) }
+            if model.isBusy || model.billingBusy { ProgressView().controlSize(.small) }
         }
         if let message = model.message { ErrorLine(text: message) }
     }
@@ -206,7 +210,7 @@ struct CloudAccountSection: View {
     }
 }
 
-private struct ErrorLine: View {
+struct ErrorLine: View {
     let text: String
 
     var body: some View {

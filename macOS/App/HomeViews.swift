@@ -16,6 +16,8 @@ struct HomeActions {
     var credentialTargets: [CredentialTarget] = []
     var refresh: () -> Void = {}
     var quit: () -> Void = {}
+    /// ParaAir Cloud plan actions; they run in Storage Settings, where the plan sheet and errors show.
+    var billing: (CloudBillingPresentation.Action) -> Void = { _ in }
 }
 
 struct CredentialTarget: Identifiable {
@@ -70,8 +72,9 @@ struct DriveHomeContent: View {
                 if input.hasDrive {
                     Section("Drive") {
                         LabeledContent("Storage", value: details.storageSummary ?? "Saved storage connection")
-                        if let usage = input.cloudUsage.map({ CloudUsagePresentation.make($0.workspace, state: $0.state) }) {
-                            PlanRows(usage: usage)
+                        if let cloud = input.cloudUsage {
+                            PlanRows(usage: CloudUsagePresentation.make(cloud.workspace, state: cloud.state))
+                            CloudBillingRows(billing: cloud.billing)
                         }
                         LabeledContent("In Finder") {
                             Text(input.mounted ? (details.mountPath ?? "Mounted") : "Not connected")
@@ -79,6 +82,9 @@ struct DriveHomeContent: View {
                                 .textSelection(.enabled)
                         }
                         HStack {
+                            if let controls = input.cloudUsage?.billing.controls, !controls.isEmpty {
+                                CloudBillingButtons(controls: controls, allowsProminence: false, perform: actions.billing)
+                            }
                             Button("Drive Appearance…", action: actions.editAppearance)
                                 .disabled(!details.canEditAppearance)
                             Button("Storage Settings…", action: actions.openStorageSettings)
