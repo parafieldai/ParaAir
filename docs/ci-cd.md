@@ -102,6 +102,8 @@ This is the artifact layout of the hand-made `v0.1.0-alpha.1` release. After pub
 
 Signing variables passed to `build-app.sh`: `STREAMDRIVE_SIGN_IDENTITY` (SHA-1 of the imported identity), `STREAMDRIVE_TEAM_ID`, `STREAMDRIVE_APP_PROVISIONING_PROFILE`, `STREAMDRIVE_EXTENSION_PROVISIONING_PROFILE`, `STREAMDRIVE_CLI_PROVISIONING_PROFILE` (decoded to the runner's temp directory), `STREAMDRIVE_SIGNING_MODE=interactive`, `STREAMDRIVE_CLOUDFLARE_CLIENT_ID`, and `PARAAIR_CLOUD_BASE_URL` when set. `interactive` makes the script call `/usr/bin/codesign` directly; the default `noninteractive` mode re-launches each `codesign` in a new launchd Security session in the `gui/<uid>` domain, which has only been validated on the operator's Mac. The temporary keychain's partition list already prevents any prompt.
 
+The disk image is built by `scripts/make-dmg.sh` for both hand-made and CI releases: [dmgbuild](https://github.com/dmgbuild/dmgbuild) 1.6.7 lays out the app, an Applications link and the background from `scripts/dmg-background.swift` (a sage mid tone on which Finder's black or white icon labels both read at about 4.5:1; everything sits in the top 300 points because Finder on macOS 27 adds a toolbar band and a bottom bar).
+
 ### Site (`.github/workflows/pages.yml`)
 
 Trigger: a push to `main` that changes `site/**`, `scripts/check-site.py`, `.github/deploy-tools/**` or the workflow, or **Run workflow** on `main`. Runs `check-site.py`, then waits for approval on `production`, installs the pinned Wrangler and runs `wrangler pages deploy site --project-name=paraair --branch=main` with the commit hash and subject.

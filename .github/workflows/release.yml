@@ -196,6 +196,10 @@ jobs:
       # Same artifacts as the hand-made v0.1.0-alpha.1 release: the stapled app zipped as
       # ParaAir-<version>.zip, and ParaAir-<version>.dmg (app + Applications link), itself
       # Developer ID signed, notarized and stapled. Each with a .sha256.
+      - name: Install dmgbuild (disk image layout)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --disable-pip-version-check "dmgbuild==1.6.7"
       - name: Notarize and staple the app; build, sign, notarize and staple the disk image
         id: package
         env:
@@ -230,16 +234,14 @@ jobs:
           /usr/sbin/spctl --assess --type execute --verbose=4 "$app"
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$app"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$name.zip"
-          stage="$RUNNER_TEMP/dmg-stage"
-          mkdir -p "$stage"
-          /usr/bin/ditto "$app" "$stage/ParaAir.app"
-          ln -s /Applications "$stage/Applications"
+          # Same branded layout as hand-made releases: scripts/make-dmg.sh (dmgbuild, background,
+          # Applications link), signed there. hdiutil on hosted runners is occasionally busy, so retry.
+          volume="ParaAir $(sed -E 's/^v//; s/-(alpha|beta|rc)\./ \1 /' <<<"$TAG")"
           for attempt in 1 2 3; do
-            hdiutil create -volname ParaAir -srcfolder "$stage" -ov -format UDZO "dist/$name.dmg" && break
+            DMGBUILD="$RUNNER_TEMP/dmgbuild/bin/dmgbuild" bash scripts/make-dmg.sh "$app" "$volume" "dist/$name.dmg" "$IDENTITY" && break
             [[ "$attempt" != 3 ]] || exit 1
             sleep 10
           done
-          /usr/bin/codesign --force --sign "$IDENTITY" --timestamp "dist/$name.dmg"
           notarize "dist/$name.dmg"
           xcrun stapler staple "dist/$name.dmg"
           xcrun stapler validate "dist/$name.dmg"
