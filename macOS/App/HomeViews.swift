@@ -42,6 +42,7 @@ struct DriveHomeContent: View {
     let details: HomeDetails
     @Binding var connectAutomatically: Bool
     let actions: HomeActions
+    var loginItem: LoginItemModel?
     @State private var showsAdvanced = false
 
     private var presentation: HomePresentation { .make(input) }
@@ -93,6 +94,7 @@ struct DriveHomeContent: View {
                 }
                 Section {
                     Toggle("Connect the drive when ParaAir opens", isOn: $connectAutomatically)
+                    if let loginItem { LoginItemToggle(model: loginItem) }
                     DisclosureGroup("Advanced", isExpanded: $showsAdvanced) {
                         AdvancedControls(input: input, details: details, actions: actions)
                     }
@@ -111,6 +113,7 @@ struct MenuBarPanel: View {
     let details: HomeDetails
     @Binding var connectAutomatically: Bool
     let actions: HomeActions
+    var loginItem: LoginItemModel?
 
     var body: some View {
         let presentation = HomePresentation.make(input)
@@ -128,6 +131,7 @@ struct MenuBarPanel: View {
             }
             Toggle("Connect the drive when ParaAir opens", isOn: $connectAutomatically)
                 .toggleStyle(.checkbox)
+            if let loginItem { LoginItemToggle(model: loginItem, style: .panel) }
             Divider()
             HStack {
                 Menu("More") {

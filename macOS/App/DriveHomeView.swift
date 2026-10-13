@@ -12,7 +12,7 @@ struct DriveHomeView: View {
     var body: some View {
         DriveHomeContent(input: model.homeInputs(), details: model.homeDetails(),
                          connectAutomatically: $model.mountOnLaunch,
-                         actions: model.homeActions(openWindow: openWindow))
+                         actions: model.homeActions(openWindow: openWindow), loginItem: model.loginItem)
         .task { await model.refreshExtensionStatus() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             model.resumeAfterSettings()
