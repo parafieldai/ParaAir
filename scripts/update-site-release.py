@@ -5,7 +5,7 @@ Rewrites, in site/index.html, every element marked data-release-download (href),
 (href), data-release-label (text) and data-release-size (text). The page stays static: no script is
 needed to see the version or download it.
 
-    python3 scripts/update-site-release.py --tag v0.1.0-alpha.2 --zip dist/ParaAir-0.1.0-alpha.2.zip
+    python3 scripts/update-site-release.py --tag v0.1.0-alpha.2 --asset dist/ParaAir-0.1.0-alpha.2.dmg
 """
 
 import argparse
@@ -46,18 +46,19 @@ def set_text(html: str, marker: str, value: str) -> tuple[str, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tag", required=True)
-    parser.add_argument("--zip", required=True, type=Path)
+    parser.add_argument("--asset", "--zip", dest="asset", required=True, type=Path,
+                        help="the file the buttons download (the notarized .dmg)")
     parser.add_argument("--page", type=Path, default=Path(__file__).resolve().parent.parent / "site" / "index.html")
     args = parser.parse_args()
-    if not args.zip.is_file():
-        sys.exit(f"no such file: {args.zip}")
+    if not args.asset.is_file():
+        sys.exit(f"no such file: {args.asset}")
     html = args.page.read_text(encoding="utf-8")
-    download = f"{REPO}/releases/download/{args.tag}/{args.zip.name}"
+    download = f"{REPO}/releases/download/{args.tag}/{args.asset.name}"
     notes = f"{REPO}/releases/tag/{args.tag}"
     html, downloads = set_attr(html, "data-release-download", "href", download)
     html, note_links = set_attr(html, "data-release-notes", "href", notes)
     html, labels = set_text(html, "data-release-label", label(args.tag))
-    html, sizes = set_text(html, "data-release-size", size(args.zip))
+    html, sizes = set_text(html, "data-release-size", size(args.asset))
     if not (downloads and note_links and labels and sizes):
         sys.exit("site/index.html is missing a data-release-download, -notes, -label or -size element")
     args.page.write_text(html, encoding="utf-8")
