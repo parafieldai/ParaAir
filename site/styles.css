@@ -127,6 +127,9 @@ p { margin: 0; }
 .cta:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -8px; }
 .cta:hover::after { transform: translateX(120%); transition: transform 700ms var(--ease-out); }
 .requires { font-size: var(--text-sm); color: var(--ink-3); }
+.requires a { color: var(--ink-2); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.requires a:hover { color: var(--ink); }
+.requires a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 
 /* Masthead */
 .masthead {
@@ -337,3 +340,4 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: -0.015em
   .access.is-armed .access-mark { transform: none; }
   .cta:hover::after { transition: none; transform: translateX(-120%); }
 }
+.access-notes { display: grid; gap: var(--space-xs); justify-items: center; }
