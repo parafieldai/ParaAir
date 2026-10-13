@@ -99,18 +99,24 @@ final class ProfileTests: XCTestCase {
         XCTAssertNoThrow(try valid.validate())
         var loopback = valid; loopback.cloudIssuer = "http://127.0.0.1:8787"
         XCTAssertNoThrow(try loopback.validate())
+        var withWorkspace = valid; withWorkspace.cloudWorkspaceID = "ws_01J9ZX5Q4WJ3M8K2V7N6R1T0YC"
+        XCTAssertNoThrow(try withWorkspace.validate())
+        XCTAssertTrue(valid.targetsSameStorage(as: withWorkspace), "the saved workspace is not part of the storage target")
         var broken: [DriveProfile] = []
         for change in [{ (p: inout DriveProfile) in p.cloudIssuer = nil }, { $0.cloudAccountID = nil }, { $0.cloudDriveID = nil },
                        { $0.cloudIssuer = "https://cloud.example.test/" }, { $0.cloudIssuer = "http://cloud.example.test" },
                        { $0.cloudAccountID = "0F8FAD5B-D9CB-469F-A165-70867728950E" }, { $0.cloudDriveID = "not-a-uuid" },
                        { $0.metadataURL = "redis://nas/1" }, { $0.localRoot = "/fixture" }, { $0.libraryPath = "/lib.dylib" },
                        { $0.credentialID = "cred" }, { $0.objectCredentialID = "keys" },
-                       { $0.connectionID = "0f8fad5b-d9cb-469f-a165-70867728950e" }] as [(inout DriveProfile) -> Void] {
+                       { $0.connectionID = "0f8fad5b-d9cb-469f-a165-70867728950e" }, { $0.cloudWorkspaceID = "ws_short" },
+                       { $0.cloudWorkspaceID = "drv_01J9ZX5Q4WJ3M8K2V7N6R1T0YC" }] as [(inout DriveProfile) -> Void] {
             var profile = valid; change(&profile); broken.append(profile)
         }
         var local = DriveProfile(name: "fixture", backend: .local, localRoot: "/fixture"); local.cloudDriveID = valid.cloudDriveID
         var juicefs = DriveProfile(name: "remote", metadataURL: "redis://nas/1"); juicefs.cloudIssuer = valid.cloudIssuer
-        broken += [local, juicefs]
+        var localWorkspace = DriveProfile(name: "fixture", backend: .local, localRoot: "/fixture")
+        localWorkspace.cloudWorkspaceID = withWorkspace.cloudWorkspaceID
+        broken += [local, juicefs, localWorkspace]
         for profile in broken { XCTAssertThrowsError(try profile.validate(), "\(profile)") }
         var otherAccount = valid; otherAccount.cloudAccountID = "1f8fad5b-d9cb-469f-a165-70867728950e"
         XCTAssertTrue(valid.targetsSameStorage(as: otherAccount), "another member's account may replace the profile")
@@ -127,6 +133,9 @@ final class ProfileTests: XCTestCase {
         XCTAssertThrowsError(try store.save(otherDrive, overwrite: true)) { XCTAssertEqual(($0 as? DriveError)?.code, EXDEV) }
         let json = try String(contentsOf: root.appendingPathComponent("profiles/cloud.json"), encoding: .utf8)
         XCTAssertTrue(json.contains("\"backend\" : \"paraairCloud\""))
+        XCTAssertFalse(json.contains("cloudWorkspaceID"), "a profile without a saved workspace keeps the earlier file format")
+        try store.save(withWorkspace, overwrite: true)
+        XCTAssertEqual(try store.load("cloud").cloudWorkspaceID, withWorkspace.cloudWorkspaceID)
     }
 
     func testBindingDigestUnchangedForExistingProfiles() throws {

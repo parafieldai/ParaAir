@@ -40,9 +40,11 @@ struct CloudUsage: Equatable {
     var state: CloudSummaryState
     /// Some workspace of the account offers checkout (the plan sheet has something to sell).
     var planChoiceAvailable = false
+    /// A payment page for this workspace is open and not yet paid.
+    var pendingCheckout = false
 
     var billing: CloudBillingPresentation {
-        CloudBillingPresentation.make(workspace, state: state, planChoiceAvailable: planChoiceAvailable)
+        CloudBillingPresentation.make(workspace, state: state, planChoiceAvailable: planChoiceAvailable, pendingCheckout: pendingCheckout)
     }
 }
 
@@ -113,9 +115,11 @@ struct HomePresentation: Equatable {
                                primary: .init(action: .signInAgain, title: "Sign In Again…"),
                                offersOpenInFinder: true)
             } else if input.storageKind == .paraairCloud, input.cloudUsage?.workspace?.status == "read_only" {
-                // The service fences uploads and commits (403 read_only); reads keep working.
+                // The service refuses uploads, commits and new folders (403 read_only); reads, deletes, moves and
+                // restores from the trash keep working (contract README "Billing"; subscription policy 16.1).
                 result = .init(status: .init(title: "Connected, read-only",
-                                             detail: "You can open and download files, but changes don’t upload.", tone: .attention),
+                                             detail: "You can open, download, move and delete files. New and changed files don’t upload.",
+                                             tone: .attention),
                                primary: .init(action: .openInFinder, title: "Open in Finder"))
             } else {
                 result = .init(status: .init(title: "Connected",

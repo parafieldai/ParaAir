@@ -118,7 +118,7 @@ struct CloudAccountSection: View {
     // MARK: Signed in
 
     @ViewBuilder private func signedIn(_ account: CloudAccount) -> some View {
-        let usage = CloudUsagePresentation.make(model.workspace, state: model.summaryState)
+        let usage = CloudUsagePresentation.make(model.workspace, state: model.presentationState)
         let billing = model.billing
         LabeledContent("Account") { Text(account.email).textSelection(.enabled) }
         if let used = usage.usedLine {
@@ -152,14 +152,14 @@ struct CloudAccountSection: View {
             if let notice = billing.notice { NoticeRow(notice: notice) }
         } else {
             HStack(spacing: 10) {
-                if model.summaryState == .failed {
+                if model.presentationState == .failed {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                         .accessibilityHidden(true)
                 } else {
                     ProgressView().controlSize(.small)
                 }
                 Text(usage.planLine).foregroundStyle(.secondary)
-                if model.summaryState == .failed {
+                if model.presentationState == .failed {
                     Button("Retry") { model.reloadSummary() }
                 }
             }
