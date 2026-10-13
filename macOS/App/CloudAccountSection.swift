@@ -17,7 +17,7 @@ struct CloudAccountSection: View {
             switch model.phase {
             case .notConfigured:
                 Text("ParaAir Cloud isn’t available in this build.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Glide.quiet)
             case .signedOut:
                 signedOut(error: nil)
             case .failed(let error):
@@ -31,7 +31,7 @@ struct CloudAccountSection: View {
             }
             if model.policy.allowsLoopbackHTTP { developerAddress }
         } header: {
-            Text("ParaAir Cloud")
+            Text("ParaAir Cloud").font(.glideHeading).foregroundStyle(Glide.ink)
         }
     }
 
@@ -42,9 +42,10 @@ struct CloudAccountSection: View {
             .fixedSize(horizontal: false, vertical: true)
         if let error { ErrorLine(text: error) }
         Toggle("Open the sign-in page in my default browser", isOn: $model.openDefaultBrowserAutomatically)
+            .glideControlTint()
         HStack(spacing: 10) {
             Button("Sign In to ParaAir Cloud…") { model.signIn(onReady: onDriveReady) }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glideProminent)
                 .disabled(model.isBusy || model.baseURL == nil)
         }
         if let message = model.message { ErrorLine(text: message) }
@@ -67,7 +68,7 @@ struct CloudAccountSection: View {
                     Button("Copy Link", action: model.copyAuthorizationLink)
                 }
                 Text("Paste this link into the browser profile you want to sign in with.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(Glide.quiet)
             }
         }
     }
@@ -80,7 +81,7 @@ struct CloudAccountSection: View {
         }
         Text(drives.isEmpty ? "Create a drive to see ParaAir Cloud in Finder on this Mac."
              : "Choose the drive to show in Finder on this Mac, or create a new one.")
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Glide.quiet)
             .fixedSize(horizontal: false, vertical: true)
         LabeledContent {
             TextField("Name in Finder", text: $finderName, prompt: Text(CloudDriveSetup.defaultFinderName))
@@ -101,7 +102,7 @@ struct CloudAccountSection: View {
         }
         HStack(spacing: 10) {
             if drives.isEmpty {
-                Button("Create Drive") { create() }.buttonStyle(.borderedProminent).disabled(model.isBusy)
+                Button("Create Drive") { create() }.buttonStyle(.glideProminent).disabled(model.isBusy)
             } else {
                 Button("Create Drive") { create() }.disabled(model.isBusy)
             }
@@ -124,14 +125,14 @@ struct CloudAccountSection: View {
         if let used = usage.usedLine {
             VStack(alignment: .leading, spacing: 6) {
                 Text(usage.planLine)
-                    .font(.title2.weight(.semibold))
+                    .font(.glideDisplay(.title))
                     .monospacedDigit()
                 Text(used)
                     .font(.callout).monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Glide.quiet)
                 if let fraction = usage.fraction {
                     ProgressView(value: fraction)
-                        .tint(fraction >= 1 ? .orange : nil)
+                        .tint(fraction >= 1 ? Glide.attention : Glide.controlTint)
                         .accessibilityLabel(used)
                 }
             }
@@ -143,7 +144,7 @@ struct CloudAccountSection: View {
                     if let transfer = usage.transferLine { Text(transfer) }
                 }
                 .font(.callout).monospacedDigit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Glide.quiet)
             }
             if let notice = usage.notice {
                 NoticeRow(notice: .init(id: "throttled", text: notice, tone: .attention))
@@ -153,12 +154,12 @@ struct CloudAccountSection: View {
         } else {
             HStack(spacing: 10) {
                 if model.presentationState == .failed {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Glide.attention)
                         .accessibilityHidden(true)
                 } else {
                     ProgressView().controlSize(.small)
                 }
-                Text(usage.planLine).foregroundStyle(.secondary)
+                Text(usage.planLine).foregroundStyle(Glide.quiet)
                 if model.presentationState == .failed {
                     Button("Retry") { model.reloadSummary() }
                 }
@@ -167,7 +168,7 @@ struct CloudAccountSection: View {
         HStack(spacing: 10) {
             if !model.hasDrive {
                 Button("Create Drive…", action: model.chooseDrive)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glideProminent)
                     .disabled(model.isBusy)
             }
             CloudBillingButtons(controls: billing.controls, allowsProminence: model.hasDrive,
@@ -201,7 +202,7 @@ struct CloudAccountSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 TextField("Service address", text: $model.developerAddress, prompt: Text("http://127.0.0.1:8787"))
                 Text("This build may use a local ParaAir Cloud service. The address is saved in this state folder only.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(Glide.quiet)
                 Button("Save Address", action: model.saveDeveloperAddress)
                     .disabled(model.isBusy)
             }
@@ -217,7 +218,7 @@ struct ErrorLine: View {
         Label {
             Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         } icon: {
-            Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+            Image(systemName: "xmark.octagon.fill").foregroundStyle(Glide.problem)
         }
         .font(.callout)
     }

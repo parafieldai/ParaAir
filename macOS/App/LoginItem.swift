@@ -122,24 +122,26 @@ struct LoginItemToggle: View {
         switch style {
         case .form:
             Toggle(Self.title, isOn: isOn)
+                .glideControlTint()
                 .disabled(model.needsApproval)
                 .modifier(LiveLoginItemStatus(model: model))
             if let note {
                 LabeledContent {
                     Button(Self.settingsButton, action: model.openSystemSettings)
                 } label: {
-                    Text(note).foregroundStyle(.secondary)
+                    Text(note).foregroundStyle(Glide.quiet)
                 }
             }
         case .panel:
             VStack(alignment: .leading, spacing: 6) {
                 Toggle(Self.title, isOn: isOn)
                     .toggleStyle(.checkbox)
+                    .glideControlTint()
                     .disabled(model.needsApproval)
                 if let note {
                     // Stacked: the panel is too narrow for the note and the button on one line.
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(note).font(.callout).foregroundStyle(.secondary)
+                        Text(note).font(.callout).foregroundStyle(Glide.quiet)
                             .fixedSize(horizontal: false, vertical: true)
                         Button(Self.settingsButton, action: model.openSystemSettings)
                             .controlSize(.small)

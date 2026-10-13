@@ -42,13 +42,13 @@ struct ConnectionsView: View {
                     }
                 } header: {
                     HStack {
-                        Text("Saved storage")
+                        Text("Saved storage").font(.glideHeading).foregroundStyle(Glide.ink)
                         Spacer()
                         Button("Refresh", action: model.reload).disabled(model.isBusy).controlSize(.small)
                     }
                 } footer: {
                     Text("Disconnecting stops this Mac from reaching that storage. Files waiting to upload and the local cache stay on this Mac.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Glide.quiet)
                 }
             }
 
@@ -63,10 +63,10 @@ struct ConnectionsView: View {
                 TextField("Name", text: $model.connectionName, prompt: Text("Shown in ParaAir"))
                     .disabled(model.isBusy)
             } header: {
-                Text(model.isReconnecting ? "Sign in again" : "Add your own storage")
+                Text(model.isReconnecting ? "Sign in again" : "Add your own storage").font(.glideHeading).foregroundStyle(Glide.ink)
             } footer: {
                 Text("Choose your storage, authorize access, then pick the bucket ParaAir should use.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Glide.quiet)
             }
 
             Section {
@@ -82,7 +82,7 @@ struct ConnectionsView: View {
             Section {
                 HStack(spacing: 10) {
                     Button("Verify and Save", action: model.verifyAndSave)
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.glideProminent)
                         .keyboardShortcut(.defaultAction)
                         .disabled(model.isBusy || !model.canVerify)
                     if model.isBusy {
@@ -93,9 +93,9 @@ struct ConnectionsView: View {
                 Label {
                     Text(model.status).fixedSize(horizontal: false, vertical: true)
                 } icon: {
-                    Image(systemName: model.isBusy ? "clock.fill" : "info.circle").foregroundStyle(.secondary)
+                    Image(systemName: model.isBusy ? "clock.fill" : "info.circle").foregroundStyle(Glide.quiet)
                 }
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(Glide.quiet)
                 if let authorizationURL = model.publicAuthorizationURL {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Browser sign-in link").font(.caption)
@@ -104,7 +104,7 @@ struct ConnectionsView: View {
                             Button("Copy Link", action: model.copyAuthorizationLink)
                         }
                         Text("Paste this link into the browser profile you want to authorize.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(Glide.quiet)
                     }
                 }
                 if model.showDriveHomeAction {
@@ -114,13 +114,14 @@ struct ConnectionsView: View {
                     Label {
                         Text(error).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     } icon: {
-                        Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                        Image(systemName: "xmark.octagon.fill").foregroundStyle(Glide.problem)
                     }
                     .font(.callout)
                 }
             }
         }
         .formStyle(.grouped)
+        .glideSurface()
         .frame(minWidth: 620, idealWidth: 680, minHeight: 620)
         .onAppear {
             model.reload(); applyReconnectRequest()
@@ -163,7 +164,7 @@ struct ConnectionsView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         TextField("Registered public client ID", text: $model.cloudflareClientID)
                         Text("Register a public PKCE client with callback http://127.0.0.1:49731/oauth/callback, account-settings.read, workers-r2.write and refresh-token support. No client secret belongs in this app.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(Glide.quiet)
                         HStack {
                             Button("Save Registration", action: model.saveRegistration)
                             Link("Registration documentation", destination: URL(string: "https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/")!)
@@ -172,6 +173,7 @@ struct ConnectionsView: View {
                 }
             }
             Toggle("Open the sign-in page in my default browser", isOn: $model.openDefaultBrowserAutomatically)
+                .glideControlTint()
             LabeledContent {
                 Button("Sign In with Cloudflare", action: model.signInCloudflare)
             } label: {
@@ -180,7 +182,7 @@ struct ConnectionsView: View {
             }
             if model.cloudflareAuthorized {
                 if model.cloudflareAccounts.isEmpty {
-                    Text("No authorized Cloudflare accounts were returned.").foregroundStyle(.secondary)
+                    Text("No authorized Cloudflare accounts were returned.").foregroundStyle(Glide.quiet)
                 } else {
                     Picker("Account", selection: Binding(get: { model.cloudflareAccountID }, set: { model.selectCloudflareAccount($0) })) {
                         Text("Choose an account").tag("")
@@ -204,7 +206,7 @@ struct ConnectionsView: View {
                             case .failed: Text("The bucket list couldn’t load. Check the message below, then reload.")
                             }
                         }
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Glide.quiet)
                         Spacer()
                         Button("Reload Buckets", action: model.loadCloudflareBuckets).controlSize(.small)
                     }
@@ -229,7 +231,7 @@ struct ConnectionsView: View {
     private var awsFields: some View {
         Group {
             Text("AWS sign-in uses IAM Identity Center. Your organization provides the start URL and region.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(Glide.quiet)
             TextField("Start URL", text: $model.awsStartURL, prompt: Text("https://example.awsapps.com/start"))
                 .disabled(model.isReconnecting)
             TextField("Identity Center region", text: $model.awsSSORegion, prompt: Text("us-east-1"))
@@ -243,19 +245,19 @@ struct ConnectionsView: View {
                     Text("Choose an account").tag("")
                     ForEach(model.awsAccounts) { Text($0.accountName ?? $0.accountID).tag($0.accountID) }
                 }.disabled(model.isReconnecting)
-                if model.awsAccounts.isEmpty { Text("No AWS accounts are assigned to this sign-in.").foregroundStyle(.secondary) }
+                if model.awsAccounts.isEmpty { Text("No AWS accounts are assigned to this sign-in.").foregroundStyle(Glide.quiet) }
                 if !model.awsAccountID.isEmpty {
                     Picker("Role", selection: $model.awsRoleName) {
                         Text("Choose a role").tag("")
                         ForEach(model.awsRoles) { Text($0.roleName).tag($0.roleName) }
                     }.disabled(model.isReconnecting)
-                    if model.awsRoles.isEmpty { Text("No roles were returned for this account.").foregroundStyle(.secondary) }
+                    if model.awsRoles.isEmpty { Text("No roles were returned for this account.").foregroundStyle(Glide.quiet) }
                 }
             }
             TextField("Bucket", text: $model.bucketName, prompt: Text("existing-bucket-name")).disabled(model.isReconnecting)
             TextField("Bucket region", text: $model.bucketRegion, prompt: Text("us-west-2")).disabled(model.isReconnecting)
             Text("The bucket region can differ from the Identity Center region. ParaAir checks access to an existing bucket; it doesn’t create AWS buckets.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(Glide.quiet)
         }
     }
 
@@ -279,7 +281,7 @@ struct ConnectionsView: View {
             SecureField(model.provider == .backblazeB2 ? "Application key" : "Secret access key", text: $model.secretKey)
             SecureField("Session token (optional)", text: $model.sessionToken)
             Text("Keys are saved in this Mac’s Keychain. The saved connection keeps only the storage address and bucket.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(Glide.quiet)
         }
     }
 }
@@ -300,9 +302,9 @@ private struct SavedConnectionRow: View {
                 } icon: {
                     Image(systemName: symbol).foregroundStyle(color)
                 }
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(Glide.quiet)
                 if let bucket = connection.bucket {
-                    Text(bucket).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    Text(bucket).font(.caption.monospaced()).foregroundStyle(Glide.quiet)
                 }
             }
             Spacer()
@@ -328,8 +330,8 @@ private struct SavedConnectionRow: View {
     }
     private var color: Color {
         switch connection.state {
-        case .storageReady: return .green
-        case .needsSignIn: return .orange
+        case .storageReady: return Glide.good
+        case .needsSignIn: return Glide.attention
         case .authorized, .disconnected: return .secondary
         }
     }
