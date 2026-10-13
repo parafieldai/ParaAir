@@ -34,13 +34,15 @@ struct CloudBillingButtons: View {
     }
 }
 
-/// Choose a plan, read the checkout terms and agree, then pay in the browser. The terms box and its two unticked
-/// boxes come before any checkout opens (subscription policy 7.1, Appendix E1), and fit the sheet without scrolling.
+/// Choose a plan, read the checkout terms and agree, then pay in the browser. Prices, the merchant of record and the
+/// terms come from the service's offer (`GET /v1/billing/offer`), so the box shows exactly what checkout records and
+/// charges. The terms box and its two unticked boxes come before any checkout opens (subscription policy 7.1,
+/// Appendix E1), and fit the sheet without scrolling. While a payment page is open the sheet shows it, never a second
+/// checkout.
 struct CloudPlanSheet: View {
     enum Step: Equatable { case choose, review }
 
     @ObservedObject var model: CloudAccountModel
-    private let now: Date
     @State private var step: Step
     @State private var plan: ParaAirCloudBilling.Plan
     @State private var interval: ParaAirCloudBilling.Interval
@@ -48,11 +50,12 @@ struct CloudPlanSheet: View {
     @State private var teamWorkspaceID: String?
     @State private var agreesToRenewal: Bool
     @State private var agreesToTerms: Bool
+    @State private var confirmingStartOver = false
 
     /// The arguments past `model` set a starting state for the offscreen snapshot harness.
     init(model: CloudAccountModel, step: Step = .choose, plan: ParaAirCloudBilling.Plan? = nil, interval: ParaAirCloudBilling.Interval = .month,
-         seats: Int? = nil, agreed: Bool = false, now: Date = Date()) {
-        self.model = model; self.now = now
+         seats: Int? = nil, agreed: Bool = false) {
+        self.model = model
         let choice = model.planChoice
         _step = State(initialValue: step)
         _plan = State(initialValue: plan ?? (choice.personal.available || !choice.team.available ? .personal : .team))
@@ -69,6 +72,13 @@ struct CloudPlanSheet: View {
         return option.workspaces.first { plan == .personal || $0.id == teamWorkspaceID } ?? option.workspaces.first
     }
     private var working: Bool { model.checkout == .working }
+    private var loadedOffer: ParaAirCloudBillingOffer? {
+        if case .loaded(let offer) = model.offer { return offer }
+        return nil
+    }
+    private var selection: ParaAirCloudOfferRequest {
+        ParaAirCloudOfferRequest(plan: plan, interval: interval, seats: plan == .team ? seats : 1)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -82,6 +92,24 @@ struct CloudPlanSheet: View {
         }
         .padding(24)
         .frame(width: 640, alignment: .leading)
+        .onChange(of: model.quote) { _, _ in agreesToRenewal = false; agreesToTerms = false }
+        .onChange(of: model.offer) { _, _ in adoptOffer() }
+        .confirmationDialog("Start over with a new payment page?", isPresented: $confirmingStartOver, titleVisibility: .visible) {
+            Button("Start Over") { step = .choose; model.startOver() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Use this if you closed the payment page without paying. When you continue to payment again, the page you opened "
+                 + "before stops working, so you can’t pay twice.")
+        }
+    }
+
+    /// The offer arrived after the sheet opened: start on a plan that is on sale, and on the first team that can buy one.
+    private func adoptOffer() {
+        let other: ParaAirCloudBilling.Plan = plan == .personal ? .team : .personal
+        if !choice.option(plan).available, choice.option(other).available { plan = other }
+        if teamWorkspaceID == nil || !choice.team.workspaces.contains(where: { $0.id == teamWorkspaceID }) {
+            teamWorkspaceID = choice.team.workspaces.first?.id
+        }
     }
 
     private func header(_ title: String, _ detail: String?) -> some View {
@@ -89,16 +117,51 @@ struct CloudPlanSheet: View {
             GlideMark().frame(width: 36, height: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.title2.weight(.semibold))
-                if let detail { Text(detail).foregroundStyle(.secondary) }
+                if let detail { Text(detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
         }
         .accessibilityElement(children: .combine)
     }
 
+    /// "Sold by Paddle, our reseller." or "Sold by Parafield Inc.", from the offer (policy 2.2).
+    static func seller(_ offer: ParaAirCloudBillingOffer) -> String {
+        let text = "Sold by \(offer.merchant.name)\(offer.merchant.reseller ? ", our reseller" : "")"
+        return text.hasSuffix(".") ? text : text + "."
+    }
+
     // MARK: Choose
 
     @ViewBuilder private var choose: some View {
-        header("Choose a ParaAir Cloud plan", "Prices in US dollars. Tax is added at checkout.")
+        if let offer = loadedOffer {
+            header("Choose a ParaAir Cloud plan",
+                   "Prices in \(offer.currency == "USD" ? "US dollars" : offer.currency), before tax. \(Self.seller(offer))")
+            if offer.sells(.personal) || offer.sells(.team) {
+                cards(offer)
+            } else {
+                Text("Plans can’t be bought right now.").foregroundStyle(.secondary)
+                HStack { Spacer(); Button("Close", role: .cancel) { model.closePlans() }.keyboardShortcut(.cancelAction) }
+            }
+        } else {
+            header("Choose a ParaAir Cloud plan", nil)
+            if case .failed(let message) = model.offer {
+                ErrorLine(text: message)
+                HStack {
+                    Spacer()
+                    Button("Cancel", role: .cancel) { model.closePlans() }.keyboardShortcut(.cancelAction)
+                    Button("Try Again") { model.loadOffer() }.keyboardShortcut(.defaultAction)
+                }
+            } else {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading plans…").foregroundStyle(.secondary)
+                }
+                HStack { Spacer(); Button("Cancel", role: .cancel) { model.closePlans() }.keyboardShortcut(.cancelAction) }
+            }
+        }
+    }
+
+    @ViewBuilder private func cards(_ offer: ParaAirCloudBillingOffer) -> some View {
+        let priced = offer.unitAmountCents(plan, interval) != nil
         Picker("Billing period", selection: $interval) {
             Text("Monthly").tag(ParaAirCloudBilling.Interval.month)
             Text("Yearly").tag(ParaAirCloudBilling.Interval.year)
@@ -107,28 +170,37 @@ struct CloudPlanSheet: View {
         .labelsHidden()
         .fixedSize()
         HStack(alignment: .top, spacing: 12) {
-            PlanCard(option: choice.personal, offer: .make(.personal, interval: interval, seats: 1), selected: plan == .personal) {
+            PlanCard(option: choice.personal,
+                     offer: CloudPlanOffer.make(.personal, interval: interval, seats: 1, offer: offer) ?? .unpriced(.personal, interval: interval),
+                     selected: plan == .personal) {
                 plan = .personal
             } footer: {
                 EmptyView()
             }
             PlanCard(option: choice.team,
-                     offer: choice.team.available ? .make(.team, interval: interval, seats: seats) : .perMember(interval: interval),
+                     offer: (choice.team.available ? CloudPlanOffer.make(.team, interval: interval, seats: seats, offer: offer)
+                             : CloudPlanOffer.perSeat(interval: interval, offer: offer)) ?? .unpriced(.team, interval: interval),
                      selected: plan == .team) {
                 plan = .team
             } footer: {
                 Stepper(value: $seats, in: 1...ParaAirCloudBillingCatalog.maxSeats) {
-                    Text(seats == 1 ? "1 member" : "\(seats) members").monospacedDigit()
+                    Text(seats == 1 ? "1 seat" : "\(seats) seats").monospacedDigit()
                 }
-                .accessibilityLabel("Team members")
+                .accessibilityLabel("Team seats")
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-        if plan == .team, choice.team.workspaces.count > 1 {
-            Picker("Team workspace", selection: $teamWorkspaceID) {
-                ForEach(choice.team.workspaces) { Text($0.name).tag(Optional($0.id)) }
+        if plan == .team, let target {
+            HStack(spacing: 12) {
+                if choice.team.workspaces.count > 1 {
+                    Picker("Team workspace", selection: $teamWorkspaceID) {
+                        ForEach(choice.team.workspaces) { Text($0.name).tag(Optional($0.id)) }
+                    }
+                    .frame(maxWidth: 300)
+                }
+                Text("Choose at least one seat for each member of \(target.name).")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: 360)
         }
         HStack {
             Spacer()
@@ -136,26 +208,66 @@ struct CloudPlanSheet: View {
                 .keyboardShortcut(.cancelAction)
             Button("Continue") {
                 agreesToRenewal = false; agreesToTerms = false
+                // Fresh terms each time: the renewal date in them is the day of the checkout.
+                model.loadQuote(selection, force: true)
                 step = .review
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(target == nil)
+            .disabled(target == nil || !priced)
         }
     }
 
     // MARK: Review
 
     @ViewBuilder private func review(_ workspace: ParaAirCloudMe.Workspace) -> some View {
-        let units = plan == .team ? seats : 1
-        let disclosure = ParaAirCloudCheckoutDisclosure.make(plan: plan, interval: interval, seats: units, storageTb: 0, now: now,
-                                                             seller: workspace.billing?.provider ?? .none)
-        header("Review and agree", plan == .team ? "For \(workspace.name)" : "For your personal workspace")
+        let shown: CloudAccountModel.Quote? = {
+            if case .loaded(let quote) = model.quote, quote.selection == selection { return quote }
+            return nil
+        }()
+        let detail = [plan == .team ? "For \(workspace.name)." : "For your personal workspace.",
+                      (shown?.offer ?? loadedOffer).map(Self.seller)].compactMap { $0 }.joined(separator: " ")
+        header("Review and agree", detail)
+        if let shown {
+            terms(shown.terms)
+        } else if case .failed(let failed, let message) = model.quote, failed == selection {
+            ErrorLine(text: message)
+        } else {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Loading the plan terms…").foregroundStyle(.secondary)
+            }
+        }
+        if case .failed(let message) = model.checkout { ErrorLine(text: message) }
+        HStack(spacing: 10) {
+            Button("Back") { step = .choose }.disabled(working)
+            Spacer()
+            if working { ProgressView().controlSize(.small).accessibilityLabel("Opening the payment page") }
+            if case .failed(let failed, _) = model.quote, failed == selection {
+                Button("Try Again") { model.loadQuote(selection, force: true) }
+            }
+            Button("Cancel", role: .cancel) { model.closePlans() }
+                .keyboardShortcut(.cancelAction)
+            Button("Agree and Continue to Payment") {
+                guard let shown else { return }
+                model.startCheckout(ParaAirCloudCheckoutRequest(
+                    workspaceID: workspace.id, plan: plan, interval: interval, seats: selection.seats,
+                    consent: ParaAirCloudCheckoutConsent(disclosureVersion: shown.offer.disclosureVersion, autoRenew: agreesToRenewal,
+                                                         terms: agreesToTerms)))
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(shown == nil || !agreesToRenewal || !agreesToTerms || working || model.pendingCheckout != nil)
+        }
+    }
+
+    /// The service's box (Appendix A) above its two consent sentences, each with an unticked box.
+    @ViewBuilder private func terms(_ terms: ParaAirCloudCheckoutTerms) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(disclosure.heading).font(.headline)
-            Text(disclosure.priceLine).fontWeight(.medium)
+            Text(terms.heading).font(.headline)
+            Text(terms.priceLine).fontWeight(.medium)
             VStack(alignment: .leading, spacing: 5) {
-                ForEach(disclosure.bullets, id: \.self) { bullet in
+                ForEach(Array(terms.bullets.enumerated()), id: \.offset) { _, bullet in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text("•").foregroundStyle(.secondary).accessibilityHidden(true)
                         Text(bullet).fixedSize(horizontal: false, vertical: true)
@@ -169,35 +281,33 @@ struct CloudPlanSheet: View {
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(nsColor: .separatorColor)))
         .accessibilityElement(children: .combine)
         VStack(alignment: .leading, spacing: 8) {
-            Toggle(isOn: $agreesToRenewal) { Text(disclosure.renewalConsent).fixedSize(horizontal: false, vertical: true) }
-            Toggle(isOn: $agreesToTerms) { Text(disclosure.documentsConsent).fixedSize(horizontal: false, vertical: true) }
+            Toggle(isOn: $agreesToRenewal) { Text(Self.consentText(terms.renewalConsent)).fixedSize(horizontal: false, vertical: true) }
+            Toggle(isOn: $agreesToTerms) { Text(Self.consentText(terms.documentsConsent)).fixedSize(horizontal: false, vertical: true) }
         }
         .toggleStyle(.checkbox)
         .disabled(working)
-        if case .failed(let message) = model.checkout { ErrorLine(text: message) }
-        HStack(spacing: 10) {
-            Button("Back") { step = .choose }.disabled(working)
-            Spacer()
-            if working { ProgressView().controlSize(.small).accessibilityLabel("Opening the payment page") }
-            Button("Cancel", role: .cancel) { model.closePlans() }
-                .keyboardShortcut(.cancelAction)
-            Button("Agree and Continue to Payment") {
-                model.startCheckout(ParaAirCloudCheckoutRequest(workspaceID: workspace.id, plan: plan, interval: interval, seats: units))
-            }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
-            .disabled(!agreesToRenewal || !agreesToTerms || working)
+    }
+
+    /// Consent text with its Markdown links. Only https links stay links; any other target shows as plain text.
+    static func consentText(_ markdown: String) -> AttributedString {
+        guard var text = try? AttributedString(markdown: markdown, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) else {
+            return AttributedString(markdown)
         }
+        let unsafe = text.runs.compactMap { run in run.link.map { $0.scheme?.lowercased() == "https" ? nil : run.range } ?? nil }
+        for range in unsafe { text[range].link = nil }
+        return text
     }
 
     // MARK: Paying in the browser
 
-    /// Waiting for the processor's webhook, then the plan as `/v1/me` reports it.
+    /// Waiting for the processor's webhook, then the plan as `/v1/me` reports it. When the wait runs out the sheet
+    /// turns neutral: the payment may still arrive, and Check Again looks once more.
     @ViewBuilder private var opened: some View {
         let workspace = model.summary?.workspaces.first { $0.id == model.checkoutWorkspaceID }
         let billing = workspace?.billing
-        if let billing, billing.status == .active {
-            header("Your \(billing.plan == .team ? "Team" : "Personal") plan is active", nil)
+        let paid = billing?.status == .active || billing?.status == .pastDue
+        if let billing, paid {
+            header("Your \(billing.plan.map { $0 == .team ? "Team " : "Personal " } ?? "")plan is active", nil)
             // The plan size leads, as on the plan cards; it comes from /v1/me, so it is what the service now grants.
             VStack(alignment: .leading, spacing: 4) {
                 if let limit = workspace?.plan?.storageLimitBytes, limit > 0 {
@@ -206,15 +316,20 @@ struct CloudPlanSheet: View {
                         Text("of storage").font(.callout).foregroundStyle(.secondary)
                     }
                 }
-                let period = billing.interval == .year ? "Billed yearly." : "Billed monthly."
+                let period = billing.interval == .year ? "Billed yearly." : billing.interval == .month ? "Billed monthly." : nil
                 Text([period, billing.currentPeriodEnd.map { "Renews \(CloudBillingPresentation.format($0))." }].compactMap { $0 }.joined(separator: " "))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine)
+        } else if model.paymentWaitTimedOut {
+            header("Waiting for your payment", nil)
+            Text("ParaAir hasn’t seen this payment yet. If you paid, your plan shows here once the payment goes through, which can take a few minutes. "
+                 + "If you closed the page without paying, open it again or start over.")
+                .fixedSize(horizontal: false, vertical: true)
         } else {
             header("Finish in your browser", nil)
-            Text("Complete the payment on the page that just opened.")
+            Text("Complete the payment on the page that opened. ParaAir updates your plan when the payment goes through.")
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
@@ -223,7 +338,11 @@ struct CloudPlanSheet: View {
             .accessibilityElement(children: .combine)
         }
         HStack(spacing: 10) {
-            if billing?.status != .active { Button("Open Payment Page Again", action: model.reopenCheckout) }
+            if !paid {
+                if model.paymentWaitTimedOut { Button("Check Again", action: model.checkPaymentAgain) }
+                Button("Open Payment Page Again", action: model.reopenCheckout)
+                Button("Start Over…") { confirmingStartOver = true }
+            }
             Spacer()
             Button("Done") { model.closePlans() }
                 .buttonStyle(.borderedProminent)

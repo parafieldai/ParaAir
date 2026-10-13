@@ -43,7 +43,10 @@ public struct ParaAirCloudBilling: Codable, Equatable, Sendable {
              deletionAt, checkoutAvailable, portalAvailable
     }
 
-    /// Unknown values and shapes the contract rules out are errors; the workspace then has no billing object.
+    /// Unknown values and shapes the contract rules out are errors; the workspace then has no billing object. Counts
+    /// are not capped here: the service raises Team seats past 1000 when members are added and takes storage blocks
+    /// from the processor, and a paid status may come without a plan the price map knows. Those still decode, so the
+    /// past-due notice and the portal stay reachable (review 2026-10-13); the presentation shows only what it knows.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         provider = try c.decode(Provider.self, forKey: .provider); status = try c.decode(Status.self, forKey: .status)
@@ -55,11 +58,9 @@ public struct ParaAirCloudBilling: Codable, Equatable, Sendable {
         readOnlyAt = try c.decodeIfPresent(Date.self, forKey: .readOnlyAt); deletionAt = try c.decodeIfPresent(Date.self, forKey: .deletionAt)
         checkoutAvailable = try c.decode(Bool.self, forKey: .checkoutAvailable)
         portalAvailable = try c.decode(Bool.self, forKey: .portalAvailable)
-        let paid = status != .none
-        guard seats.map({ (1...ParaAirCloudBillingCatalog.maxSeats).contains($0) }) ?? true,
-              (0...ParaAirCloudBillingCatalog.maxStorageTb).contains(extraStorageTb),
+        guard seats.map({ $0 >= 0 }) ?? true, extraStorageTb >= 0,
               provider != .none || (!checkoutAvailable && !portalAvailable),
-              paid ? plan != nil && interval != nil : plan == nil && interval == nil else {
+              status != .none || (plan == nil && interval == nil) else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid billing object"))
         }
     }
@@ -68,11 +69,11 @@ public struct ParaAirCloudBilling: Codable, Equatable, Sendable {
     public var isLive: Bool { status == .active || status == .pastDue || status == .deleting }
 }
 
-/// The service's plan catalog, mirrored for display. `cloud/src/billing/catalog.ts` is the source of truth (PRICING.md
-/// "Proposed prices", subscription policy 4.1); checkout sends only a plan, an interval and quantities, so what is
-/// charged always comes from the service. `ParaAirCloudBillingTests` compares this copy with catalog.ts when the
-/// service source sits beside the package.
+/// Limits and units the checkout request and the plan cards use. Prices are not here: they come from the service's
+/// `GET /v1/billing/offer` (ParaAirCloudBillingOffer), so the app never shows an amount the service would not charge
+/// (review 2026-10-13; subscription policy Appendix A fills the values "from the live price").
 public enum ParaAirCloudBillingCatalog {
+    /// `MAX_SEATS` and `MAX_STORAGE_TB` of the service's catalog: the bounds of a checkout request.
     public static let maxSeats = 1000
     public static let maxStorageTb = 100
     /// A plan seat and a storage block are each one decimal terabyte (policy 4.3).
@@ -80,36 +81,230 @@ public enum ParaAirCloudBillingCatalog {
     /// Full-speed transfer each month per terabyte of plan storage (policy 4.4).
     public static let transferMultiple = 3
 
-    /// US cents per unit per interval, before tax, keyed by the service's catalog ids.
-    static let unitAmounts: [String: Int] = [
-        "personal_month": 1_000, "personal_year": 10_000, "team_month": 1_600, "team_year": 16_000,
-        "storage_month": 1_000, "storage_year": 12_000,
-    ]
-
-    public static func unitAmountCents(_ plan: ParaAirCloudBilling.Plan, _ interval: ParaAirCloudBilling.Interval) -> Int {
-        unitAmounts["\(plan.rawValue)_\(interval.rawValue)"]!
-    }
-    public static func storageUnitAmountCents(_ interval: ParaAirCloudBilling.Interval) -> Int {
-        unitAmounts["storage_\(interval.rawValue)"]!
-    }
-    /// catalog.ts `catalogAmount`: Team is per seat, Personal is one unit; storage is per block.
-    public static func amountCents(plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int, storageTb: Int) -> Int {
-        unitAmountCents(plan, interval) * (plan == .team ? seats : 1) + storageUnitAmountCents(interval) * storageTb
-    }
-    /// What paying yearly saves against twelve monthly payments, per unit (the discount covers the plan, not storage).
-    public static func yearlySavingsCents(_ plan: ParaAirCloudBilling.Plan) -> Int {
-        unitAmountCents(plan, .month) * 12 - unitAmountCents(plan, .year)
-    }
     /// The service's `formatUsd`: "$1,600.00".
-    public static func formatUSD(cents: Int) -> String {
-        let dollars = String(cents / 100).reversed().enumerated()
-            .map { $0.offset > 0 && $0.offset % 3 == 0 ? ",\($0.element)" : String($0.element) }.joined()
-        return "$" + String(dollars.reversed()) + "." + String(format: "%02d", cents % 100)
-    }
+    public static func formatUSD(cents: Int) -> String { "$" + grouped(cents) }
     /// Whole dollars drop the cents ("$10", "$1,600"), for compact price lines.
     public static func formatShortUSD(cents: Int) -> String {
         let full = formatUSD(cents: cents)
         return cents % 100 == 0 ? String(full.dropLast(3)) : full
+    }
+    /// "1,600.00" for 160000; negative amounts never reach here (the offer refuses them).
+    static func grouped(_ cents: Int) -> String {
+        let units = String(cents / 100).reversed().enumerated()
+            .map { $0.offset > 0 && $0.offset % 3 == 0 ? ",\($0.element)" : String($0.element) }.joined()
+        return String(units.reversed()) + "." + String(format: "%02d", cents % 100)
+    }
+}
+
+/// `GET /v1/billing/offer` (contract README, added 2026-10-13): what the service sells and how. The plan sheet shows
+/// only these values: the merchant of record (policy 2.2), the catalog prices, and for the chosen plan the disclosure
+/// box and consent sentences (Appendix A) exactly as checkout records them under `disclosureVersion` (policy 7.4,
+/// Appendix E2). When the service sends no price for a plan, the app offers no checkout for it.
+public struct ParaAirCloudBillingOffer: Equatable, Sendable {
+    public struct Merchant: Equatable, Sendable {
+        public var name: String
+        /// Paddle as "our online reseller" and seller of record (policy 2.2); false when Parafield Inc. charges itself.
+        public var reseller: Bool
+        public init(name: String, reseller: Bool) { self.name = name; self.reseller = reseller }
+    }
+    public struct Price: Equatable, Sendable {
+        public enum Kind: String, Sendable { case plan, storage }
+        public var item: String
+        public var kind: Kind
+        public var plan: ParaAirCloudBilling.Plan?
+        public var interval: ParaAirCloudBilling.Interval
+        /// Per unit per interval, before tax: per member for Team (`perMember`), per 1 TB block for storage.
+        public var unitAmountCents: Int
+        public var perMember: Bool
+        public init(item: String, kind: Kind, plan: ParaAirCloudBilling.Plan?, interval: ParaAirCloudBilling.Interval, unitAmountCents: Int,
+                    perMember: Bool) {
+            self.item = item; self.kind = kind; self.plan = plan; self.interval = interval; self.unitAmountCents = unitAmountCents
+            self.perMember = perMember
+        }
+    }
+    /// The first charge before tax and the Appendix A text for one selection.
+    public struct Quote: Equatable, Sendable {
+        public var plan: ParaAirCloudBilling.Plan
+        public var interval: ParaAirCloudBilling.Interval
+        public var seats: Int
+        public var extraStorageTb: Int
+        public var amountCents: Int
+        public var currency: String
+        /// A heading, the price line, then bullets prefixed "- ".
+        public var terms: [String]
+        /// The consent sentences; links are Markdown `[label](url)`.
+        public var consent: String
+        public init(plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int, extraStorageTb: Int, amountCents: Int,
+                    currency: String, terms: [String], consent: String) {
+            self.plan = plan; self.interval = interval; self.seats = seats; self.extraStorageTb = extraStorageTb
+            self.amountCents = amountCents; self.currency = currency; self.terms = terms; self.consent = consent
+        }
+    }
+
+    /// `stripe` or `paddle`.
+    public var provider: ParaAirCloudBilling.Provider
+    public var merchant: Merchant
+    /// Sent back with checkout, so the consent record names the text that was shown.
+    public var disclosureVersion: String
+    /// ISO 4217; prices are before tax.
+    public var currency: String
+    public var prices: [Price]
+    public var quote: Quote?
+
+    public init(provider: ParaAirCloudBilling.Provider, merchant: Merchant, disclosureVersion: String, currency: String, prices: [Price],
+                quote: Quote? = nil) {
+        self.provider = provider; self.merchant = merchant; self.disclosureVersion = disclosureVersion; self.currency = currency
+        self.prices = prices; self.quote = quote
+    }
+
+    /// One unit's price, at most this (US$1,000,000), so totals for 1000 seats and 100 TB cannot overflow.
+    static let maxUnitAmountCents = 100_000_000
+    static let maxTextLength = 2000
+
+    public func unitAmountCents(_ plan: ParaAirCloudBilling.Plan, _ interval: ParaAirCloudBilling.Interval) -> Int? {
+        prices.first { $0.kind == .plan && $0.plan == plan && $0.interval == interval }?.unitAmountCents
+    }
+    public func storageUnitAmountCents(_ interval: ParaAirCloudBilling.Interval) -> Int? {
+        prices.first { $0.kind == .storage && $0.interval == interval }?.unitAmountCents
+    }
+    public func sells(_ plan: ParaAirCloudBilling.Plan) -> Bool { ParaAirCloudBilling.Interval.allCases.contains { unitAmountCents(plan, $0) != nil } }
+    /// What the plan cards show before a quote: per member for Team, plus storage blocks.
+    public func amountCents(plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int, storageTb: Int = 0) -> Int? {
+        guard let unit = unitAmountCents(plan, interval), (1...ParaAirCloudBillingCatalog.maxSeats).contains(seats),
+              (0...ParaAirCloudBillingCatalog.maxStorageTb).contains(storageTb) else { return nil }
+        let perMember = prices.first { $0.kind == .plan && $0.plan == plan && $0.interval == interval }?.perMember ?? false
+        guard storageTb == 0 else { return storageUnitAmountCents(interval).map { unit * (perMember ? seats : 1) + $0 * storageTb } }
+        return unit * (perMember ? seats : 1)
+    }
+    /// What paying yearly saves against twelve monthly payments, per unit; nil unless both are sold and yearly is cheaper.
+    public func yearlySavingsCents(_ plan: ParaAirCloudBilling.Plan) -> Int? {
+        guard let month = unitAmountCents(plan, .month), let year = unitAmountCents(plan, .year), month * 12 > year else { return nil }
+        return month * 12 - year
+    }
+    /// "$1,600.00", or "1,600.00 EUR" for another currency.
+    public func format(cents: Int, short: Bool = false) -> String {
+        guard currency == "USD" else {
+            let text = ParaAirCloudBillingCatalog.grouped(cents)
+            return (short && cents % 100 == 0 ? String(text.dropLast(3)) : text) + " " + currency
+        }
+        return short ? ParaAirCloudBillingCatalog.formatShortUSD(cents: cents) : ParaAirCloudBillingCatalog.formatUSD(cents: cents)
+    }
+
+    /// Printable text the plan sheet can show as is: no control characters, bounded length.
+    static func isDisplayable(_ value: String, max: Int = maxTextLength) -> Bool {
+        !value.isEmpty && value.count <= max && !value.unicodeScalars.contains { $0.properties.generalCategory == .control }
+            && value.trimmingCharacters(in: .whitespaces) == value
+    }
+    /// The service's version rule: 1 to 64 printable ASCII characters.
+    static func isVersion(_ value: String) -> Bool { (1...64).contains(value.utf8.count) && value.utf8.allSatisfy { (0x21...0x7e).contains($0) } }
+}
+
+extension ParaAirCloudBillingOffer: Decodable {
+    private struct Wire: Decodable {
+        struct Merchant: Decodable { var name: String; var reseller: Bool }
+        struct Price: Decodable {
+            var item: String; var kind: String; var plan: String?; var interval: String; var unitAmountCents: Int; var perMember: Bool
+        }
+        /// A price row this app does not understand is skipped rather than failing the whole offer.
+        struct Lossy<T: Decodable>: Decodable { var value: T?; init(from decoder: Decoder) throws { value = try? T(from: decoder) } }
+        struct Quote: Decodable {
+            var plan: ParaAirCloudBilling.Plan; var interval: ParaAirCloudBilling.Interval; var seats: Int; var extraStorageTb: Int
+            var amountCents: Int; var currency: String; var terms: [String]; var consent: String
+        }
+        var provider: ParaAirCloudBilling.Provider
+        var merchantOfRecord: Merchant
+        var disclosureVersion: String
+        var currency: String
+        var prices: [Lossy<Price>]
+        var quote: Quote?
+    }
+
+    public init(from decoder: Decoder) throws {
+        let wire = try Wire(from: decoder)
+        func corrupt(_ why: String) -> DecodingError { .dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: why)) }
+        guard wire.provider != .none else { throw corrupt("Billing offer without a processor") }
+        guard Self.isDisplayable(wire.merchantOfRecord.name, max: 200) else { throw corrupt("Invalid merchant of record") }
+        guard Self.isVersion(wire.disclosureVersion) else { throw corrupt("Invalid disclosure version") }
+        guard wire.currency.utf8.count == 3, wire.currency.utf8.allSatisfy({ (65...90).contains($0) }) else { throw corrupt("Invalid currency") }
+        var prices: [Price] = []
+        for row in wire.prices.compactMap(\.value) {
+            guard let kind = Price.Kind(rawValue: row.kind), let interval = ParaAirCloudBilling.Interval(rawValue: row.interval),
+                  (0...Self.maxUnitAmountCents).contains(row.unitAmountCents), !row.item.isEmpty, row.item.utf8.count <= 64 else { continue }
+            let plan = row.plan.flatMap(ParaAirCloudBilling.Plan.init(rawValue:))
+            guard kind == .plan ? plan != nil : row.plan == nil,
+                  !prices.contains(where: { $0.kind == kind && $0.plan == plan && $0.interval == interval }) else { continue }
+            prices.append(Price(item: row.item, kind: kind, plan: plan, interval: interval, unitAmountCents: row.unitAmountCents,
+                                perMember: row.perMember))
+        }
+        var quote: Quote?
+        if let q = wire.quote {
+            guard (1...ParaAirCloudBillingCatalog.maxSeats).contains(q.seats), (0...ParaAirCloudBillingCatalog.maxStorageTb).contains(q.extraStorageTb),
+                  q.plan == .team || q.seats == 1, q.amountCents >= 0, q.amountCents <= Self.maxUnitAmountCents * 1_100,
+                  q.currency == wire.currency, (3...60).contains(q.terms.count), q.terms.allSatisfy({ Self.isDisplayable($0) }),
+                  Self.isDisplayable(q.consent, max: 4000) else { throw corrupt("Invalid quote") }
+            quote = Quote(plan: q.plan, interval: q.interval, seats: q.seats, extraStorageTb: q.extraStorageTb, amountCents: q.amountCents,
+                          currency: q.currency, terms: q.terms, consent: q.consent)
+        }
+        self.init(provider: wire.provider, merchant: Merchant(name: wire.merchantOfRecord.name, reseller: wire.merchantOfRecord.reseller),
+                  disclosureVersion: wire.disclosureVersion, currency: wire.currency, prices: prices, quote: quote)
+    }
+}
+
+/// `GET /v1/billing/offer` with a quote: the selection the plan sheet is about to show terms for. The same rules as
+/// checkout: Team only takes seats, storage is 0 to 100 blocks.
+public struct ParaAirCloudOfferRequest: Equatable, Sendable {
+    public var plan: ParaAirCloudBilling.Plan
+    public var interval: ParaAirCloudBilling.Interval
+    public var seats: Int
+    public var extraStorageTb: Int
+
+    public init(plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int = 1, extraStorageTb: Int = 0) {
+        self.plan = plan; self.interval = interval; self.seats = seats; self.extraStorageTb = extraStorageTb
+    }
+
+    var isValid: Bool {
+        (0...ParaAirCloudBillingCatalog.maxStorageTb).contains(extraStorageTb)
+            && (plan == .team ? (1...ParaAirCloudBillingCatalog.maxSeats).contains(seats) : seats == 1)
+    }
+
+    var query: [URLQueryItem] {
+        var items = [URLQueryItem(name: "plan", value: plan.rawValue), URLQueryItem(name: "interval", value: interval.rawValue)]
+        if plan == .team { items.append(URLQueryItem(name: "seats", value: String(seats))) }
+        items.append(URLQueryItem(name: "extraStorageTb", value: String(extraStorageTb)))
+        return items
+    }
+
+    /// The quote answers exactly this selection.
+    func matches(_ quote: ParaAirCloudBillingOffer.Quote) -> Bool {
+        quote.plan == plan && quote.interval == interval && quote.seats == seats && quote.extraStorageTb == extraStorageTb
+    }
+}
+
+/// The checkout box and its two consent boxes, from the service's quote (Appendix A; policy 6.1 and 7.1). The text is
+/// shown as the service sends it, so the consent record's `disclosureVersion` names what the buyer read.
+public struct ParaAirCloudCheckoutTerms: Equatable, Sendable {
+    public var heading: String
+    public var priceLine: String
+    public var bullets: [String]
+    /// The first box: automatic renewal at the stated price until cancelled (policy 7.1).
+    public var renewalConsent: String
+    /// The second box: the Terms and the policy. Links are Markdown `[label](url)`.
+    public var documentsConsent: String
+
+    /// Nil when the quote cannot be shown as a box above two consent boxes; the plan sheet then offers no checkout.
+    public init?(_ quote: ParaAirCloudBillingOffer.Quote) {
+        guard quote.terms.count >= 3 else { return nil }
+        var bullets: [String] = []
+        for line in quote.terms.dropFirst(2) {
+            guard line.hasPrefix("- "), line.count > 2 else { return nil }
+            bullets.append(String(line.dropFirst(2)))
+        }
+        // The service joins the renewal sentence and the documents sentence with a space; each starts "I agree".
+        guard quote.consent.hasPrefix("I agree"), let split = quote.consent.range(of: ". I agree") else { return nil }
+        let renewal = String(quote.consent[..<split.lowerBound]) + "."
+        let documents = String(quote.consent[quote.consent.index(after: split.lowerBound)...]).trimmingCharacters(in: .whitespaces)
+        heading = quote.terms[0]; priceLine = quote.terms[1]; self.bullets = bullets
+        renewalConsent = renewal; documentsConsent = documents
     }
 }
 
@@ -153,6 +348,18 @@ public enum ParaAirCloudBillingLink {
     private static func effectivePort(_ port: Int?, _ scheme: String) -> Int? { port ?? (scheme == "https" ? 443 : scheme == "http" ? 80 : nil) }
 }
 
+/// What the buyer agreed to before checkout opened: the disclosure version of the offer whose quote was shown, and
+/// the two unticked boxes (policy 7.1; contract README `disclosureVersion` and `consent`).
+public struct ParaAirCloudCheckoutConsent: Equatable, Sendable {
+    public var disclosureVersion: String
+    public var autoRenew: Bool
+    public var terms: Bool
+
+    public init(disclosureVersion: String, autoRenew: Bool, terms: Bool) {
+        self.disclosureVersion = disclosureVersion; self.autoRenew = autoRenew; self.terms = terms
+    }
+}
+
 /// `POST /v1/billing/checkout`. Amounts never leave the client: the service prices the plan from its catalog.
 public struct ParaAirCloudCheckoutRequest: Equatable, Sendable {
     public var workspaceID: String
@@ -161,102 +368,37 @@ public struct ParaAirCloudCheckoutRequest: Equatable, Sendable {
     /// Team seats, 1 to 1000 and at least the team's member count. Personal is always 1.
     public var seats: Int
     public var extraStorageTb: Int
+    /// Nil only for callers that show no terms (older apps send neither field; the service then records no consent).
+    public var consent: ParaAirCloudCheckoutConsent?
 
-    public init(workspaceID: String, plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int = 1, extraStorageTb: Int = 0) {
+    public init(workspaceID: String, plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int = 1, extraStorageTb: Int = 0,
+                consent: ParaAirCloudCheckoutConsent? = nil) {
         self.workspaceID = workspaceID; self.plan = plan; self.interval = interval; self.seats = seats; self.extraStorageTb = extraStorageTb
+        self.consent = consent
     }
 
+    /// The selection a quote must answer before this checkout may open.
+    public var selection: ParaAirCloudOfferRequest {
+        ParaAirCloudOfferRequest(plan: plan, interval: interval, seats: plan == .team ? seats : 1, extraStorageTb: extraStorageTb)
+    }
+
+    /// Consent is both boxes ticked or nothing: the service refuses one without the other (400 `invalid_request`).
     var isValid: Bool {
         ParaAirCloudIDs.isWorkspaceID(workspaceID) && (0...ParaAirCloudBillingCatalog.maxStorageTb).contains(extraStorageTb)
             && (plan == .team ? (1...ParaAirCloudBillingCatalog.maxSeats).contains(seats) : seats == 1)
+            && (consent.map { ParaAirCloudBillingOffer.isVersion($0.disclosureVersion) && $0.autoRenew && $0.terms } ?? true)
     }
 
     /// Personal sends no seat count (the service accepts only 1 or none).
     func body() throws -> Data {
-        struct Body: Encodable { var workspaceId: String; var plan: String; var interval: String; var seats: Int?; var extraStorageTb: Int }
-        return try ParaAirCloudJSON.encoder().encode(Body(workspaceId: workspaceID, plan: plan.rawValue, interval: interval.rawValue,
-                                                          seats: plan == .team ? seats : nil, extraStorageTb: extraStorageTb))
-    }
-}
-
-/// The checkout disclosure box (subscription policy Appendix A1 to A4) and its two consent sentences, which the app
-/// shows above two unticked boxes before any checkout opens (policy 7.1, Appendix E1).
-///
-/// DRAFT TEXT PENDING COUNSEL. It follows the service's `cloud/src/billing/disclosure.ts` (refund Option A; "Paddle,
-/// our reseller, charges" for Paddle and "we charge" for Stripe; the added-storage sentence is engineering wording)
-/// with one app change: the cancel bullet names this app's real path (Storage Settings > ParaAir Cloud > Manage Plan)
-/// instead of the draft's "Settings > Account > Subscription or at {account_url}", because the app has neither the
-/// draft's settings path nor the service's account link. Change the wording only together with the draft and bump
-/// `version`.
-public struct ParaAirCloudCheckoutDisclosure: Equatable, Sendable {
-    public static let version = "A-app-draft-2026-10-12"
-
-    public var heading: String
-    public var priceLine: String
-    public var bullets: [String]
-    public var renewalConsent: String
-    public var documentsConsent: String
-
-    private static let months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
-                                 "November", "December"]
-
-    public static func make(plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int, storageTb: Int,
-                            now: Date, seller: ParaAirCloudBilling.Provider) -> ParaAirCloudCheckoutDisclosure {
-        let team = plan == .team, yearly = interval == .year
-        let unit = ParaAirCloudBillingCatalog.formatUSD(cents: ParaAirCloudBillingCatalog.unitAmountCents(plan, interval))
-        let total = ParaAirCloudBillingCatalog.formatUSD(cents: ParaAirCloudBillingCatalog.amountCents(plan: plan, interval: interval,
-                                                                                                       seats: seats, storageTb: storageTb))
-        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "UTC")!
-        let day = calendar.component(.day, from: now), month = months[calendar.component(.month, from: now) - 1]
-        let when = yearly ? "every year on \(month) \(day)" : "on the \(ordinal(day)) of every month"
-        let period = yearly ? "year" : "month"
-        let charger = seller == .paddle ? "Paddle, our reseller, charges" : "we charge"
-        let name = team ? "Team" : "Personal"
-        var bullets: [String] = []
-        if team { bullets.append("You are buying \(seats) member seats\(storageTb > 0 ? " and added storage" : ""): \(total) per \(period) plus tax.") }
-        bullets.append("Today you pay \(total) plus any tax, which is shown before you pay.")
-        if storageTb > 0 {
-            let block = ParaAirCloudBillingCatalog.formatUSD(cents: ParaAirCloudBillingCatalog.storageUnitAmountCents(interval))
-            bullets.append("This includes \(storageTb) TB of added storage at \(block) per TB per \(period) plus tax.")
+        struct Consent: Encodable { var autoRenew: Bool; var terms: Bool }
+        struct Body: Encodable {
+            var workspaceId: String; var plan: String; var interval: String; var seats: Int?; var extraStorageTb: Int
+            var disclosureVersion: String?; var consent: Consent?
         }
-        bullets.append(team
-            ? "Then \(charger) for the current number of members, at \(unit) per member plus tax\(storageTb > 0 ? ", plus added storage" : ""), \(when)."
-            : "Then \(charger) \(total) plus tax \(when).")
-        if team {
-            bullets.append("Your \(yearly ? "yearly" : "monthly") charge changes when you add or remove members. Adding a member charges a prorated amount "
-                + "\(yearly ? "for the rest of the year " : "")right away. Removing a member lowers the charge from your next \(yearly ? "yearly " : "")renewal; "
-                + "the seat stays paid until then.")
-            bullets.append("Includes 1 TB of storage per member, shared by the team, and up to 3 TB of full-speed transfer per member each month, shared. "
-                + "No overage charges.")
-        } else {
-            bullets.append(storageTb > 0
-                ? "Includes \(1 + storageTb) TB of storage and up to \(3 * (1 + storageTb)) TB of full-speed transfer each month. No overage charges."
-                : "Includes 1 TB of storage and up to 3 TB of full-speed transfer each month. No overage charges.")
-        }
-        if yearly {
-            bullets.append(team ? "We will email the owner and billing admins 25 to 30 days before each yearly renewal."
-                           : "We will email you 25 to 30 days before each yearly renewal.")
-        }
-        let appPath = "in the ParaAir app (Storage Settings > ParaAir Cloud > Manage Plan)"
-        bullets.append(team
-            ? "The owner, or an admin with billing access, can cancel any time online \(appPath). Cancel before your renewal date to avoid the next charge."
-            : "Cancel any time online \(appPath). Cancel before your renewal date to avoid the next charge. "
-                + "You keep access until the end of the \(period) you paid for.")
-        bullets.append("Full refund if you ask within 14 days of this first payment\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
-        bullets.append("We will email you at least 14 days before any price change, and you can cancel first.")
-        let renewal = team
-            ? "I agree that this ParaAir Cloud Team plan renews automatically at \(unit) per member per \(period) plus tax, for the number of members at each renewal, until I cancel."
-            : "I agree that my ParaAir Cloud Personal plan renews automatically at \(total) per \(period) plus tax until I cancel."
-        let documents = "I agree to the Terms of Service and the Subscription, Cancellation and Refund Policy\(team ? ", and I am authorized to agree for this team" : "")."
-        return ParaAirCloudCheckoutDisclosure(
-            heading: "ParaAir Cloud \(name), billed \(yearly ? "yearly" : "monthly")",
-            priceLine: "\(unit) \(team ? "per member " : "")per \(period) plus tax. Renews automatically every \(period) until you cancel.",
-            bullets: bullets, renewalConsent: renewal, documentsConsent: documents)
-    }
-
-    static func ordinal(_ day: Int) -> String {
-        let tens = day % 100, ones = day % 10
-        let suffix = (11...13).contains(tens) ? "th" : ones == 1 ? "st" : ones == 2 ? "nd" : ones == 3 ? "rd" : "th"
-        return "\(day)\(suffix)"
+        return try ParaAirCloudJSON.encoder().encode(Body(
+            workspaceId: workspaceID, plan: plan.rawValue, interval: interval.rawValue, seats: plan == .team ? seats : nil,
+            extraStorageTb: extraStorageTb, disclosureVersion: consent?.disclosureVersion,
+            consent: consent.map { Consent(autoRenew: $0.autoRenew, terms: $0.terms) }))
     }
 }

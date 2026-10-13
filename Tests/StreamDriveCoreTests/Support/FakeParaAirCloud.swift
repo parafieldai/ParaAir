@@ -104,8 +104,17 @@ final class FakeParaAirCloud: @unchecked Sendable {
     var paddleSandbox = false
     /// A service from before billing: `/v1/me` has no `billing` objects.
     var omitsBilling = false
-    /// Plans with configured prices; checkout for any other plan is 503 `unavailable`, as with a partial price map.
+    /// Plans with configured prices; checkout for any other plan is 503 `billing_unavailable`, as with a partial price
+    /// map, and the offer lists only these plans.
     var sellablePlans: Set<String> = ["personal", "team"]
+    /// False: billing is set up without what checkout needs (keys, prices, notice settings): 503 `billing_unavailable`.
+    var billingConfigured = true
+    /// The service's `DISCLOSURE_VERSION`; a checkout naming another is 409 `disclosure_outdated`.
+    var disclosureVersion = "A-draft-2026-10-09"
+    /// Prices the offer lists instead of the catalog's (the server's catalog after a price change).
+    var priceOverrides: [String: Int] = [:]
+    /// An earlier checkout of the workspace was paid but its subscription has not arrived: a new checkout is 409 `busy`.
+    var paidUnboundCheckouts: Set<String> = []
     /// Replaces the URL a checkout or portal reply carries (to test the client's host policy).
     var checkoutURLOverride: String?
     var portalURLOverride: String?
@@ -137,6 +146,9 @@ final class FakeParaAirCloud: @unchecked Sendable {
     private var billingSessions: [String: [Date]] = [:]
     /// Accepted checkout bodies, in order.
     private(set) var checkouts: [[String: Any]] = []
+    /// Checkout URLs a later checkout of the same workspace made unpayable (Stripe expires them, Paddle cancels them).
+    private(set) var closedCheckoutURLs: [String] = []
+    private var openCheckouts: [String: [String]] = [:]
 
     /// A workspace's subscription as the service's `billing_accounts` row would describe it.
     struct BillingAccount {
@@ -423,6 +435,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
         case "GET /v1/me": return me(user)
         case "POST /v1/billing/checkout": return try billingCheckout(user: user.id, body: body, headers: headers)
         case "POST /v1/billing/portal": return try billingPortal(user: user.id, body: body, headers: headers)
+        case "GET /v1/billing/offer": return try billingOffer(query)
         case "DELETE /v1/sessions/current":
             grants[user.grant]?.revoked = true
             return Reply(status: 204)
@@ -733,7 +746,8 @@ final class FakeParaAirCloud: @unchecked Sendable {
         let owner = role == "owner"
         var checkout = false, portal = false
         if let configured, owner, workspace.status != "suspended" {
-            checkout = sellablePlans.contains(workspace.kind) && !(account.map { Self.liveBillingStates.contains($0.state) } ?? false)
+            checkout = billingConfigured && sellablePlans.contains(workspace.kind)
+                && !(account.map { Self.liveBillingStates.contains($0.state) } ?? false)
             portal = account.map { $0.provider == configured && $0.hasCustomer && $0.state != "deleting" && $0.state != "deleted" } ?? false
         }
         func date(_ value: Date?) -> Any { value.map(Self.date) ?? NSNull() }
@@ -775,6 +789,17 @@ final class FakeParaAirCloud: @unchecked Sendable {
             return number.intValue
         }
         _ = try integer("extraStorageTb", 0...100)
+        // consentFrom: both or neither; a version of printable ASCII and both boxes ticked.
+        var agreed: String?
+        if request["disclosureVersion"] != nil || request["consent"] != nil {
+            guard let version = request["disclosureVersion"] as? String, (1...64).contains(version.utf8.count),
+                  version.utf8.allSatisfy({ (0x21...0x7e).contains($0) }), let consent = request["consent"] as? [String: Any],
+                  (consent["autoRenew"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue }) == true,
+                  (consent["terms"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue }) == true else {
+                throw Fail(code: "invalid_request")
+            }
+            agreed = version
+        }
         let workspace = try billingOwner(user: user, request["workspaceId"])
         guard workspace.kind == plan else { throw Fail(code: "invalid_request") }
         var seats = 1
@@ -784,8 +809,12 @@ final class FakeParaAirCloud: @unchecked Sendable {
         } else if let given = try integer("seats", 1...1000), given != 1 {
             throw Fail(code: "invalid_request")
         }
-        guard sellablePlans.contains(plan) else { throw Fail(code: "unavailable") }
+        guard billingConfigured, sellablePlans.contains(plan) else { throw Fail(code: "billing_unavailable") }
+        if let agreed, agreed != disclosureVersion { throw Fail(code: "disclosure_outdated") }
         if let account = workspace.billing, Self.liveBillingStates.contains(account.state) { throw Fail(code: "busy") }
+        // closeEarlierCheckouts: a paid one refuses the new checkout; unpaid ones stop being payable.
+        guard !paidUnboundCheckouts.contains(workspace.id) else { throw Fail(code: "busy") }
+        closedCheckoutURLs += openCheckouts[workspace.id] ?? []
         checkouts.append(request)
         let url: String
         if billingProvider == "paddle" {
@@ -793,7 +822,115 @@ final class FakeParaAirCloud: @unchecked Sendable {
         } else {
             url = "https://checkout.stripe.com/c/pay/cs_test_" + Self.base32() + "#fidkdWxOYHwnPyd1blpxYHZxWjA0SDdPUW5JbmFMck1wMmx9N2BLZjFE"
         }
-        return json(200, ["url": checkoutURLOverride ?? url])
+        let reply = checkoutURLOverride ?? url
+        openCheckouts[workspace.id] = [reply]
+        return json(200, ["url": reply])
+    }
+
+    /// The service's catalog (cloud/src/billing/catalog.ts), keyed by catalog id; `testFakeCatalogMatchesTheService`
+    /// compares it with catalog.ts when the service source is available.
+    static let catalog: [String: Int] = [
+        "personal_month": 1_000, "personal_year": 10_000, "team_month": 1_600, "team_year": 16_000,
+        "storage_month": 1_000, "storage_year": 12_000,
+    ]
+
+    /// B3 `GET /v1/billing/offer`: the price map's items, the merchant of record and, with a plan and an interval, the
+    /// quote with the disclosure text (cloud/src/billing/disclosure.ts) in dev mode, so its links are the dev pages.
+    private func billingOffer(_ query: [String: String]) throws -> Reply {
+        guard billingProvider != "none" else { throw Fail(code: "not_found") }
+        guard billingConfigured else { throw Fail(code: "billing_unavailable") }
+        func amount(_ id: String) -> Int { priceOverrides[id] ?? Self.catalog[id]! }
+        let sold = ["personal_month", "personal_year", "team_month", "team_year", "storage_month", "storage_year"].filter {
+            $0.hasPrefix("storage") || sellablePlans.contains(String($0.split(separator: "_")[0]))
+        }
+        let prices: [[String: Any]] = sold.map { id in
+            let parts = id.split(separator: "_").map(String.init)
+            let storage = parts[0] == "storage"
+            return ["item": id, "kind": storage ? "storage" : "plan", "plan": storage ? NSNull() : parts[0], "interval": parts[1],
+                    "unitAmountCents": amount(id), "perMember": parts[0] == "team"]
+        }
+        var quote: Any = NSNull()
+        if query["plan"] != nil || query["interval"] != nil {
+            guard let plan = query["plan"], ["personal", "team"].contains(plan), let interval = query["interval"], ["month", "year"].contains(interval) else {
+                throw Fail(code: "invalid_request")
+            }
+            func quantity(_ key: String, _ range: ClosedRange<Int>, _ fallback: Int) throws -> Int {
+                guard let raw = query[key] else { return fallback }
+                guard raw.range(of: "^[0-9]{1,6}$", options: .regularExpression) != nil, let value = Int(raw), range.contains(value) else {
+                    throw Fail(code: "invalid_request")
+                }
+                return value
+            }
+            let seats = try quantity("seats", plan == "team" ? 1...1000 : 1...1, 1)
+            let storage = try quantity("extraStorageTb", 0...100, 0)
+            if sellablePlans.contains(plan) {
+                let unit = amount("\(plan)_\(interval)"), block = amount("storage_\(interval)")
+                let total = unit * (plan == "team" ? seats : 1) + block * storage
+                let text = Self.disclosure(plan: plan, interval: interval, seats: seats, storageTb: storage, unit: unit, block: block, total: total,
+                                           now: Date(), accountURL: issuerString + "/billing/account", seller: billingProvider,
+                                           termsURL: issuerString + "/legal/terms", policyURL: issuerString + "/legal/subscription-policy")
+                quote = ["plan": plan, "interval": interval, "seats": seats, "extraStorageTb": storage, "amountCents": total, "currency": "USD",
+                         "terms": text.terms, "consent": text.consent]
+            }
+        }
+        let merchant: [String: Any] = billingProvider == "paddle" ? ["name": "Paddle", "reseller": true] : ["name": "Parafield Inc.", "reseller": false]
+        return json(200, ["provider": billingProvider, "merchantOfRecord": merchant, "disclosureVersion": disclosureVersion, "currency": "USD",
+                          "prices": prices, "quote": quote])
+    }
+
+    /// disclosure.ts with refund Option A, word for word.
+    static func disclosure(plan: String, interval: String, seats: Int, storageTb: Int, unit unitCents: Int, block: Int, total totalCents: Int,
+                           now: Date, accountURL: String, seller: String, termsURL: String?, policyURL: String?) -> (terms: [String], consent: String) {
+        let team = plan == "team", yearly = interval == "year"
+        let unit = ParaAirCloudBillingCatalog.formatUSD(cents: unitCents), total = ParaAirCloudBillingCatalog.formatUSD(cents: totalCents)
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "UTC")!
+        let months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+        let day = calendar.component(.day, from: now), month = months[calendar.component(.month, from: now) - 1]
+        let tens = day % 100, ones = day % 10
+        let ordinal = "\(day)" + ((11...13).contains(tens) ? "th" : ones == 1 ? "st" : ones == 2 ? "nd" : ones == 3 ? "rd" : "th")
+        let when = yearly ? "every year on \(month) \(day)" : "on the \(ordinal) of every month"
+        let period = yearly ? "year" : "month"
+        let charger = seller == "paddle" ? "Paddle, our reseller, charges" : "we charge"
+        var terms = ["ParaAir Cloud \(team ? "Team" : "Personal"), billed \(yearly ? "yearly" : "monthly")",
+                     "\(unit) \(team ? "per member " : "")per \(period) plus tax. Renews automatically every \(period) until you cancel."]
+        var bullets: [String] = []
+        if team { bullets.append("You are buying \(seats) member seats\(storageTb > 0 ? " and added storage" : ""): \(total) per \(period) plus tax.") }
+        bullets.append("Today you pay \(total) plus any tax, which is shown before you pay.")
+        if storageTb > 0 {
+            bullets.append("This includes \(storageTb) TB of added storage at \(ParaAirCloudBillingCatalog.formatUSD(cents: block)) per TB per \(period) plus tax.")
+        }
+        bullets.append(team ? "Then \(charger) for the current number of members, at \(unit) per member plus tax\(storageTb > 0 ? ", plus added storage" : ""), \(when)."
+                            : "Then \(charger) \(total) plus tax \(when).")
+        if team {
+            bullets.append("Your \(yearly ? "yearly" : "monthly") charge changes when you add or remove members. Adding a member charges a prorated amount "
+                + "\(yearly ? "for the rest of the year " : "")right away. Removing a member lowers the charge from your next \(yearly ? "yearly " : "")renewal; "
+                + "the seat stays paid until then.")
+            bullets.append("Includes 1 TB of storage per member, shared by the team, and up to 3 TB of full-speed transfer per member each month, shared. "
+                + "No overage charges.")
+        } else {
+            bullets.append(storageTb > 0
+                ? "Includes \(1 + storageTb) TB of storage and up to \(3 * (1 + storageTb)) TB of full-speed transfer each month. No overage charges."
+                : "Includes 1 TB of storage and up to 3 TB of full-speed transfer each month. No overage charges.")
+        }
+        if yearly {
+            bullets.append(team ? "We will email the owner and billing admins 25 to 30 days before each yearly renewal."
+                           : "We will email you 25 to 30 days before each yearly renewal.")
+        }
+        bullets.append(team
+            ? "The owner, or an admin with billing access, can cancel any time online in the ParaAir app (Settings > Account > Subscription) or at \(accountURL). "
+                + "Cancel before your renewal date to avoid the next charge."
+            : "Cancel any time online: in the ParaAir app (Settings > Account > Subscription) or at \(accountURL). Cancel before your renewal date "
+                + "to avoid the next charge. You keep access until the end of the \(period) you paid for.")
+        bullets.append("Full refund if you ask within 14 days of this first payment\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
+        bullets.append("We will email you at least 14 days before any price change, and you can cancel first.")
+        terms += bullets.map { "- " + $0 }
+        func link(_ label: String, _ url: String?) -> String { url.map { "[\(label)](\($0))" } ?? label }
+        let renewal = team
+            ? "I agree that this ParaAir Cloud Team plan renews automatically at \(unit) per member per \(period) plus tax, for the number of members at each renewal, until I cancel."
+            : "I agree that my ParaAir Cloud Personal plan renews automatically at \(total) per \(period) plus tax until I cancel."
+        let documents = "I agree to the \(link("Terms of Service", termsURL)) and the \(link("Subscription, Cancellation and Refund Policy", policyURL))"
+            + "\(team ? ", and I am authorized to agree for this team" : "")."
+        return (terms, renewal + " " + documents)
     }
 
     private func billingPortal(user: String, body: Data, headers: [String: String]) throws -> Reply {

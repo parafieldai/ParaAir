@@ -26,13 +26,17 @@ public struct DriveProfile: Codable, Equatable, Sendable {
     public var cloudIssuer: String?
     public var cloudAccountID: String?
     public var cloudDriveID: String?
+    /// The drive's workspace, saved when the drive is attached or created, so the app shows that workspace's plan and
+    /// billing even when the drive can no longer be looked up. Older profiles have none; the app then looks it up.
+    public var cloudWorkspaceID: String?
 
     public init(name: String, backend: DriveBackendKind = .juicefs, metadataURL: String? = nil,
                 localRoot: String? = nil, libraryPath: String? = nil, mountPoint: String? = nil,
                 cacheLimitBytes: Int64 = 1_073_741_824, minFreeBytes: Int64 = 5_368_709_120,
                 blockSize: Int = 1_048_576, maxJournalBytes: Int64 = 4_294_967_296,
                 credentialID: String? = nil, objectCredentialID: String? = nil, connectionID: String? = nil,
-                displayName: String? = nil, cloudIssuer: String? = nil, cloudAccountID: String? = nil, cloudDriveID: String? = nil) {
+                displayName: String? = nil, cloudIssuer: String? = nil, cloudAccountID: String? = nil, cloudDriveID: String? = nil,
+                cloudWorkspaceID: String? = nil) {
         self.name = name; self.backend = backend; self.metadataURL = metadataURL
         self.displayName = displayName
         self.localRoot = localRoot; self.libraryPath = libraryPath; self.mountPoint = mountPoint
@@ -40,6 +44,7 @@ public struct DriveProfile: Codable, Equatable, Sendable {
         self.blockSize = blockSize; self.maxJournalBytes = maxJournalBytes; self.credentialID = credentialID
         self.objectCredentialID = objectCredentialID; self.connectionID = connectionID
         self.cloudIssuer = cloudIssuer; self.cloudAccountID = cloudAccountID; self.cloudDriveID = cloudDriveID
+        self.cloudWorkspaceID = cloudWorkspaceID
     }
 
     public func validate() throws {
@@ -62,7 +67,7 @@ public struct DriveProfile: Codable, Equatable, Sendable {
         }
         if let metadataURL { try Self.validatePublicMetadataURL(metadataURL) }
         if backend != .paraairCloud {
-            guard cloudIssuer == nil, cloudAccountID == nil, cloudDriveID == nil else {
+            guard cloudIssuer == nil, cloudAccountID == nil, cloudDriveID == nil, cloudWorkspaceID == nil else {
                 throw DriveError(EINVAL, "Only ParaAir Cloud profiles can name a ParaAir Cloud account or drive")
             }
         }
@@ -75,6 +80,9 @@ public struct DriveProfile: Codable, Equatable, Sendable {
             try ConnectionStore.validateID(cloudAccountID)
             guard UUID(uuidString: cloudDriveID) != nil, cloudDriveID == cloudDriveID.lowercased() else {
                 throw DriveError(EINVAL, "Invalid ParaAir Cloud drive identifier")
+            }
+            if let cloudWorkspaceID, !ParaAirCloudIDs.isWorkspaceID(cloudWorkspaceID) {
+                throw DriveError(EINVAL, "Invalid ParaAir Cloud workspace identifier")
             }
             guard blockSize == ParaAirCloudConfiguration.chunkSize else { throw DriveError(EINVAL, "ParaAir Cloud drives use 4 MiB blocks") }
             guard metadataURL == nil, localRoot == nil, libraryPath == nil, credentialID == nil, objectCredentialID == nil, connectionID == nil else {

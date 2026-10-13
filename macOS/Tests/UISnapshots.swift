@@ -181,6 +181,10 @@ struct UISnapshots {
     static let billingReadOnly = ParaAirCloudBilling(provider: .paddle, status: .readOnly, plan: .personal, interval: .month, seats: 1,
                                                      currentPeriodEnd: day("2026-10-05"), readOnlyAt: day("2026-10-05"),
                                                      deletionAt: day("2026-11-04"), checkoutAvailable: true, portalAvailable: true)
+    /// An ended Stripe plan after the service moved to Paddle: billing still names Stripe, the offer names Paddle.
+    static let billingReadOnlyStripe = ParaAirCloudBilling(provider: .stripe, status: .readOnly, plan: .personal, interval: .month, seats: 1,
+                                                           currentPeriodEnd: day("2026-10-05"), readOnlyAt: day("2026-10-05"),
+                                                           deletionAt: day("2026-11-04"), checkoutAvailable: true)
     static let billingPendingDeletion = ParaAirCloudBilling(provider: .paddle, status: .pendingDeletion, plan: .personal, interval: .year,
                                                             seats: 1, currentPeriodEnd: day("2026-09-01"), readOnlyAt: day("2026-09-10"),
                                                             deletionAt: day("2026-10-10"), checkoutAvailable: true)
@@ -194,8 +198,6 @@ struct UISnapshots {
     static let billingMemberPastDue = ParaAirCloudBilling(provider: .stripe, status: .pastDue, plan: .team, interval: .month, seats: 3,
                                                           currentPeriodEnd: day("2026-11-12"), graceEndsAt: day("2026-10-26"),
                                                           readOnlyAt: day("2026-10-26"), deletionAt: day("2026-11-25"))
-    /// The day the checkout disclosure is computed for (renewal on the same day of the month or year).
-    static let checkoutDay = day("2026-10-12")
 
     static let fixtureDrives = [
         ParaAirCloudDrive(id: "3f0c2a7e-6b1d-4e0a-9c2f-1d2e3f4a5b6c", workspaceId: fixtureWorkspaceID, name: "ParaAir Cloud",
@@ -294,7 +296,7 @@ struct UISnapshots {
     }
 
     /// A state folder signed in to the fixture account; tokens stay in `vault`.
-    static func seedSignedIn(_ root: URL, vault: MemoryVault, drive: Bool) throws -> URL {
+    static func seedSignedIn(_ root: URL, vault: MemoryVault, drive: Bool, workspaceID: String? = nil) throws -> URL {
         let account = CloudAccount(id: UUID().uuidString.lowercased(), issuer: fixtureIssuer.absoluteString,
                                    userID: fixtureUserID, email: fixtureEmail)
         try CloudAccountStore(root: root).signIn(account, tokens: OAuthTokens(
@@ -302,7 +304,8 @@ struct UISnapshots {
         if drive {
             try ProfileStore(root: root).save(DriveProfile(name: "ParaAir-Cloud", backend: .paraairCloud, blockSize: 4_194_304,
                                                            displayName: "ParaAir Cloud", cloudIssuer: fixtureIssuer.absoluteString,
-                                                           cloudAccountID: account.id, cloudDriveID: fixtureDrives[0].id))
+                                                           cloudAccountID: account.id, cloudDriveID: fixtureDrives[0].id,
+                                                           cloudWorkspaceID: workspaceID))
         }
         return root
     }
@@ -316,8 +319,8 @@ struct UISnapshots {
 
     // MARK: ParaAir Cloud billing
 
-    /// Storage Settings in every billing state, the plan sheet's steps, and the model's checkout and portal flow
-    /// against fixture starters. Nothing reaches a network or a browser: `openURL` only records.
+    /// Storage Settings in every billing state, the plan sheet's steps, and the model's offer, checkout and portal
+    /// flow against fixture starters. Nothing reaches a network or a browser: `openURL` only records.
     @MainActor
     static func renderBilling(output: URL) throws -> [String] {
         var failures: [String] = []
@@ -328,30 +331,46 @@ struct UISnapshots {
         let dependencies = EngineOpenDependencies(cloudVault: vault, cloudConfiguration: .ephemeral,
                                                   cloudPolicy: .init(allowsLoopbackHTTP: false))
         let stripeCheckout = URL(string: "https://checkout.stripe.com/c/pay/cs_test_a1B2c3D4#fidkdWxOYHwnPyd1blpxYHZxWjA0")!
+        let stripeCheckout2 = URL(string: "https://checkout.stripe.com/c/pay/cs_test_e5F6g7H8#fidkdWxOYHwnPyd1blpxYHZxWjA0")!
         let paddleCheckout = URL(string: fixtureIssuer.absoluteString + "/billing/pay?_ptxn=txn_01j9zx5q4wj3m8k2v7n6r1t0yc")!
         let stripePortal = URL(string: "https://billing.stripe.com/p/session/test_YWNjdF8xTTJKVGtMa2RJd0h1N2l4")!
         let refusedText = "ParaAir Cloud returned a payment page this app won’t open."
 
-        func model(_ name: String, _ summary: SummaryBox, recorder: BillingRecorder, checkout: URL = stripeCheckout,
-                   portal: URL = stripePortal, delay: TimeInterval = 0) throws -> CloudAccountModel {
-            let root = try seedSignedIn(base.appendingPathComponent(name, isDirectory: true), vault: vault, drive: true)
+        func model(_ name: String, _ summary: SummaryBox, recorder: BillingRecorder, checkout: [URL] = [stripeCheckout],
+                   portal: URL = stripePortal, delay: TimeInterval = 0, workspaceID: String? = fixtureWorkspaceID,
+                   offer: OfferBox = OfferBox(), profileWorkspaceID: String? = nil) throws -> CloudAccountModel {
+            let root = try seedSignedIn(base.appendingPathComponent(name, isDirectory: true), vault: vault, drive: true,
+                                        workspaceID: profileWorkspaceID)
             let cloud = CloudAccountModel(
                 stateRoot: root, dependencies: dependencies, baseURL: { _ in fixtureIssuer },
-                summaryLoader: { _ in (summary.me, fixtureWorkspaceID) },
+                summaryLoader: { request in (summary.me, request.workspaceID ?? workspaceID) },
                 uploader: { _, _ in UploadActivity() },
                 driveLister: { _, _ in (fixtureDrives, summary.me) },
                 checkoutStarter: { _, _, request in
-                    recorder.record(request)
+                    let count = recorder.record(request)
                     if delay > 0 { Thread.sleep(forTimeInterval: delay) }
-                    return checkout
+                    return checkout[min(count - 1, checkout.count - 1)]
                 },
                 portalStarter: { _, _, _ in portal },
+                offerLoader: { _, _, selection in try offer.offer(selection) },
                 openURL: { recorder.open($0); return true })
+            cloud.billingWatchDelays = [0.2, 0.2, 0.2, 0.2]
             cloud.reloadSummary()
             settle { cloud.summaryState == .loaded }
             expect(cloud.summaryState == .loaded, "\(name): the fixture summary loads")
             return cloud
         }
+        /// Opens the sheet's review for `request` and agrees to the service's terms, as the plan sheet does.
+        func agree(_ cloud: CloudAccountModel, _ request: ParaAirCloudCheckoutRequest) {
+            cloud.loadQuote(request.selection)
+            settle { if case .loading = cloud.quote { return false } else { return true } }
+            guard case .loaded(let quote) = cloud.quote else { failures.append("the terms load for \(request.plan)"); return }
+            var agreed = request
+            agreed.consent = ParaAirCloudCheckoutConsent(disclosureVersion: quote.offer.disclosureVersion, autoRenew: true, terms: true)
+            cloud.startCheckout(agreed)
+            settle { cloud.checkout != .working }
+        }
+        func offerLoaded(_ cloud: CloudAccountModel) -> Bool { if case .loaded = cloud.offer { return true } else { return false } }
 
         // Storage Settings, ParaAir Cloud section, one image per billing state.
         let storage: [(String, ParaAirCloudMe)] = [
@@ -377,34 +396,47 @@ struct UISnapshots {
         // Choosing a plan: Personal and Team are both on sale; Personal is bought with Paddle (the issuer payment page).
         let summary = SummaryBox(fixtureMe(stored: 212_000_000_000, billing: billingBeta, extra: [fixtureTeam(billing: billingBeta)]))
         let recorder = BillingRecorder()
-        let buyer = try model("checkout", summary, recorder: recorder, checkout: paddleCheckout)
+        let paddle = OfferBox(provider: .paddle)
+        let buyer = try model("checkout", summary, recorder: recorder, checkout: [paddleCheckout], offer: paddle)
         expect(buyer.billing.controls == [CloudBillingPresentation.choosePlan], "the beta plan offers Choose a Plan…")
         buyer.perform(.choosePlan)
         expect(buyer.planSheetPresented && buyer.checkout == .idle, "Choose a Plan… opens the plan sheet")
-        try render(CloudPlanSheet(model: buyer, now: checkoutDay), size: nil, appearance: .aqua,
-                   to: output.appendingPathComponent("plan-choose-monthly-light.png"))
-        try render(CloudPlanSheet(model: buyer, plan: .team, interval: .year, now: checkoutDay), size: nil, appearance: .darkAqua,
+        settle { offerLoaded(buyer) }
+        expect(offerLoaded(buyer) && paddle.requests == [nil], "the sheet asks the service what it sells")
+        try render(CloudPlanSheet(model: buyer), size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-choose-monthly-light.png"))
+        try render(CloudPlanSheet(model: buyer, plan: .team, interval: .year, seats: 3), size: nil, appearance: .darkAqua,
                    to: output.appendingPathComponent("plan-choose-team-yearly-dark.png"))
-        try render(CloudPlanSheet(model: buyer, step: .review, now: checkoutDay), size: nil, appearance: .aqua,
-                   to: output.appendingPathComponent("plan-review-personal-light.png"))
-        try render(CloudPlanSheet(model: buyer, step: .review, plan: .team, interval: .year, seats: 3, agreed: true, now: checkoutDay),
-                   size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-review-team-agreed-light.png"))
         let personal = ParaAirCloudCheckoutRequest(workspaceID: fixtureWorkspaceID, plan: .personal, interval: .month)
+        buyer.loadQuote(personal.selection)
+        settle { if case .loaded = buyer.quote { return true } else { return false } }
+        try render(CloudPlanSheet(model: buyer, step: .review), size: nil, appearance: .aqua,
+                   to: output.appendingPathComponent("plan-review-personal-light.png"))
+        let teamYear = ParaAirCloudOfferRequest(plan: .team, interval: .year, seats: 3)
+        buyer.loadQuote(teamYear)
+        settle { if case .loaded = buyer.quote { return true } else { return false } }
+        try render(CloudPlanSheet(model: buyer, step: .review, plan: .team, interval: .year, seats: 3, agreed: true),
+                   size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-review-team-agreed-light.png"))
+        // Only the selection whose terms are on screen can start, with that text's version and both boxes ticked.
         buyer.startCheckout(personal)
-        settle { buyer.checkout != .working }
+        var unticked = personal
+        unticked.consent = ParaAirCloudCheckoutConsent(disclosureVersion: paddle.version, autoRenew: true, terms: false)
+        buyer.startCheckout(unticked)
+        expect(recorder.requests.isEmpty && buyer.checkout == .idle, "no checkout without the shown terms and both boxes")
+        agree(buyer, personal)
         expect(buyer.checkout == .opened(paddleCheckout) && recorder.opened == [paddleCheckout],
                "the issuer payment page opens once in the browser")
-        expect(recorder.requests == [personal], "checkout sends only the chosen plan")
-        try render(CloudPlanSheet(model: buyer, now: checkoutDay), size: nil, appearance: .aqua,
-                   to: output.appendingPathComponent("plan-waiting-light.png"))
+        expect(recorder.requests.map(\.consent) == [ParaAirCloudCheckoutConsent(disclosureVersion: paddle.version, autoRenew: true, terms: true)]
+               && recorder.requests.map(\.selection) == [personal.selection],
+               "checkout sends the chosen plan with the version of the terms shown and both boxes")
+        try render(CloudPlanSheet(model: buyer), size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-waiting-light.png"))
         buyer.reopenCheckout()
         expect(recorder.opened == [paddleCheckout, paddleCheckout], "Open Payment Page Again reopens the same page")
         // The processor's webhook made the plan active; the next summary shows it.
         summary.me = fixtureMe(stored: 212_000_000_000, billing: billingActive, extra: [fixtureTeam(billing: billingBeta)])
         settle { buyer.reloadSummary(); return buyer.workspace?.billing?.status == .active }
         expect(buyer.billing.controls == [CloudBillingPresentation.managePlan], "an active plan offers Manage Plan…")
-        try render(CloudPlanSheet(model: buyer, now: checkoutDay), size: nil, appearance: .aqua,
-                   to: output.appendingPathComponent("plan-paid-light.png"))
+        expect(buyer.pendingCheckout == nil, "a paid page is no longer pending")
+        try render(CloudPlanSheet(model: buyer), size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-paid-light.png"))
         buyer.closePlans()
         expect(!buyer.planSheetPresented && buyer.checkout == .idle, "Done closes the sheet")
 
@@ -414,31 +446,36 @@ struct UISnapshots {
         let single = try model("single", SummaryBox(fixtureMe(stored: 212_000_000_000, billing: billingBeta,
                                                               extra: [fixtureTeam(billing: paidTeam)])), recorder: BillingRecorder())
         single.perform(.choosePlan)
-        try render(CloudPlanSheet(model: single, interval: .year, now: checkoutDay), size: nil, appearance: .aqua,
+        settle { offerLoaded(single) }
+        try render(CloudPlanSheet(model: single, interval: .year), size: nil, appearance: .aqua,
                    to: output.appendingPathComponent("plan-choose-team-unavailable-light.png"))
 
         // A reply naming a host outside the policy is refused here as well as in the API, and never opened.
         let refusedRecorder = BillingRecorder()
         let refused = try model("refused", SummaryBox(fixtureMe(stored: 212_000_000_000, billing: billingBeta)), recorder: refusedRecorder,
-                                checkout: URL(string: "https://checkout.stripe.com.example.net/c/pay/cs_test_1")!)
+                                checkout: [URL(string: "https://checkout.stripe.com.example.net/c/pay/cs_test_1")!])
         refused.perform(.choosePlan)
-        refused.startCheckout(ParaAirCloudCheckoutRequest(workspaceID: fixtureWorkspaceID, plan: .personal, interval: .year))
-        settle { refused.checkout != .working }
-        expect(refused.checkout == .failed(refusedText) && refusedRecorder.opened.isEmpty, "a foreign checkout host is refused and never opened")
-        try render(CloudPlanSheet(model: refused, step: .review, interval: .year, agreed: true, now: checkoutDay), size: nil,
+        agree(refused, ParaAirCloudCheckoutRequest(workspaceID: fixtureWorkspaceID, plan: .personal, interval: .year))
+        expect(refused.checkout == .failed(refusedText) && refusedRecorder.opened.isEmpty && refused.pendingCheckout == nil,
+               "a foreign checkout host is refused and never opened")
+        try render(CloudPlanSheet(model: refused, step: .review, interval: .year, agreed: true), size: nil,
                    appearance: .aqua, to: output.appendingPathComponent("plan-review-refused-light.png"))
 
         // Closing the sheet while the checkout is being created drops it: no page opens later.
         let slowRecorder = BillingRecorder()
         let slow = try model("slow", SummaryBox(fixtureMe(stored: 212_000_000_000, billing: billingBeta)), recorder: slowRecorder, delay: 0.5)
         slow.perform(.choosePlan)
-        slow.startCheckout(personal)
+        slow.loadQuote(personal.selection)
+        settle { if case .loaded = slow.quote { return true } else { return false } }
+        var slowRequest = personal
+        slowRequest.consent = ParaAirCloudCheckoutConsent(disclosureVersion: OfferBox().version, autoRenew: true, terms: true)
+        slow.startCheckout(slowRequest)
         expect(slow.checkout == .working, "a checkout shows progress while it is created")
         slow.closePlans()
         RunLoop.main.run(until: Date().addingTimeInterval(1.2))
-        expect(slowRecorder.requests.count == 1 && slowRecorder.opened.isEmpty && slow.checkout == .idle,
+        expect(slowRecorder.requests.count == 1 && slowRecorder.opened.isEmpty && slow.checkout == .idle && slow.pendingCheckout == nil,
                "closing the sheet drops a checkout still being created")
-        slow.startCheckout(personal)
+        slow.startCheckout(slowRequest)
         expect(slow.checkout == .idle && slowRecorder.requests.count == 1, "checkout starts only from the open sheet")
 
         // The portal: Update Payment… opens Stripe's portal; a checkout host in a portal reply is refused.
@@ -468,6 +505,132 @@ struct UISnapshots {
         legacy.perform(.managePlan)
         legacy.perform(.choosePlan)
         expect(legacyRecorder.opened == [manage] && !legacy.planSheetPresented, "an older service opens its plan page and offers no checkout")
+
+        // Review 2026-10-13 (app). A payment page that is open and unpaid is never followed by a second checkout:
+        // Done, the home window's Choose a Plan… and a reopened sheet all keep showing it. Start Over is the way out,
+        // and the next checkout makes the earlier page unpayable on the service.
+        let onceRecorder = BillingRecorder()
+        let once = try model("once", SummaryBox(fixtureMe(stored: 212_000_000_000, billing: billingBeta)), recorder: onceRecorder,
+                             checkout: [stripeCheckout, stripeCheckout2])
+        once.perform(.choosePlan)
+        agree(once, personal)
+        expect(once.checkout == .opened(stripeCheckout), "the first checkout opens")
+        once.perform(.choosePlan)
+        expect(once.checkout == .opened(stripeCheckout), "Choose a Plan… while the sheet shows the payment page keeps it")
+        once.closePlans()
+        expect(once.billing.controls.map(\.title) == ["Finish Payment…"], "an open payment page is offered again, not a new plan choice")
+        expect(once.billing.notice?.text == "A payment page is open for this workspace. Your plan shows here once the payment goes through.",
+               "Storage Settings says a payment page is open")
+        try render(ConnectionsView(stateRoot: once.stateRoot, vault: MemoryVault(), cloudAccount: once),
+                   size: CGSize(width: 680, height: 800), appearance: .aqua,
+                   to: output.appendingPathComponent("storage-billing-payment-open-light.png"))
+        once.perform(.choosePlan)
+        expect(once.planSheetPresented && once.checkout == .opened(stripeCheckout), "the reopened sheet shows the open payment page")
+        once.loadQuote(personal.selection)
+        settle { if case .loading = once.quote { return false } else { return true } }
+        var again = personal
+        again.consent = ParaAirCloudCheckoutConsent(disclosureVersion: OfferBox().version, autoRenew: true, terms: true)
+        once.startCheckout(again)
+        settle { once.checkout != .working }
+        expect(onceRecorder.requests.count == 1 && onceRecorder.opened == [stripeCheckout], "no second checkout while one is open")
+        // A folder switch replaces the model; the open page is still known.
+        let replaced = CloudAccountModel(stateRoot: once.stateRoot, dependencies: dependencies, baseURL: { _ in fixtureIssuer },
+                                         summaryLoader: { _ in (fixtureMe(stored: 1, billing: billingBeta), fixtureWorkspaceID) },
+                                         openURL: { _ in true })
+        expect(replaced.pendingCheckout?.url == stripeCheckout, "a replaced model still knows the open payment page")
+        once.startOver()
+        expect(once.pendingCheckout == nil && once.checkout == .idle && once.planSheetPresented, "Start Over returns to the plan choice")
+        settle { offerLoaded(once) }
+        agree(once, personal)
+        expect(onceRecorder.requests.count == 2 && once.checkout == .opened(stripeCheckout2), "after Start Over a new checkout opens")
+
+        // The drive's workspace decides the plan. Unresolved, nothing billing-related is shown, never another workspace's.
+        let teamReadOnly = ParaAirCloudBilling(provider: .stripe, status: .readOnly, plan: .team, interval: .month, seats: 3,
+                                               currentPeriodEnd: day("2026-10-05"), readOnlyAt: day("2026-10-05"), deletionAt: day("2026-11-04"),
+                                               checkoutAvailable: true, portalAvailable: true)
+        let teamID = "ws_01J9ZX5Q4WJ3M8K2V7N6R1T0YD"
+        let twoWorkspaces = fixtureMe(stored: 1, billing: billingActive, extra: [fixtureTeam(billing: teamReadOnly)])
+        let unresolvedRecorder = BillingRecorder()
+        let unresolved = try model("unresolved", SummaryBox(twoWorkspaces), recorder: unresolvedRecorder, workspaceID: nil)
+        expect(unresolved.workspace == nil, "an unresolved drive workspace names no workspace")
+        expect(unresolved.billing == CloudBillingPresentation() && unresolved.usage.billing == CloudBillingPresentation(),
+               "an unresolved drive workspace shows no plan, notice or billing action")
+        expect(unresolved.presentationState == .failed
+               && CloudUsagePresentation.make(unresolved.workspace, state: unresolved.presentationState).planLine == "Plan and usage are unavailable right now.",
+               "an unresolved drive workspace reads as unavailable, with Retry")
+        unresolved.perform(.managePlan)
+        settle { !unresolved.billingBusy }
+        expect(unresolvedRecorder.opened.isEmpty, "Manage Plan… opens nothing for an unresolved workspace")
+        try render(ConnectionsView(stateRoot: unresolved.stateRoot, vault: MemoryVault(), cloudAccount: unresolved),
+                   size: CGSize(width: 680, height: 800), appearance: .aqua,
+                   to: output.appendingPathComponent("storage-billing-unresolved-light.png"))
+        // A profile that saved its workspace needs no lookup, even after the drive is gone.
+        let saved = try model("saved-workspace", SummaryBox(twoWorkspaces), recorder: BillingRecorder(), workspaceID: nil, profileWorkspaceID: teamID)
+        expect(saved.workspace?.id == teamID && saved.billing.notice?.tone == .problem, "the saved workspace's read-only plan is shown")
+
+        // Waiting for the payment: an intermediate change (the processor's customer appears first) does not end the
+        // wait, and coming back to ParaAir refreshes until the plan is live.
+        let waitSummary = SummaryBox(fixtureMe(stored: 1, billing: billingBeta))
+        let waiter = try model("waiter", waitSummary, recorder: BillingRecorder())
+        waiter.perform(.choosePlan)
+        agree(waiter, personal)
+        var incomplete = billingBeta
+        incomplete.portalAvailable = true
+        waitSummary.me = fixtureMe(stored: 1, billing: incomplete)
+        settle { waiter.workspace?.billing == incomplete }
+        expect(waiter.workspace?.billing == incomplete, "the watch saw the intermediate change")
+        RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+        expect(waiter.paymentWaitTimedOut && waiter.pendingCheckout != nil && waiter.checkout == .opened(stripeCheckout),
+               "the wait runs out to a neutral state, still on the open page")
+        try render(CloudPlanSheet(model: waiter), size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-waiting-timed-out-light.png"))
+        waitSummary.me = fixtureMe(stored: 1, billing: billingActive)
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        settle { waiter.workspace?.billing?.status == .active }
+        expect(waiter.workspace?.billing?.status == .active && waiter.checkout == .opened(stripeCheckout),
+               "after an intermediate change, returning to ParaAir still shows the paid plan")
+        expect(!waiter.paymentWaitTimedOut && waiter.pendingCheckout == nil, "a live plan ends the wait")
+
+        // The merchant and the terms come from the offer, not from the workspace's earlier processor: an ended Stripe
+        // plan bought again through Paddle says Paddle charges.
+        let switched = try model("switched", SummaryBox(fixtureMe(stored: 1, billing: billingReadOnlyStripe, status: "read_only")),
+                                 recorder: BillingRecorder(), offer: OfferBox(provider: .paddle))
+        switched.perform(.choosePlan)
+        settle { offerLoaded(switched) }
+        switched.loadQuote(personal.selection)
+        settle { if case .loaded = switched.quote { return true } else { return false } }
+        if case .loaded(let quote) = switched.quote {
+            expect(CloudPlanSheet.seller(OfferBox(provider: .stripe).fixture(nil)) == "Sold by Parafield Inc.", "a name ending in a period gets no second one")
+            expect(CloudPlanSheet.seller(quote.offer) == "Sold by Paddle, our reseller."
+                   && quote.terms.bullets.contains { $0.hasPrefix("Then Paddle, our reseller, charges") }, "the offer names the merchant who charges")
+        } else { failures.append("the switched processor's terms load") }
+
+        // Prices come from the service: a changed price shows without an app update, and no offer means no checkout.
+        let raised = try model("raised", SummaryBox(fixtureMe(stored: 1, billing: billingBeta)), recorder: BillingRecorder(),
+                               offer: OfferBox(prices: ["personal_month": 1_200]))
+        raised.perform(.choosePlan)
+        settle { offerLoaded(raised) }
+        if case .loaded(let offer) = raised.offer {
+            expect(CloudPlanOffer.make(.personal, interval: .month, seats: 1, offer: offer)?.price == "$12 per month", "the card shows the service's price")
+        } else { failures.append("the raised offer loads") }
+        let closedRecorder = BillingRecorder()
+        let closed = try model("offer-failed", SummaryBox(fixtureMe(stored: 1, billing: billingBeta)), recorder: closedRecorder,
+                               offer: OfferBox(failure: DriveError(EIO, "Paid plans can’t be bought right now. Try again later")))
+        closed.perform(.choosePlan)
+        settle { if case .failed = closed.offer { return true } else { return false } }
+        expect(closed.offer == .failed("Paid plans can’t be bought right now. Try again later.") && !closed.planChoice.personal.available,
+               "without the service's offer nothing can be chosen")
+        try render(CloudPlanSheet(model: closed), size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-offer-failed-light.png"))
+        closed.loadQuote(personal.selection)
+        settle { if case .failed = closed.quote { return true } else { return false } }
+        var blind = personal
+        blind.consent = ParaAirCloudCheckoutConsent(disclosureVersion: OfferBox().version, autoRenew: true, terms: true)
+        closed.startCheckout(blind)
+        expect(closedRecorder.requests.isEmpty && closed.checkout == .idle, "no checkout without the service's terms")
+
+        // Seats: the default is not the workspace's entitlement, and the plan cards count seats, not members.
+        expect(CloudPlanChoice.defaultSeats(fixtureTeam(billing: billingBeta, seats: 5)) == 1, "Team seats do not start at the entitlement")
+        expect(CloudPlanOffer.make(.team, interval: .month, seats: 3, offer: OfferBox().fixture(nil))?.sizeCaption.contains("seats") == true,
+               "the Team card counts seats")
         return failures
     }
 
@@ -550,7 +713,7 @@ struct UISnapshots {
         ownBucket.storageKind = .ownBucket
         expect(!HomePresentation.make(ownBucket).notices.contains { $0.id == "billing" }, "your own bucket never shows ParaAir billing")
         let fenced = HomePresentation.make(scenarios["15-cloud-read-only"]!)
-        expect(fenced.status == .init(title: "Connected, read-only", detail: "You can open and download files, but changes don’t upload.",
+        expect(fenced.status == .init(title: "Connected, read-only", detail: "You can open, download, move and delete files. New and changed files don’t upload.",
                                       tone: .attention) && fenced.primary.action == .openInFinder,
                "a read-only workspace says so in the drive status")
         var fencedOwnBucket = scenarios["15-cloud-read-only"]!
@@ -561,38 +724,64 @@ struct UISnapshots {
 
         // What the plan sheet can sell.
         let teamID = "ws_01J9ZX5Q4WJ3M8K2V7N6R1T0YD"
+        let offer = OfferBox().fixture(nil)
         let both = CloudPlanChoice.make(fixtureMe(stored: 1, billing: billingBeta, extra: [fixtureTeam(billing: billingBeta)]),
-                                        preferredWorkspaceID: fixtureWorkspaceID)
+                                        preferredWorkspaceID: fixtureWorkspaceID, offer: offer)
         expect(both.personal.workspaces.map(\.id) == [fixtureWorkspaceID] && both.team.workspaces.map(\.id) == [teamID],
                "each plan is sold for its own kind of workspace")
-        let personalOnly = CloudPlanChoice.make(fixtureMe(stored: 1, billing: billingBeta), preferredWorkspaceID: nil)
+        let personalOnly = CloudPlanChoice.make(fixtureMe(stored: 1, billing: billingBeta), preferredWorkspaceID: nil, offer: offer)
         expect(personalOnly.team.reason == "For team workspaces. This account has none yet.", "no team workspace")
         var teamActive = billingActive
         teamActive.plan = .team
         expect(CloudPlanChoice.make(fixtureMe(stored: 1, billing: billingBeta, extra: [fixtureTeam(billing: teamActive)]),
-                                    preferredWorkspaceID: nil).team.reason == "Your team already has a plan.", "a paid team")
+                                    preferredWorkspaceID: nil, offer: offer).team.reason == "Your team already has a plan.", "a paid team")
         expect(CloudPlanChoice.make(fixtureMe(stored: 1, billing: billingBeta,
                                               extra: [fixtureTeam(billing: ParaAirCloudBilling(provider: .paddle, status: .none), role: "admin")]),
-                                    preferredWorkspaceID: nil).team.reason == "Only the workspace owner can choose this plan.", "not the owner")
-        expect(CloudPlanChoice.defaultSeats(fixtureTeam(billing: billingBeta, seats: 4)) == 4, "Team starts at the workspace's seats")
+                                    preferredWorkspaceID: nil, offer: offer).team.reason == "Only the workspace owner can choose this plan.", "not the owner")
+        let notLoaded = CloudPlanChoice.make(fixtureMe(stored: 1, billing: billingBeta), preferredWorkspaceID: nil, offer: nil)
+        expect(!notLoaded.personal.available && !notLoaded.team.available, "nothing is on sale before the offer arrives")
+        var personalOnlyOffer = offer
+        personalOnlyOffer.prices.removeAll { $0.plan == .team }
+        expect(!CloudPlanChoice.make(fixtureMe(stored: 1, billing: billingBeta, extra: [fixtureTeam(billing: billingBeta)]),
+                                     preferredWorkspaceID: nil, offer: personalOnlyOffer).team.available, "a plan without a price is not on sale")
 
-        // Plan cards: the plan size leads, the price supports it.
-        expect(CloudPlanOffer.make(.personal, interval: .month, seats: 1)
+        // Plan cards: the plan size leads, the price supports it. Every figure comes from the offer.
+        expect(CloudPlanOffer.make(.personal, interval: .month, seats: 1, offer: offer)
                == .init(name: "Personal", size: "1 TB", sizeCaption: "of storage for you", price: "$10 per month", detail: "Or $100 a year"),
                "Personal monthly card")
-        expect(CloudPlanOffer.make(.personal, interval: .year, seats: 1).price == "$100 per year"
-               && CloudPlanOffer.make(.personal, interval: .year, seats: 1).detail == "Saves $20 a year", "Personal yearly card")
-        expect(CloudPlanOffer.make(.team, interval: .month, seats: 3)
-               == .init(name: "Team", size: "3 TB", sizeCaption: "shared by 3 members", price: "$48 per month", detail: "$16 per member"),
+        expect(CloudPlanOffer.make(.personal, interval: .year, seats: 1, offer: offer)?.price == "$100 per year"
+               && CloudPlanOffer.make(.personal, interval: .year, seats: 1, offer: offer)?.detail == "Saves $20 a year", "Personal yearly card")
+        expect(CloudPlanOffer.make(.team, interval: .month, seats: 3, offer: offer)
+               == .init(name: "Team", size: "3 TB", sizeCaption: "3 seats, shared by the team", price: "$48 per month", detail: "$16 per seat"),
                "Team monthly card")
-        expect(CloudPlanOffer.make(.team, interval: .year, seats: 3).price == "$480 per year"
-               && CloudPlanOffer.make(.team, interval: .year, seats: 3).detail == "$160 per member, saves $96 a year", "Team yearly card")
-        expect(CloudPlanOffer.make(.team, interval: .month, seats: 1).sizeCaption == "shared by 1 member", "one member is singular")
-        expect(CloudPlanOffer.perMember(interval: .month)
-               == .init(name: "Team", size: "1 TB", sizeCaption: "per member, shared by the team", price: "$16 per member per month",
-                        detail: "Or $160 per member a year"), "Team that can't be chosen shows per-member terms")
-        expect(CloudPlanOffer.perMember(interval: .year).price == "$160 per member per year"
-               && CloudPlanOffer.perMember(interval: .year).detail == "Saves $32 per member a year", "per-member yearly terms")
+        expect(CloudPlanOffer.make(.team, interval: .year, seats: 3, offer: offer)?.price == "$480 per year"
+               && CloudPlanOffer.make(.team, interval: .year, seats: 3, offer: offer)?.detail == "$160 per seat, saves $96 a year", "Team yearly card")
+        expect(CloudPlanOffer.make(.team, interval: .month, seats: 1, offer: offer)?.sizeCaption == "1 seat, shared by the team", "one seat is singular")
+        expect(CloudPlanOffer.perSeat(interval: .month, offer: offer)
+               == .init(name: "Team", size: "1 TB", sizeCaption: "per seat, shared by the team", price: "$16 per seat per month",
+                        detail: "Or $160 per seat a year"), "Team that can't be chosen shows per-seat terms")
+        expect(CloudPlanOffer.perSeat(interval: .year, offer: offer)?.price == "$160 per seat per year"
+               && CloudPlanOffer.perSeat(interval: .year, offer: offer)?.detail == "Saves $32 per seat a year", "per-seat yearly terms")
+        expect(CloudPlanOffer.make(.personal, interval: .year, seats: 1, offer: personalOnlyOffer) != nil
+               && CloudPlanOffer.make(.team, interval: .year, seats: 3, offer: personalOnlyOffer) == nil, "no card price without an offer price")
+
+        // An open payment page: Finish Payment… instead of a new plan choice, with the state's own notice kept.
+        let open = CloudBillingPresentation.make(fixtureMe(stored: 1, billing: billingBeta).workspaces.first, state: .loaded,
+                                                 planChoiceAvailable: true, pendingCheckout: true)
+        expect(open.controls == [CloudBillingPresentation.finishPayment] && open.notice?.tone == .neutral, "an open payment page is offered again")
+        let openReadOnly = CloudBillingPresentation.make(fixtureMe(stored: 1, billing: billingReadOnly).workspaces.first, state: .loaded,
+                                                         planChoiceAvailable: true, pendingCheckout: true)
+        expect(openReadOnly.controls == [.init(action: .choosePlan, title: "Finish Payment…", prominent: true), CloudBillingPresentation.managePlan]
+               && openReadOnly.notice == readOnly.notice, "read-only keeps its notice while a payment page is open")
+        // A paid status without a plan the service knows still offers the portal and its dates.
+        var unknownPlan = billingActive
+        unknownPlan.plan = nil; unknownPlan.interval = nil
+        let unknown = make(unknownPlan)
+        expect(unknown.summary == nil && unknown.date == Row(label: "Renews", value: "October 12, 2027") && unknown.controls == [CloudBillingPresentation.managePlan],
+               "an unknown paid plan keeps its date and Manage Plan…")
+        var crowded = billingPastDue
+        crowded.seats = 1001
+        expect(make(crowded, kind: "team", seats: 1001).summary == "Team, 1001 seats, billed monthly", "more than 1000 seats still show")
 
         // Copy: no em dashes anywhere in billing text.
         var copy: [String] = []
@@ -602,17 +791,19 @@ struct UISnapshots {
         }
         for plan in ParaAirCloudBilling.Plan.allCases {
             for interval in ParaAirCloudBilling.Interval.allCases {
-                for offer in [CloudPlanOffer.make(plan, interval: interval, seats: 3), .perMember(interval: interval)] {
-                    copy += [offer.name, offer.size, offer.sizeCaption, offer.price, offer.detail]
+                for card in [CloudPlanOffer.make(plan, interval: interval, seats: 3, offer: offer), .perSeat(interval: interval, offer: offer),
+                             .unpriced(plan, interval: interval)].compactMap({ $0 }) {
+                    copy += [card.name, card.size, card.sizeCaption, card.price, card.detail]
                 }
                 for seller in [ParaAirCloudBilling.Provider.stripe, .paddle] {
-                    let disclosure = ParaAirCloudCheckoutDisclosure.make(plan: plan, interval: interval, seats: 3, storageTb: 1,
-                                                                         now: checkoutDay, seller: seller)
-                    copy += [disclosure.heading, disclosure.priceLine, disclosure.renewalConsent, disclosure.documentsConsent] + disclosure.bullets
+                    let quoted = OfferBox(provider: seller).fixture(ParaAirCloudOfferRequest(plan: plan, interval: interval,
+                                                                                            seats: plan == .team ? 3 : 1, extraStorageTb: 1))
+                    guard let terms = quoted.quote.flatMap(ParaAirCloudCheckoutTerms.init) else { failures.append("fixture terms parse"); continue }
+                    copy += [terms.heading, terms.priceLine, terms.renewalConsent, terms.documentsConsent, CloudPlanSheet.seller(quoted)] + terms.bullets
                 }
             }
         }
-        copy += [both.team.reason, personalOnly.team.reason].compactMap { $0 }
+        copy += [both.team.reason, personalOnly.team.reason, open.notice?.text].compactMap { $0 } + open.controls.map(\.title)
         expect(!copy.joined(separator: "\n").contains("\u{2014}"), "billing copy avoids em dashes")
         return failures
     }
@@ -896,8 +1087,103 @@ final class BillingRecorder: @unchecked Sendable {
     private var urls: [URL] = []
     var requests: [ParaAirCloudCheckoutRequest] { lock.withLock { checkouts } }
     var opened: [URL] { lock.withLock { urls } }
-    func record(_ request: ParaAirCloudCheckoutRequest) { lock.withLock { checkouts.append(request) } }
+    @discardableResult
+    func record(_ request: ParaAirCloudCheckoutRequest) -> Int { lock.withLock { checkouts.append(request); return checkouts.count } }
     func open(_ url: URL) { lock.withLock { urls.append(url) } }
+}
+
+/// The offer the fixture service returns (`GET /v1/billing/offer`), with the service's Appendix A text
+/// (cloud/src/billing/disclosure.ts, refund Option A) for the snapshot day. `requests` records the selections asked for.
+final class OfferBox: @unchecked Sendable {
+    let provider: ParaAirCloudBilling.Provider
+    let version = "A-draft-2026-10-09"
+    private let prices: [String: Int]
+    private let failure: DriveError?
+    private let lock = NSLock()
+    private var asked: [ParaAirCloudOfferRequest?] = []
+    static let catalog: [String: Int] = ["personal_month": 1_000, "personal_year": 10_000, "team_month": 1_600, "team_year": 16_000,
+                                         "storage_month": 1_000, "storage_year": 12_000]
+
+    init(provider: ParaAirCloudBilling.Provider = .stripe, prices: [String: Int] = [:], failure: DriveError? = nil) {
+        self.provider = provider; self.prices = Self.catalog.merging(prices) { $1 }; self.failure = failure
+    }
+    var requests: [ParaAirCloudOfferRequest?] { lock.withLock { asked } }
+
+    func offer(_ selection: ParaAirCloudOfferRequest?) throws -> ParaAirCloudBillingOffer {
+        lock.withLock { asked.append(selection) }
+        if let failure { throw failure }
+        return fixture(selection)
+    }
+
+    func fixture(_ selection: ParaAirCloudOfferRequest?) -> ParaAirCloudBillingOffer {
+        let ids = ["personal_month", "personal_year", "team_month", "team_year", "storage_month", "storage_year"]
+        let rows = ids.map { id -> ParaAirCloudBillingOffer.Price in
+            let parts = id.split(separator: "_").map(String.init)
+            return .init(item: id, kind: parts[0] == "storage" ? .storage : .plan, plan: ParaAirCloudBilling.Plan(rawValue: parts[0]),
+                         interval: ParaAirCloudBilling.Interval(rawValue: parts[1])!, unitAmountCents: prices[id]!, perMember: parts[0] == "team")
+        }
+        var quote: ParaAirCloudBillingOffer.Quote?
+        if let selection {
+            let unit = prices["\(selection.plan.rawValue)_\(selection.interval.rawValue)"]!, block = prices["storage_\(selection.interval.rawValue)"]!
+            let total = unit * (selection.plan == .team ? selection.seats : 1) + block * selection.extraStorageTb
+            let text = Self.disclosure(selection, unit: unit, block: block, total: total, seller: provider)
+            quote = .init(plan: selection.plan, interval: selection.interval, seats: selection.seats, extraStorageTb: selection.extraStorageTb,
+                          amountCents: total, currency: "USD", terms: text.terms, consent: text.consent)
+        }
+        return ParaAirCloudBillingOffer(provider: provider, merchant: provider == .paddle ? .init(name: "Paddle", reseller: true)
+                                            : .init(name: "Parafield Inc.", reseller: false),
+                                        disclosureVersion: version, currency: "USD", prices: rows, quote: quote)
+    }
+
+    static func disclosure(_ s: ParaAirCloudOfferRequest, unit unitCents: Int, block: Int, total totalCents: Int,
+                           seller: ParaAirCloudBilling.Provider) -> (terms: [String], consent: String) {
+        let team = s.plan == .team, yearly = s.interval == .year, storageTb = s.extraStorageTb
+        let unit = ParaAirCloudBillingCatalog.formatUSD(cents: unitCents), total = ParaAirCloudBillingCatalog.formatUSD(cents: totalCents)
+        let when = yearly ? "every year on October 12" : "on the 12th of every month"
+        let period = yearly ? "year" : "month"
+        let charger = seller == .paddle ? "Paddle, our reseller, charges" : "we charge"
+        let account = UISnapshots.fixtureIssuer.absoluteString + "/billing/account"
+        var terms = ["ParaAir Cloud \(team ? "Team" : "Personal"), billed \(yearly ? "yearly" : "monthly")",
+                     "\(unit) \(team ? "per member " : "")per \(period) plus tax. Renews automatically every \(period) until you cancel."]
+        var bullets: [String] = []
+        if team { bullets.append("You are buying \(s.seats) member seats\(storageTb > 0 ? " and added storage" : ""): \(total) per \(period) plus tax.") }
+        bullets.append("Today you pay \(total) plus any tax, which is shown before you pay.")
+        if storageTb > 0 {
+            bullets.append("This includes \(storageTb) TB of added storage at \(ParaAirCloudBillingCatalog.formatUSD(cents: block)) per TB per \(period) plus tax.")
+        }
+        bullets.append(team ? "Then \(charger) for the current number of members, at \(unit) per member plus tax\(storageTb > 0 ? ", plus added storage" : ""), \(when)."
+                            : "Then \(charger) \(total) plus tax \(when).")
+        if team {
+            bullets.append("Your \(yearly ? "yearly" : "monthly") charge changes when you add or remove members. Adding a member charges a prorated amount "
+                + "\(yearly ? "for the rest of the year " : "")right away. Removing a member lowers the charge from your next \(yearly ? "yearly " : "")renewal; "
+                + "the seat stays paid until then.")
+            bullets.append("Includes 1 TB of storage per member, shared by the team, and up to 3 TB of full-speed transfer per member each month, shared. "
+                + "No overage charges.")
+        } else {
+            bullets.append(storageTb > 0
+                ? "Includes \(1 + storageTb) TB of storage and up to \(3 * (1 + storageTb)) TB of full-speed transfer each month. No overage charges."
+                : "Includes 1 TB of storage and up to 3 TB of full-speed transfer each month. No overage charges.")
+        }
+        if yearly {
+            bullets.append(team ? "We will email the owner and billing admins 25 to 30 days before each yearly renewal."
+                           : "We will email you 25 to 30 days before each yearly renewal.")
+        }
+        bullets.append(team
+            ? "The owner, or an admin with billing access, can cancel any time online in the ParaAir app (Settings > Account > Subscription) or at \(account). "
+                + "Cancel before your renewal date to avoid the next charge."
+            : "Cancel any time online: in the ParaAir app (Settings > Account > Subscription) or at \(account). Cancel before your renewal date "
+                + "to avoid the next charge. You keep access until the end of the \(period) you paid for.")
+        bullets.append("Full refund if you ask within 14 days of this first payment\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
+        bullets.append("We will email you at least 14 days before any price change, and you can cancel first.")
+        terms += bullets.map { "- " + $0 }
+        let renewal = team
+            ? "I agree that this ParaAir Cloud Team plan renews automatically at \(unit) per member per \(period) plus tax, for the number of members at each renewal, until I cancel."
+            : "I agree that my ParaAir Cloud Personal plan renews automatically at \(total) per \(period) plus tax until I cancel."
+        let legal = UISnapshots.fixtureIssuer.absoluteString + "/legal/"
+        let documents = "I agree to the [Terms of Service](\(legal)terms) and the [Subscription, Cancellation and Refund Policy](\(legal)subscription-policy)"
+            + "\(team ? ", and I am authorized to agree for this team" : "")."
+        return (terms, renewal + " " + documents)
+    }
 }
 
 /// The summary the fixture service returns; replacing it stands in for a processor webhook.

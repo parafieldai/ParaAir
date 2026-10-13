@@ -297,11 +297,25 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
 
     // MARK: Billing
 
+    /// `GET /v1/billing/offer`: what the service sells, who charges, the current disclosure version and, for
+    /// `selection`, the quote whose text the plan sheet shows before checkout (contract README). A quote that does
+    /// not answer the selection is malformed; a nil quote means that plan is not sold.
+    public func billingOffer(_ selection: ParaAirCloudOfferRequest? = nil) throws -> ParaAirCloudBillingOffer {
+        try billing(.offer) {
+            guard selection?.isValid ?? true else { throw invalidRequest() }
+            let call = Call(method: "GET", path: "/v1/billing/offer", route: "GET /v1/billing/offer", query: selection?.query ?? [],
+                            maxResponseBytes: 256 << 10)
+            let offer = try decode(ParaAirCloudBillingOffer.self, perform(call))
+            if let quote = offer.quote { guard let selection, selection.matches(quote) else { throw malformed() } }
+            return offer
+        }
+    }
+
     /// `POST /v1/billing/checkout`: the page where the owner pays, already checked by `ParaAirCloudBillingLink`. One
     /// attempt only: every call is a processor session counted against the workspace's hourly limit, and the user can
     /// simply try again. The plan changes when the processor's webhook arrives; reload `/v1/me` afterwards.
     public func billingCheckout(_ request: ParaAirCloudCheckoutRequest) throws -> URL {
-        try billing(portal: false) {
+        try billing(.checkout) {
             guard request.isValid else { throw invalidRequest() }
             var call = Call(method: "POST", path: "/v1/billing/checkout", route: "POST /v1/billing/checkout", body: try request.body(),
                             maxResponseBytes: 64 << 10)
@@ -312,7 +326,7 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
 
     /// `POST /v1/billing/portal`: the processor's customer portal (payment method, cancel, resume, invoices).
     public func billingPortal(workspaceID: String) throws -> URL {
-        try billing(portal: true) {
+        try billing(.portal) {
             guard ParaAirCloudIDs.isWorkspaceID(workspaceID) else { throw invalidRequest() }
             var call = Call(method: "POST", path: "/v1/billing/portal", route: "POST /v1/billing/portal",
                             body: try json(["workspaceId": workspaceID]), maxResponseBytes: 64 << 10)
@@ -328,23 +342,30 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
         catch let error as DriveError { throw ParaAirCloudCallError(drive: error, code: nil) }
     }
 
+    enum BillingCall { case offer, checkout, portal }
+
     /// Billing answers reuse the error table (contract README "Billing"), whose fixed messages describe files; these
     /// say what the code means for a plan. The errno and disposition stay those of the table.
-    private func billing<T>(portal: Bool, _ body: () throws -> T) throws -> T {
+    private func billing<T>(_ kind: BillingCall, _ body: () throws -> T) throws -> T {
         do { return try body() }
-        catch let error as ParaAirCloudCallError { throw Self.billingError(error, portal: portal) }
+        catch let error as ParaAirCloudCallError { throw Self.billingError(error, kind) }
     }
 
-    static func billingError(_ error: ParaAirCloudCallError, portal: Bool) -> DriveError {
+    static func billingError(_ error: ParaAirCloudCallError, _ kind: BillingCall) -> DriveError {
         let text: String
         switch error.code {
         case .notFound?:
-            text = portal ? "This workspace has no paid plan to manage" : "Paid plans aren’t available for this workspace right now"
+            text = kind == .portal ? "This workspace has no paid plan to manage" : "Paid plans aren’t available for this workspace right now"
         case .forbidden?: text = "Only the workspace owner can change its plan"
-        case .busy?: text = "This workspace already has a paid plan. Use Manage Plan to change it"
+        case .busy?:
+            // A live subscription, or an earlier checkout that was paid while its subscription has not arrived yet.
+            text = "This workspace already has a paid plan or a payment that is still going through. Check again in a few minutes, or use Manage Plan"
         case .invalidRequest?: text = "ParaAir Cloud didn’t accept that plan. For Team, choose at least one seat per member"
+        case .disclosureOutdated?: text = "The plan terms changed. Read them again and agree to continue"
+        case .billingUnavailable?: text = "Paid plans can’t be bought right now. Try again later"
         case .rateLimited?:
-            let minutes = error.retryAfterSeconds.map { max(1, ($0 + 59) / 60) }
+            // retryAfterSeconds is clamped when parsed; this division cannot overflow either way.
+            let minutes = error.retryAfterSeconds.map { max(1, $0 / 60 + ($0 % 60 == 0 ? 0 : 1)) }
             text = "Too many payment pages were opened for this workspace. "
                 + (minutes.map { "Try again in \($0) minute\($0 == 1 ? "" : "s")" } ?? "Try again later")
         case .unavailable?, .internal?, .storageUnavailable?:

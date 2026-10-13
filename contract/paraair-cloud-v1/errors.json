@@ -37,6 +37,7 @@
     {"code": "is_directory", "http": 409, "errno": "EISDIR", "errnoValue": 21, "fences": true},
     {"code": "not_empty", "http": 409, "errno": "ENOTEMPTY", "errnoValue": 66, "fences": false},
     {"code": "busy", "http": 409, "errno": "EBUSY", "errnoValue": 16, "fences": false},
+    {"code": "disclosure_outdated", "http": 409, "errno": "ESTALE", "errnoValue": 70, "fences": false},
     {"code": "move_too_large", "http": 413, "errno": "EXDEV", "errnoValue": 18, "fences": false},
     {"code": "transaction_fenced", "http": 409, "errno": "ECANCELED", "errnoValue": 89, "fences": true},
     {"code": "transaction_committed", "http": 409, "errno": "ESTALE", "errnoValue": 70, "fences": false},
@@ -50,7 +51,8 @@
     {"code": "client_too_old", "http": 426, "errno": "ENOTSUP", "errnoValue": 45, "fences": false},
     {"code": "internal", "http": 500, "errno": "EIO", "errnoValue": 5, "fences": false},
     {"code": "storage_unavailable", "http": 502, "errno": "EIO", "errnoValue": 5, "fences": false},
-    {"code": "unavailable", "http": 503, "errno": "EIO", "errnoValue": 5, "fences": false}
+    {"code": "unavailable", "http": 503, "errno": "EIO", "errnoValue": 5, "fences": false},
+    {"code": "billing_unavailable", "http": 503, "errno": "EIO", "errnoValue": 5, "fences": false}
   ],
   "unknown": [
     {"httpClass": "4xx", "errno": "EPROTO", "errnoValue": 100, "fences": false},

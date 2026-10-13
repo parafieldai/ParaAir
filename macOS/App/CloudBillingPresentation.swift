@@ -25,15 +25,34 @@ struct CloudBillingPresentation: Equatable {
 
     static let choosePlan = Control(action: .choosePlan, title: "Choose a Plan…")
     static let managePlan = Control(action: .managePlan, title: "Manage Plan…")
+    /// While a payment page is open: the sheet shows it again (or starts over), never a second checkout.
+    static let finishPayment = Control(action: .choosePlan, title: "Finish Payment…")
     static let previousPlan = "Previous plan"
 
     /// `planChoiceAvailable`: some workspace of the account offers checkout, so the plan sheet has something to sell.
-    static func make(_ workspace: ParaAirCloudMe.Workspace?, state: CloudSummaryState, planChoiceAvailable: Bool) -> CloudBillingPresentation {
+    /// `pendingCheckout`: a payment page for this workspace is open and not paid yet.
+    static func make(_ workspace: ParaAirCloudMe.Workspace?, state: CloudSummaryState, planChoiceAvailable: Bool,
+                     pendingCheckout: Bool = false) -> CloudBillingPresentation {
         guard state != .failed, let workspace else { return .init() }
         guard let billing = workspace.billing else {
             // A service from before billing may still link a plan page.
             return .init(controls: workspace.plan?.manageUrl == nil ? [] : [managePlan])
         }
+        var result = presentation(workspace, billing, planChoiceAvailable: planChoiceAvailable)
+        if pendingCheckout, !billing.isLive {
+            let prominent = result.controls.first { $0.action == .choosePlan }?.prominent ?? false
+            result.controls = [Control(action: .choosePlan, title: finishPayment.title, prominent: prominent)]
+                + result.controls.filter { $0.action != .choosePlan }
+            if result.notice == nil {
+                result.notice = .init(id: "billing", text: "A payment page is open for this workspace. Your plan shows here once the payment goes through.",
+                                      tone: .neutral)
+            }
+        }
+        return result
+    }
+
+    private static func presentation(_ workspace: ParaAirCloudMe.Workspace, _ billing: ParaAirCloudBilling,
+                                     planChoiceAvailable: Bool) -> CloudBillingPresentation {
         let owner = workspace.role == "owner"
         let checkout = billing.checkoutAvailable, portal = billing.portalAvailable
         var result = CloudBillingPresentation(summary: summary(billing))
@@ -100,10 +119,11 @@ struct CloudBillingPresentation: Equatable {
         return result
     }
 
+    /// Nil when the service sends a paid status without a plan it knows: the status, dates and actions still show.
     static func summary(_ billing: ParaAirCloudBilling) -> String? {
         guard let plan = billing.plan, let interval = billing.interval else { return nil }
         var parts = [plan == .team ? "Team" : "Personal"]
-        if plan == .team, let seats = billing.seats { parts.append(seats == 1 ? "1 seat" : "\(seats) seats") }
+        if plan == .team, let seats = billing.seats, seats > 0 { parts.append(seats == 1 ? "1 seat" : "\(seats) seats") }
         parts.append(interval == .year ? "billed yearly" : "billed monthly")
         if billing.extraStorageTb > 0 { parts.append("\(billing.extraStorageTb) TB added storage") }
         return parts.joined(separator: ", ")
@@ -117,7 +137,8 @@ struct CloudBillingPresentation: Equatable {
 }
 
 /// What the plan sheet can sell: Personal for the account's personal workspace, Team for a team workspace the user
-/// owns. The service requires the plan to match the workspace's kind, so each option carries its workspaces.
+/// owns, and only plans the service's offer has a price for. The service requires the plan to match the workspace's
+/// kind, so each option carries its workspaces.
 struct CloudPlanChoice: Equatable {
     struct Option: Equatable {
         var plan: ParaAirCloudBilling.Plan
@@ -132,13 +153,14 @@ struct CloudPlanChoice: Equatable {
 
     func option(_ plan: ParaAirCloudBilling.Plan) -> Option { plan == .team ? team : personal }
 
-    static func make(_ me: ParaAirCloudMe?, preferredWorkspaceID: String?) -> CloudPlanChoice {
+    /// `offer` nil: not loaded yet, so nothing is on sale.
+    static func make(_ me: ParaAirCloudMe?, preferredWorkspaceID: String?, offer: ParaAirCloudBillingOffer?) -> CloudPlanChoice {
         let all = me?.workspaces ?? []
         func option(_ plan: ParaAirCloudBilling.Plan) -> Option {
             let kind = all.filter { $0.kind == plan.rawValue }
             let open = kind.filter { $0.billing?.checkoutAvailable == true }
                 .sorted { ($0.id == preferredWorkspaceID ? 0 : 1) < ($1.id == preferredWorkspaceID ? 0 : 1) }
-            guard open.isEmpty else { return Option(plan: plan, workspaces: open) }
+            guard open.isEmpty || offer?.sells(plan) != true else { return Option(plan: plan, workspaces: open) }
             let reason: String
             if kind.isEmpty {
                 reason = plan == .team ? "For team workspaces. This account has none yet." : "This account has no personal workspace."
@@ -154,14 +176,14 @@ struct CloudPlanChoice: Equatable {
         return CloudPlanChoice(personal: option(.personal), team: option(.team))
     }
 
-    /// Team seats start at the seats the workspace has now (the service also requires one per member).
-    static func defaultSeats(_ workspace: ParaAirCloudMe.Workspace?) -> Int {
-        min(ParaAirCloudBillingCatalog.maxSeats, max(1, workspace?.plan?.seats ?? 1))
-    }
+    /// Team seats start at one. The service requires at least one seat per member, but `/v1/me` does not say how many
+    /// members a team has, and `plan.seats` is the seats usable now (an admin grant or the last paid count), not the
+    /// members, so starting there could pre-select seats nobody uses (review 2026-10-13).
+    static func defaultSeats(_ workspace: ParaAirCloudMe.Workspace?) -> Int { 1 }
 }
 
-/// Plan card figures. The plan size leads, the total price supports it, the per-unit price and the yearly saving
-/// support that.
+/// Plan card figures from the service's offer. The plan size leads, the total price supports it, the per-seat price
+/// and the yearly saving support that. Nil when the offer has no price for the plan and period.
 struct CloudPlanOffer: Equatable {
     var name: String
     var size: String
@@ -169,32 +191,43 @@ struct CloudPlanOffer: Equatable {
     var price: String
     var detail: String
 
-    static func make(_ plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int) -> CloudPlanOffer {
-        let catalog = ParaAirCloudBillingCatalog.self
+    static func make(_ plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int,
+                     offer: ParaAirCloudBillingOffer) -> CloudPlanOffer? {
         let units = plan == .team ? seats : 1
+        guard let unitCents = offer.unitAmountCents(plan, interval),
+              let totalCents = offer.amountCents(plan: plan, interval: interval, seats: units) else { return nil }
         let period = interval == .year ? "year" : "month"
-        let total = catalog.formatShortUSD(cents: catalog.amountCents(plan: plan, interval: interval, seats: units, storageTb: 0))
-        let unit = catalog.formatShortUSD(cents: catalog.unitAmountCents(plan, interval))
-        let saving = catalog.formatShortUSD(cents: catalog.yearlySavingsCents(plan) * units)
-        let size = CloudUsagePresentation.format(catalog.terabyte * Int64(units))
+        let total = offer.format(cents: totalCents, short: true), unit = offer.format(cents: unitCents, short: true)
+        let saving = offer.yearlySavingsCents(plan).map { offer.format(cents: $0 * units, short: true) }
+        let size = CloudUsagePresentation.format(ParaAirCloudBillingCatalog.terabyte * Int64(units))
         switch plan {
         case .personal:
-            return .init(name: "Personal", size: size, sizeCaption: "of storage for you",
-                         price: "\(total) per \(period)", detail: interval == .year ? "Saves \(saving) a year" : "Or \(catalog.formatShortUSD(cents: catalog.unitAmountCents(.personal, .year))) a year")
+            let other = interval == .year ? saving.map { "Saves \($0) a year" }
+                : offer.unitAmountCents(.personal, .year).map { "Or \(offer.format(cents: $0, short: true)) a year" }
+            return .init(name: "Personal", size: size, sizeCaption: "of storage for you", price: "\(total) per \(period)",
+                         detail: other ?? (interval == .year ? "Billed once a year" : "Billed every month"))
         case .team:
-            return .init(name: "Team", size: size, sizeCaption: seats == 1 ? "shared by 1 member" : "shared by \(seats) members",
+            return .init(name: "Team", size: size, sizeCaption: seats == 1 ? "1 seat, shared by the team" : "\(seats) seats, shared by the team",
                          price: "\(total) per \(period)",
-                         detail: interval == .year ? "\(unit) per member, saves \(saving) a year" : "\(unit) per member")
+                         detail: interval == .year ? "\(unit) per seat" + (saving.map { ", saves \($0) a year" } ?? "") : "\(unit) per seat")
         }
     }
 
-    /// Team when it can't be chosen here: the per-member terms, not a made-up team size.
-    static func perMember(interval: ParaAirCloudBilling.Interval) -> CloudPlanOffer {
-        let catalog = ParaAirCloudBillingCatalog.self
-        let unit = catalog.formatShortUSD(cents: catalog.unitAmountCents(.team, interval))
-        return .init(name: "Team", size: CloudUsagePresentation.format(catalog.terabyte), sizeCaption: "per member, shared by the team",
-                     price: "\(unit) per member per \(interval == .year ? "year" : "month")",
-                     detail: interval == .year ? "Saves \(catalog.formatShortUSD(cents: catalog.yearlySavingsCents(.team))) per member a year"
-                         : "Or \(catalog.formatShortUSD(cents: catalog.unitAmountCents(.team, .year))) per member a year")
+    /// Team when it can't be chosen here: the per-seat terms, not a made-up team size.
+    static func perSeat(interval: ParaAirCloudBilling.Interval, offer: ParaAirCloudBillingOffer) -> CloudPlanOffer? {
+        guard let unitCents = offer.unitAmountCents(.team, interval) else { return nil }
+        let unit = offer.format(cents: unitCents, short: true)
+        let other = interval == .year
+            ? offer.yearlySavingsCents(.team).map { "Saves \(offer.format(cents: $0, short: true)) per seat a year" }
+            : offer.unitAmountCents(.team, .year).map { "Or \(offer.format(cents: $0, short: true)) per seat a year" }
+        return .init(name: "Team", size: CloudUsagePresentation.format(ParaAirCloudBillingCatalog.terabyte), sizeCaption: "per seat, shared by the team",
+                     price: "\(unit) per seat per \(interval == .year ? "year" : "month")", detail: other ?? "One seat for each member")
+    }
+
+    /// A plan the offer has no price for in this period: the size, and that it is not sold that way.
+    static func unpriced(_ plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval) -> CloudPlanOffer {
+        .init(name: plan == .team ? "Team" : "Personal", size: CloudUsagePresentation.format(ParaAirCloudBillingCatalog.terabyte),
+              sizeCaption: plan == .team ? "per seat, shared by the team" : "of storage for you",
+              price: "Not sold \(interval == .year ? "yearly" : "monthly")", detail: "Try the other billing period")
     }
 }

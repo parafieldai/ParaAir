@@ -24,7 +24,7 @@ public enum CloudDriveSetup {
         let detail = try api.drive(driveID)
         guard detail.drive.id == driveID else { throw DriveError(ENXIO, "ParaAir Cloud returned a different drive") }
         let value = profile(issuer: account.issuer, accountID: account.id, driveID: driveID, finderName: finderName,
-                            stateRoot: stateRoot, freeBytes: try freeBytes(stateRoot), name: name)
+                            stateRoot: stateRoot, freeBytes: try freeBytes(stateRoot), name: name, workspaceID: detail.drive.workspaceId)
         try ProfileStore(root: stateRoot).save(value, overwrite: replace)
         return value
     }
@@ -42,14 +42,14 @@ public enum CloudDriveSetup {
         else { try DurableIO.write(JSONEncoder().encode(pending), to: file) }
         let drive = try api.createDrive(workspaceID: workspaceID, name: name, idempotencyKey: pending.idempotencyKey)
         let value = profile(issuer: account.issuer, accountID: account.id, driveID: drive.id, finderName: finderName,
-                            stateRoot: stateRoot, freeBytes: try freeBytes(stateRoot), name: slug)
+                            stateRoot: stateRoot, freeBytes: try freeBytes(stateRoot), name: slug, workspaceID: drive.workspaceId)
         try ProfileStore(root: stateRoot).save(value)
         try? FileManager.default.removeItem(at: file)
         return value
     }
 
     static func profile(issuer: String, accountID: String, driveID: String, finderName: String, stateRoot: URL, freeBytes: Int64,
-                        name: String? = nil) -> DriveProfile {
+                        name: String? = nil, workspaceID: String? = nil) -> DriveProfile {
         let name = name ?? profileName(for: finderName)
         func clamp(_ value: Int64, _ low: Int64, _ high: Int64) -> Int64 { min(max(value, low), high) }
         let gib: Int64 = 1 << 30
@@ -57,7 +57,8 @@ public enum CloudDriveSetup {
                             cacheLimitBytes: clamp(freeBytes / 10, 2 * gib, 20 * gib), minFreeBytes: 5 * gib,
                             blockSize: blockSize, maxJournalBytes: clamp(freeBytes / 5, 4 * gib, 50 * gib),
                             displayName: finderName == name ? nil : finderName,
-                            cloudIssuer: issuer, cloudAccountID: accountID, cloudDriveID: driveID)
+                            cloudIssuer: issuer, cloudAccountID: accountID, cloudDriveID: driveID,
+                            cloudWorkspaceID: workspaceID.flatMap { ParaAirCloudIDs.isWorkspaceID($0) ? $0 : nil })
     }
 
     /// The same slug rule as the app's `DriveNaming.profileName`.

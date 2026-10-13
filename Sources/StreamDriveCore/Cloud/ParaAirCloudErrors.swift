@@ -14,11 +14,14 @@ public enum ParaAirCloudErrorCode: String, CaseIterable, Sendable {
     case workspaceNotFound = "workspace_not_found", driveNotFound = "drive_not_found", uploadNotFound = "upload_not_found"
     case chunkNotFound = "chunk_not_found", versionNotFound = "version_not_found", versionConflict = "version_conflict"
     case alreadyExists = "already_exists", notDirectory = "not_directory", isDirectory = "is_directory"
-    case notEmpty = "not_empty", busy, moveTooLarge = "move_too_large", transactionFenced = "transaction_fenced"
+    case notEmpty = "not_empty", busy, disclosureOutdated = "disclosure_outdated", moveTooLarge = "move_too_large"
+    case transactionFenced = "transaction_fenced"
     case transactionCommitted = "transaction_committed", uploadExpired = "upload_expired", chunksMissing = "chunks_missing"
     case quotaExceeded = "quota_exceeded", nodeLimit = "node_limit", tooManyUploads = "too_many_uploads"
     case rateLimited = "rate_limited", chunkBusy = "chunk_busy", clientTooOld = "client_too_old"
     case `internal`, storageUnavailable = "storage_unavailable", unavailable
+    /// Billing only (contract README "Billing"): the server is not set up to sell plans.
+    case billingUnavailable = "billing_unavailable"
 
     public var httpStatus: Int {
         switch self {
@@ -28,7 +31,7 @@ public enum ParaAirCloudErrorCode: String, CaseIterable, Sendable {
         case .forbidden, .insufficientScope, .suspended, .readOnly, .driveLimit: return 403
         case .notFound, .parentNotFound, .workspaceNotFound, .driveNotFound, .uploadNotFound, .chunkNotFound: return 404
         case .idempotencyMismatch, .versionNotFound, .versionConflict, .alreadyExists, .notDirectory, .isDirectory,
-             .notEmpty, .busy, .transactionFenced, .transactionCommitted, .chunksMissing: return 409
+             .notEmpty, .busy, .disclosureOutdated, .transactionFenced, .transactionCommitted, .chunksMissing: return 409
         case .uploadExpired: return 410
         case .lengthRequired: return 411
         case .bodyTooLarge, .fileTooLarge, .moveTooLarge: return 413
@@ -38,7 +41,7 @@ public enum ParaAirCloudErrorCode: String, CaseIterable, Sendable {
         case .tooManyUploads, .rateLimited: return 429
         case .internal: return 500
         case .storageUnavailable: return 502
-        case .chunkBusy, .unavailable: return 503
+        case .chunkBusy, .unavailable, .billingUnavailable: return 503
         case .quotaExceeded, .nodeLimit: return 507
         }
     }
@@ -51,13 +54,13 @@ public enum ParaAirCloudErrorCode: String, CaseIterable, Sendable {
         case .nameTooLong: return ENAMETOOLONG
         case .lengthRequired, .sizeMismatch, .chunkNotInUpload, .unsupportedMediaType, .uploadNotFound, .uploadExpired,
              .chunksMissing: return EPROTO
-        case .chunkHashMismatch, .internal, .storageUnavailable, .unavailable: return EIO
+        case .chunkHashMismatch, .internal, .storageUnavailable, .unavailable, .billingUnavailable: return EIO
         case .bodyTooLarge, .fileTooLarge: return EFBIG
         case .readOnly: return EROFS
         case .driveLimit, .quotaExceeded, .nodeLimit: return EDQUOT
         case .notFound, .parentNotFound, .workspaceNotFound: return ENOENT
         case .driveNotFound: return ENXIO
-        case .chunkNotFound, .versionNotFound, .versionConflict, .transactionCommitted: return ESTALE
+        case .chunkNotFound, .versionNotFound, .versionConflict, .transactionCommitted, .disclosureOutdated: return ESTALE
         case .alreadyExists: return EEXIST
         case .notDirectory: return ENOTDIR
         case .isDirectory: return EISDIR
@@ -116,6 +119,7 @@ public enum ParaAirCloudErrorCode: String, CaseIterable, Sendable {
         case .isDirectory: return "Is a folder"
         case .notEmpty: return "The folder is not empty"
         case .busy: return "The drive root cannot be changed"
+        case .disclosureOutdated: return "The plan terms changed. Review them again"
         case .moveTooLarge: return "The folder is too large to rename in one step"
         case .transactionFenced: return "The upload was cancelled and will be retried"
         case .chunksMissing: return "ParaAir Cloud is missing uploaded data"
@@ -125,6 +129,7 @@ public enum ParaAirCloudErrorCode: String, CaseIterable, Sendable {
         case .rateLimited, .chunkBusy: return "ParaAir Cloud is busy. Try again shortly"
         case .clientTooOld: return "Update ParaAir to keep using ParaAir Cloud"
         case .internal, .storageUnavailable, .unavailable: return "ParaAir Cloud is temporarily unavailable"
+        case .billingUnavailable: return "Paid plans can’t be bought right now"
         }
     }
 }
@@ -139,6 +144,9 @@ struct ParaAirCloudFailure: Sendable {
 
 enum ParaAirCloudErrorMap {
     enum Phase { case other, reserveOrCommit }
+    /// The longest wait a reply can ask for. The service never sends more than an hour; anything larger, including
+    /// values near Int.max that would overflow later arithmetic, is clamped here, so no reply can trap the app.
+    static let maximumRetryAfterSeconds = 86_400
 
     static func parse(status: Int, body: Data, headers: [String: String] = [:]) -> ParaAirCloudFailure {
         var code: ParaAirCloudErrorCode?, missing: [String] = [], retry: Int?
@@ -146,10 +154,19 @@ enum ParaAirCloudErrorMap {
            let error = object["error"] as? [String: Any] {
             if let raw = error["code"] as? String, let known = ParaAirCloudErrorCode(rawValue: raw), known.httpStatus == status { code = known }
             missing = (error["missing"] as? [String] ?? []).filter(isSHA256)
-            if let value = error["retryAfterSeconds"] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() { retry = value.intValue }
+            if let value = error["retryAfterSeconds"] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() { retry = retrySeconds(value.doubleValue) }
         }
-        if retry == nil, let header = headers.first(where: { $0.key.lowercased() == "retry-after" })?.value, let seconds = Int(header) { retry = seconds }
-        return ParaAirCloudFailure(status: status, code: code, missing: missing, retryAfterSeconds: retry.map { max(0, $0) })
+        if retry == nil, let header = headers.first(where: { $0.key.lowercased() == "retry-after" })?.value,
+           header.utf8.count <= 32, header.utf8.allSatisfy({ (48...57).contains($0) }), let seconds = Double(header) {
+            retry = retrySeconds(seconds)
+        }
+        return ParaAirCloudFailure(status: status, code: code, missing: missing, retryAfterSeconds: retry)
+    }
+
+    /// Whole seconds in 0...maximumRetryAfterSeconds, rounded up; NaN counts as no wait.
+    private static func retrySeconds(_ value: Double) -> Int? {
+        guard !value.isNaN else { return nil }
+        return Int(min(max(value.rounded(.up), 0), Double(maximumRetryAfterSeconds)))
     }
 
     /// Parses the envelope. An unknown code (or one sent with another status) maps

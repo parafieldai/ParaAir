@@ -12,7 +12,7 @@ These files are the shared test vectors for the ParaAir Cloud service and the Pa
 
 Changing an existing entry is a breaking API change. Update this directory, the service and the client in the same change.
 
-The billing endpoints below add no error codes: every billing error is one of the codes in `errors.json`.
+The billing endpoints below use two codes only they return: `disclosure_outdated` (409) and `billing_unavailable` (503). Clients that predate them map them by status class (`unknown` in `errors.json`).
 
 ## `errors.json`
 
@@ -67,25 +67,55 @@ Billing is off unless the service sets `BILLING_PROVIDER` to `stripe` or `paddle
 Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted and not required.
 
 ```json
-{"workspaceId":"ws_…","plan":"team","interval":"year","seats":3,"extraStorageTb":0}
+{"workspaceId":"ws_…","plan":"team","interval":"year","seats":3,"extraStorageTb":0,
+ "disclosureVersion":"A-draft-2026-10-09","consent":{"autoRenew":true,"terms":true}}
 ```
 
 - `plan` is `personal` or `team` and must equal the workspace's `kind`; `interval` is `month` or `year`.
 - `seats`: Team only, 1 to 1000, at least the workspace's current member count; default the member count. Personal accepts only `1` or no value.
 - `extraStorageTb`: 0 to 100 added 1 TB blocks, default 0.
-- 200 `{"url":"https://…"}`: open it in the browser. Stripe returns its hosted checkout; Paddle returns the service's payment link page (`<issuer>/billing/pay?_ptxn=txn_…`). The plan changes only when the processor's webhook arrives; refresh `GET /v1/me` afterwards.
+- `disclosureVersion` and `consent` (added 2026-10-13): the version of the disclosure text the app showed (`disclosureVersion` of `GET /v1/billing/offer`) and the two unticked boxes the buyer ticked (subscription policy 7.1: automatic renewal, and the Terms and the policy). Send both or neither: with both, `consent.autoRenew` and `consent.terms` must be `true` and the version must be the server's current one; the server stores them with the checkout record, with the time and the `X-ParaAir-Client` version. Older apps send neither and keep working; their checkout records no app consent.
+- Each workspace keeps one processor customer, so every checkout and the portal use the same one. A new checkout makes the workspace's earlier unpaid checkouts unpayable (Stripe expires the session, Paddle cancels the transaction); a subscription paid for one of them anyway is cancelled and refunded in full.
+- 200 `{"url":"https://…"}`: open it in the browser. Stripe returns its hosted checkout; Paddle returns the service's payment link page (`<issuer>/billing/pay?_ptxn=txn_…`). The plan changes only when the processor's webhook arrives; refresh `GET /v1/me` afterwards. A subscription whose plan, interval, seats or storage differ from what this request asked for is not applied: it is cancelled and refunded.
 - The browser comes back to `<issuer>/billing/success` or `<issuer>/billing/cancel` (plain pages that say to return to ParaAir).
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | bad plan, interval, seats or storage; plan does not match the workspace kind; seats below the member count |
+| 400 | `invalid_request` | bad plan, interval, seats or storage; plan does not match the workspace kind; seats below the member count; `disclosureVersion` without `consent` (or the reverse), or a box not ticked |
 | 403 | `forbidden` | the caller is not the workspace owner |
 | 403 | `suspended` | the workspace is suspended |
 | 404 | `workspace_not_found` | not a member of that workspace (existence never leaks) |
 | 404 | `not_found` | billing is off |
-| 409 | `busy` | the workspace already has a live subscription (`active` or `past_due`) or is being purged: use the portal |
+| 409 | `disclosure_outdated` | `disclosureVersion` is not the server's current version: fetch `GET /v1/billing/offer`, show the new text and ask for consent again |
+| 409 | `busy` | the workspace already has a live subscription (`active` or `past_due`) or is being purged: use the portal; or an earlier checkout was paid and its subscription has not arrived yet: wait and refresh `GET /v1/me` |
 | 429 | `rate_limited` | more than 20 checkout or portal sessions for the workspace this hour (`retryAfterSeconds`) |
-| 503 | `unavailable` | billing misconfigured (prices, keys, links), or the processor could not be reached |
+| 503 | `billing_unavailable` | billing is not set up on the server (prices, keys, links, or the email and notice settings its notices need): show "plans cannot be bought right now" |
+| 503 | `unavailable` | the processor could not be reached |
+
+### `GET /v1/billing/offer`
+
+Access token. Added 2026-10-13. What the server sells and how, so the plan sheet shows exactly what checkout records and charges. Optional query: `plan`, `interval`, `seats`, `extraStorageTb` (the same rules as checkout; `seats` defaults to 1).
+
+```json
+{"provider":"paddle","merchantOfRecord":{"name":"Paddle","reseller":true},"disclosureVersion":"A-draft-2026-10-09","currency":"USD",
+ "prices":[{"item":"personal_month","kind":"plan","plan":"personal","interval":"month","unitAmountCents":1000,"perMember":false},
+           {"item":"team_year","kind":"plan","plan":"team","interval":"year","unitAmountCents":16000,"perMember":true},
+           {"item":"storage_month","kind":"storage","plan":null,"interval":"month","unitAmountCents":1000,"perMember":false}],
+ "quote":{"plan":"team","interval":"year","seats":3,"extraStorageTb":0,"amountCents":48000,"currency":"USD",
+          "terms":["ParaAir Cloud Team, billed yearly","$160.00 per member per year plus tax. Renews automatically every year until you cancel.","- …"],
+          "consent":"I agree that this ParaAir Cloud Team plan renews automatically at … I agree to the Terms of Service and the …"}}
+```
+
+| Field | Meaning |
+|---|---|
+| `provider` | `stripe` or `paddle` |
+| `merchantOfRecord` | who charges the buyer: `{"name":"Paddle","reseller":true}` (Paddle, the online reseller and seller of record, policy 2.2) or `{"name":"Parafield Inc.","reseller":false}` (Stripe) |
+| `disclosureVersion` | the current disclosure version; send it back as checkout's `disclosureVersion` |
+| `currency` | the catalog currency (prices are before tax; the processor may charge local currency, shown at its checkout) |
+| `prices` | the catalog items this server sells (those in its price map): `unitAmountCents` per unit per interval, `perMember` for Team |
+| `quote` | with `plan` and `interval`: the amount of the first charge before tax and the disclosure (Appendix A): `terms` (a heading, the price line, then bullets prefixed `- `) and the `consent` sentences, exactly what the checkout records under `disclosureVersion`; null without them or when that plan is not sold. Links in `consent` are Markdown `[label](url)` |
+
+Errors: 401 `unauthorized`; 404 `not_found` when billing is off; 400 `invalid_request` for bad query values; 503 `billing_unavailable` as for checkout.
 
 ### `POST /v1/billing/portal`
 
@@ -116,9 +146,11 @@ Every entry of `workspaces[]` gains:
 | `cancelAtPeriodEnd` | a cancellation is scheduled; access lasts until `readOnlyAt` |
 | `graceEndsAt` | set only while `past_due` |
 | `readOnlyAt` | when the workspace becomes (or became) read-only: the scheduled cancellation, the end of the grace period, or the start of the read-only period; null otherwise |
-| `deletionAt` | 30 days after `readOnlyAt`, when known |
+| `deletionAt` | 30 days after `readOnlyAt`, when known. With the server's admin-confirmed purge (the default) deletion can come later; never earlier |
 | `checkoutAvailable` | the caller is the owner, billing is configured with a price for this workspace's kind, and the workspace has no live subscription |
 | `portalAvailable` | the caller is the owner and the workspace has a customer with the configured processor |
 
-While `status` is `read_only` (and later), the workspace's own `status` is `read_only` when billing set it: uploads and commits answer 403 `read_only` (fencing as in `errors.json`), reads keep working.
+While `status` is `read_only` (and later), the workspace's own `status` is `read_only` when billing set it: uploads, commits and mkdir answer 403 `read_only` (fencing as in `errors.json`); reads, deletes (`POST …/remove`), moves (`POST …/move`) and restores from the trash keep working (subscription policy 16.1). A full refund ends the plan the same way (`read_only`). An open dispute or chargeback makes the workspace's own `status` `read_only` while `billing.status` can stay `active`, until an operator reviews it.
+
+`usage.periodStart` and `usage.periodEnd` of a workspace with a live subscription (`billing.status` `active` or `past_due`) follow its billing date (the allowance period of the Cloud Terms): a monthly plan's current billing period, or for yearly plans monthly periods starting on the billing day at 00:00 UTC (the last day of shorter months). Other workspaces keep the UTC calendar month. `transferBytes` and `throttled` count within that period.
 
