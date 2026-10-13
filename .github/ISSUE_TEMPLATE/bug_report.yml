@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in ParaAir does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go to the private form instead (Security tab > Report a vulnerability).
+        Please remove bucket names, account IDs, tokens, file names you consider private and any other credentials from logs before posting.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. paraair connect ...
+        2. paraair mount ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ParaAir version or commit
+      placeholder: "0.1.0, or the commit SHA you built"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: "macOS 27.0.1, M2 MacBook Air"
+    validations:
+      required: true
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage
+      options:
+        - Cloudflare R2
+        - Backblaze B2
+        - Amazon S3
+        - Custom S3 / NAS
+        - ParaAir Cloud (beta)
+        - Local fixture / not storage related
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Output of `paraair status NAME --json` or `log show --last 30m --info --predicate 'subsystem BEGINSWITH \"dev.streamdrive\"'`, with private values removed."
+      render: text

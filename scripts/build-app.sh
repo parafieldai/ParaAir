@@ -2,9 +2,21 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 # All builds share this location; no simulators or test clones are created.
+# Workspace disk policy: 100 GiB free. Hosted CI runners have far less disk, so
+# PARAAIR_CI_MIN_FREE_GIB lowers the floor there; it is honoured only when CI=true.
+min_free_gib=100
+if [[ -n "${PARAAIR_CI_MIN_FREE_GIB:-}" ]]; then
+  if [[ "${CI:-}" != true ]]; then
+    echo "PARAAIR_CI_MIN_FREE_GIB is ignored outside CI (CI=true)." >&2
+  elif [[ "$PARAAIR_CI_MIN_FREE_GIB" =~ ^[0-9]{1,3}$ ]]; then
+    min_free_gib=$PARAAIR_CI_MIN_FREE_GIB
+  else
+    echo "PARAAIR_CI_MIN_FREE_GIB must be a whole number of GiB." >&2; exit 1
+  fi
+fi
 free_kib=$(df -Pk /System/Volumes/Data | awk 'NR==2 {print $4}')
-if [[ -z "$free_kib" || "$free_kib" -lt 104857600 ]]; then
-  echo "At least 100 GiB free on /System/Volumes/Data is required before an Xcode build." >&2
+if [[ -z "$free_kib" || "$free_kib" -lt $((min_free_gib * 1024 * 1024)) ]]; then
+  echo "At least $min_free_gib GiB free on /System/Volumes/Data is required before an Xcode build." >&2
   df -h /System/Volumes/Data >&2
   exit 1
 fi
@@ -24,6 +36,15 @@ if [[ -n "${STREAMDRIVE_SIGN_IDENTITY:-}" && -z "${STREAMDRIVE_CLOUDFLARE_CLIENT
 fi
 # ParaAir Cloud service address: an HTTPS origin, or the loopback dev service.
 cloud_loopback=0
+# Release version. Apple wants plain numbers in CFBundleShortVersionString, so a pre-release tag
+# (v0.1.0-alpha.2) passes 0.1.0 here plus PARAAIR_RELEASE_TAG; PARAAIR_BUILD must only ever increase.
+app_version="${PARAAIR_VERSION:-0.1.0}"
+app_build="${PARAAIR_BUILD:-1}"
+[[ "$app_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "PARAAIR_VERSION must be MAJOR.MINOR.PATCH, got $app_version." >&2; exit 1; }
+[[ "$app_build" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "PARAAIR_BUILD must be a positive whole number, got $app_build." >&2; exit 1; }
+if [[ -n "${PARAAIR_RELEASE_TAG:-}" && ! "$PARAAIR_RELEASE_TAG" =~ ^v${app_version//./\.}(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+  echo "PARAAIR_RELEASE_TAG ($PARAAIR_RELEASE_TAG) must be v$app_version or v$app_version-alpha|beta|rc.N." >&2; exit 1
+fi
 if [[ -n "${PARAAIR_CLOUD_BASE_URL:-}" ]]; then
   if [[ "$PARAAIR_CLOUD_BASE_URL" =~ ^https://[^/?#]+$ ]]; then
     cloud_loopback=0
@@ -144,8 +165,9 @@ fi
 /usr/bin/plutil -convert xml1 -o "$app/Contents/Info.plist" "$root/macOS/App/Info.plist"
 /usr/bin/plutil -replace CFBundleIdentifier -string dev.streamdrive.app "$app/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleExecutable -string ParaAir "$app/Contents/Info.plist"
-/usr/bin/plutil -replace CFBundleShortVersionString -string 0.1.0 "$app/Contents/Info.plist"
-/usr/bin/plutil -replace CFBundleVersion -string 1 "$app/Contents/Info.plist"
+/usr/bin/plutil -replace CFBundleShortVersionString -string "$app_version" "$app/Contents/Info.plist"
+/usr/bin/plutil -replace CFBundleVersion -string "$app_build" "$app/Contents/Info.plist"
+[[ -z "${PARAAIR_RELEASE_TAG:-}" ]] || /usr/bin/plutil -replace ParaAirReleaseTag -string "$PARAAIR_RELEASE_TAG" "$app/Contents/Info.plist"
 /usr/bin/plutil -replace LSMinimumSystemVersion -string 26.0 "$app/Contents/Info.plist"
 bash "$root/scripts/build-icons.sh"
 mkdir -p "$app/Contents/Resources"
@@ -159,6 +181,10 @@ if [[ -n "${STREAMDRIVE_CLOUDFLARE_CLIENT_ID:-}" ]]; then
 fi
 extension="$app/Contents/Extensions/StreamDriveFS.appex"
 /usr/bin/ditto "$products/StreamDriveFS.appex" "$extension"
+for info in "$cli/Contents/Info.plist" "$extension/Contents/Info.plist"; do
+  /usr/bin/plutil -replace CFBundleShortVersionString -string "$app_version" "$info"
+  /usr/bin/plutil -replace CFBundleVersion -string "$app_build" "$info"
+done
 if [[ -n "${PARAAIR_CLOUD_BASE_URL:-}" ]]; then
   for info in "$app/Contents/Info.plist" "$cli/Contents/Info.plist" "$extension/Contents/Info.plist"; do
     /usr/bin/plutil -replace ParaAirCloudBaseURL -string "$PARAAIR_CLOUD_BASE_URL" "$info"

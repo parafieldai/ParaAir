@@ -1,0 +1,289 @@
+# ParaAir Mac app release (CD). See docs/ci-cd.md, "Release".
+#
+# Trigger: pushing a v* tag (only admins may create v* tags: tag ruleset), or re-running for an
+# existing tag with "Run workflow" and "Use workflow from: Tags > vX.Y.Z". Every run waits for a
+# required reviewer on the "release" environment before it starts and before any secret is read.
+#
+# Output: a DRAFT GitHub Release holding ParaAir-<version>.dmg and ParaAir-<version>.zip (Developer ID
+# signed, notarized, stapled; same layout as the hand-made v0.1.0-alpha.1) with .sha256 files.
+# Publishing the draft, and scripts/update-site-release.py for the landing page, stay manual.
+#
+# Secrets (store them as environment secrets of "release", not repository secrets):
+#   DEVELOPER_ID_P12_BASE64         base64 of the Developer ID Application certificate + private key (.p12)
+#   DEVELOPER_ID_P12_PASSWORD       password of that .p12
+#   APP_PROVISIONING_PROFILE_BASE64        base64 Developer ID profile for dev.streamdrive.app
+#   EXTENSION_PROVISIONING_PROFILE_BASE64  base64 Developer ID profile for dev.streamdrive.app.filesystem (FSKit Module)
+#   CLI_PROVISIONING_PROFILE_BASE64        base64 Developer ID profile for dev.streamdrive.app.cli
+#   NOTARY_API_KEY_P8_BASE64        base64 of the App Store Connect API key (.p8) used by notarytool
+#   NOTARY_API_KEY_ID               its key ID
+#   NOTARY_API_ISSUER_ID            its issuer ID
+# Variables:
+#   STREAMDRIVE_TEAM_ID             Apple team ID (10 characters)
+#   STREAMDRIVE_CLOUDFLARE_CLIENT_ID  public Cloudflare OAuth client ID bundled into the app (repository variable)
+#   PARAAIR_CLOUD_BASE_URL          optional https:// origin of ParaAir Cloud; leave unset until the service is live
+#
+# scripts/build-app.sh signs but does not notarize or package; the notarize/staple/DMG step below
+# is this workflow's own and has not run on a hosted runner yet (docs/ci-cd.md, Known gaps).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+  PARAAIR_CI_MIN_FREE_GIB: "8"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  HOMEBREW_NO_ANALYTICS: "1"
+
+jobs:
+  release:
+    name: release
+    runs-on: xcode-27
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: write # create the draft release and upload its assets
+    steps:
+      - name: Check the tag
+        id: tag
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$REF" != refs/tags/v* ]]; then
+            echo "::error::Run this workflow from a v* tag (Use workflow from > Tags), not $REF."
+            exit 1
+          fi
+          if [[ ! "$REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Tag $REF_NAME is not vMAJOR.MINOR.PATCH[-PRERELEASE]."
+            exit 1
+          fi
+          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${BASH_REMATCH[2]}" ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the build number is the commit count, so it only ever increases
+      - name: Check Xcode 27 and the macOS 27 SDK
+        run: |
+          if [[ ! -d "$DEVELOPER_DIR" ]]; then
+            echo "::error::$DEVELOPER_DIR is not on this runner image. Update DEVELOPER_DIR (docs/ci-cd.md, Runners)."
+            exit 1
+          fi
+          sdk="$(xcrun --sdk macosx --show-sdk-version)"
+          if (( ${sdk%%.*} < 27 )); then
+            echo "::error::macOS SDK $sdk found; the app needs the macOS 27 SDK."
+            exit 1
+          fi
+          sw_vers; xcodebuild -version; echo "macOS SDK $sdk"
+      - name: Check release configuration
+        env:
+          TEAM_ID: ${{ vars.STREAMDRIVE_TEAM_ID }}
+          CLIENT_ID: ${{ vars.STREAMDRIVE_CLOUDFLARE_CLIENT_ID }}
+          CLOUD_URL: ${{ vars.PARAAIR_CLOUD_BASE_URL }}
+          HAS_P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 != '' && secrets.DEVELOPER_ID_P12_PASSWORD != '' }}
+          HAS_PROFILES: ${{ secrets.APP_PROVISIONING_PROFILE_BASE64 != '' && secrets.EXTENSION_PROVISIONING_PROFILE_BASE64 != '' && secrets.CLI_PROVISIONING_PROFILE_BASE64 != '' }}
+          HAS_NOTARY: ${{ secrets.NOTARY_API_KEY_P8_BASE64 != '' && secrets.NOTARY_API_KEY_ID != '' && secrets.NOTARY_API_ISSUER_ID != '' }}
+        run: |
+          missing=()
+          [[ "$TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || missing+=("variable STREAMDRIVE_TEAM_ID")
+          [[ -n "$CLIENT_ID" ]] || missing+=("variable STREAMDRIVE_CLOUDFLARE_CLIENT_ID")
+          [[ "$HAS_P12" == true ]] || missing+=("secrets DEVELOPER_ID_P12_BASE64/DEVELOPER_ID_P12_PASSWORD")
+          [[ "$HAS_PROFILES" == true ]] || missing+=("secrets *_PROVISIONING_PROFILE_BASE64")
+          [[ "$HAS_NOTARY" == true ]] || missing+=("secrets NOTARY_API_KEY_P8_BASE64/NOTARY_API_KEY_ID/NOTARY_API_ISSUER_ID")
+          if [[ -n "$CLOUD_URL" && ! "$CLOUD_URL" =~ ^https://[^/?#]+$ ]]; then
+            missing+=("PARAAIR_CLOUD_BASE_URL must be an https:// origin or unset")
+          fi
+          if (( ${#missing[@]} )); then
+            printf '::error::Release configuration incomplete: %s\n' "${missing[@]}"
+            exit 1
+          fi
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: false
+      # Release builds start from an empty native cache on purpose.
+      - name: Build the JuiceFS bridge and run its Go tests
+        env:
+          GOFLAGS: -mod=readonly
+        run: bash scripts/build-juicefs.sh --test
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+          xcodegen --version
+      - name: Import the Developer ID identity into a temporary keychain
+        id: keychain
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          APP_PROFILE: ${{ secrets.APP_PROVISIONING_PROFILE_BASE64 }}
+          EXTENSION_PROFILE: ${{ secrets.EXTENSION_PROVISIONING_PROFILE_BASE64 }}
+          CLI_PROFILE: ${{ secrets.CLI_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          umask 077
+          signing="$RUNNER_TEMP/signing"
+          mkdir -p "$signing"
+          keychain="$signing/paraair-release.keychain-db"
+          password="$(openssl rand -hex 24)"
+          echo "::add-mask::$password"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$P12_BASE64" | base64 --decode > "$signing/developer-id.p12"
+          security import "$signing/developer-id.p12" -k "$keychain" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$signing/developer-id.p12"
+          # Let codesign use the key without a UI prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          existing=()
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"; line="${line//\"/}"
+            [[ -n "$line" ]] && existing+=("$line")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          identities="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application: / {print $2}')"
+          if [[ "$(printf '%s\n' "$identities" | grep -c .)" != 1 ]]; then
+            echo "::error::Expected exactly one Developer ID Application identity in the .p12."
+            exit 1
+          fi
+          for role in app extension cli; do
+            case "$role" in
+              app) value="$APP_PROFILE" ;; extension) value="$EXTENSION_PROFILE" ;; cli) value="$CLI_PROFILE" ;;
+            esac
+            printf '%s' "$value" | base64 --decode > "$signing/$role.provisionprofile"
+          done
+          {
+            echo "keychain=$keychain"
+            echo "identity=$identities"
+            echo "dir=$signing"
+          } >> "$GITHUB_OUTPUT"
+      # STREAMDRIVE_SIGNING_MODE=interactive runs /usr/bin/codesign directly. The default
+      # (noninteractive) re-launches every codesign in a fresh launchd Security session in the
+      # gui/<uid> domain, a route validated only on the operator's Mac. The temporary keychain's
+      # partition list already lets codesign sign without any prompt.
+      - name: Build and sign the app (Developer ID)
+        env:
+          STREAMDRIVE_SIGN_IDENTITY: ${{ steps.keychain.outputs.identity }}
+          STREAMDRIVE_TEAM_ID: ${{ vars.STREAMDRIVE_TEAM_ID }}
+          STREAMDRIVE_APP_PROVISIONING_PROFILE: ${{ steps.keychain.outputs.dir }}/app.provisionprofile
+          STREAMDRIVE_EXTENSION_PROVISIONING_PROFILE: ${{ steps.keychain.outputs.dir }}/extension.provisionprofile
+          STREAMDRIVE_CLI_PROVISIONING_PROFILE: ${{ steps.keychain.outputs.dir }}/cli.provisionprofile
+          STREAMDRIVE_SIGNING_MODE: interactive
+          STREAMDRIVE_CLOUDFLARE_CLIENT_ID: ${{ vars.STREAMDRIVE_CLOUDFLARE_CLIENT_ID }}
+          PARAAIR_CLOUD_BASE_URL: ${{ vars.PARAAIR_CLOUD_BASE_URL }}
+          PARAAIR_VERSION: ${{ steps.tag.outputs.version }}
+          PARAAIR_RELEASE_TAG: ${{ github.ref_name }}
+        run: PARAAIR_BUILD="$(git rev-list --count HEAD)" bash scripts/build-app.sh
+      - name: Check the bundle version matches the tag
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          app=.build/xcode/Build/Products/Release/ParaAir.app
+          bundled="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")"
+          if [[ "$bundled" != "$VERSION" ]]; then
+            echo "::error::The app says $bundled but the tag says $VERSION (build-app.sh takes PARAAIR_VERSION from the tag)."
+            exit 1
+          fi
+      # Same artifacts as the hand-made v0.1.0-alpha.1 release: the stapled app zipped as
+      # ParaAir-<version>.zip, and ParaAir-<version>.dmg (app + Applications link), itself
+      # Developer ID signed, notarized and stapled. Each with a .sha256.
+      - name: Install dmgbuild (disk image layout)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --disable-pip-version-check "dmgbuild==1.6.7"
+      - name: Notarize and staple the app; build, sign, notarize and staple the disk image
+        id: package
+        env:
+          TAG: ${{ github.ref_name }}
+          IDENTITY: ${{ steps.keychain.outputs.identity }}
+          SIGNING_DIR: ${{ steps.keychain.outputs.dir }}
+          NOTARY_KEY: ${{ secrets.NOTARY_API_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          app=.build/xcode/Build/Products/Release/ParaAir.app
+          name="ParaAir-${TAG#v}"
+          key="$SIGNING_DIR/notary.p8"
+          (umask 077; printf '%s' "$NOTARY_KEY" | base64 --decode > "$key")
+          notarize() {
+            xcrun notarytool submit "$1" --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \
+              --wait --timeout 45m --output-format json > "$RUNNER_TEMP/notary.json"
+            local status submission
+            status="$(jq -r .status "$RUNNER_TEMP/notary.json")"
+            submission="$(jq -r .id "$RUNNER_TEMP/notary.json")"
+            echo "Notarization of $(basename "$1"): $submission $status"
+            if [[ "$status" != Accepted ]]; then
+              xcrun notarytool log "$submission" --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" || true
+              return 1
+            fi
+          }
+          mkdir -p dist
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/submit.zip"
+          notarize "$RUNNER_TEMP/submit.zip"
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+          /usr/sbin/spctl --assess --type execute --verbose=4 "$app"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$app"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$name.zip"
+          # Same branded layout as hand-made releases: scripts/make-dmg.sh (dmgbuild, background,
+          # Applications link), signed there. hdiutil on hosted runners is occasionally busy, so retry.
+          volume="ParaAir $(sed -E 's/^v//; s/-(alpha|beta|rc)\./ \1 /' <<<"$TAG")"
+          for attempt in 1 2 3; do
+            DMGBUILD="$RUNNER_TEMP/dmgbuild/bin/dmgbuild" bash scripts/make-dmg.sh "$app" "$volume" "dist/$name.dmg" "$IDENTITY" && break
+            [[ "$attempt" != 3 ]] || exit 1
+            sleep 10
+          done
+          notarize "dist/$name.dmg"
+          xcrun stapler staple "dist/$name.dmg"
+          xcrun stapler validate "dist/$name.dmg"
+          /usr/sbin/spctl --assess --type open --context context:primary-signature --verbose=4 "dist/$name.dmg"
+          rm -f "$key" "$RUNNER_TEMP/submit.zip" "$RUNNER_TEMP/notary.json"
+          (cd dist && for file in "$name.dmg" "$name.zip"; do shasum -a 256 "$file" > "$file.sha256"; done && cat ./*.sha256)
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - name: Upload to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          NAME: ${{ steps.package.outputs.name }}
+          PRERELEASE: ${{ steps.tag.outputs.prerelease }}
+        run: |
+          files=("dist/$NAME.dmg" "dist/$NAME.dmg.sha256" "dist/$NAME.zip" "dist/$NAME.zip.sha256")
+          if draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [[ "$draft" != true ]]; then
+              echo "::error::Release $TAG is already published; not replacing its assets."
+              exit 1
+            fi
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            {
+              echo "Developer ID signed and notarized build of $TAG from commit $GITHUB_SHA (workflow run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+              echo
+              echo "Draft: write the notes, then publish. After publishing, point the landing page at it:"
+              echo "python3 scripts/update-site-release.py --tag $TAG --asset dist/$NAME.dmg"
+              echo
+              echo "SHA-256"
+              sed 's/^/    /' "dist/$NAME.dmg.sha256" "dist/$NAME.zip.sha256"
+            } > "$RUNNER_TEMP/notes.md"
+            flags=(--draft --verify-tag --title "ParaAir ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md")
+            if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
+            gh release create "$TAG" "${flags[@]}" "${files[@]}"
+          fi
+      - name: Remove the temporary keychain and signing files
+        if: always()
+        env:
+          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
+          SIGNING_DIR: ${{ steps.keychain.outputs.dir }}
+        run: |
+          [[ -z "$KEYCHAIN" ]] || security delete-keychain "$KEYCHAIN" || true
+          [[ -z "$SIGNING_DIR" ]] || rm -rf "$SIGNING_DIR"
+          rm -rf "$RUNNER_TEMP/signing" .build/signing

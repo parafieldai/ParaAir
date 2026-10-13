@@ -1,0 +1,6 @@
+# actionlint (1.7.12 and main as of 2026-10-13) does not list the GitHub-hosted "xcode-27" preview
+# label yet. It is a hosted label, not a self-hosted one; it is declared here only so actionlint
+# accepts it. Source: https://github.com/actions/runner-images/blob/main/README.md
+self-hosted-runner:
+  labels:
+    - xcode-27

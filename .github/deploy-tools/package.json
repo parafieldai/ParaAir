@@ -1,0 +1,8 @@
+{
+  "name": "paraair-deploy-tools",
+  "private": true,
+  "description": "Pinned Wrangler for .github/workflows/pages.yml (npm ci installs exactly package-lock.json).",
+  "devDependencies": {
+    "wrangler": "4.135.0"
+  }
+}

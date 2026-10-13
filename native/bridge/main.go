@@ -185,6 +185,9 @@ type engine struct {
 	objectBudget *objectBudget
 }
 
+// quietLogs silences the embedded SDK's loggers once per process (see connect).
+var quietLogs sync.Once
+
 var engines = struct {
 	sync.Mutex
 	values map[uint64]*engine
@@ -339,8 +342,10 @@ func connect(c config) (*engine, error) {
 			return nil, err
 		}
 	}
-	// The embedded SDK must never log URL credentials or object-store secrets.
-	utils.SetLogLevel(logrus.PanicLevel)
+	// The embedded SDK must never log URL credentials or object-store secrets. Set once: every
+	// JuiceFS logger exists from package init, and SetLogLevel writes their levels without atomics,
+	// so repeating it while another engine's uploads are logging is a data race.
+	quietLogs.Do(func() { utils.SetLogLevel(logrus.PanicLevel) })
 	mc := meta.DefaultConf()
 	mc.Retries = 3
 	mc.NoBGJob = true
