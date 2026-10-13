@@ -18,6 +18,7 @@ struct UISnapshots {
         failures += checkCloudPresentation()
         failures += checkBilling()
         failures += checkNaming()
+        failures += checkLoginItem()
 
         for (name, input) in homeScenarios {
             for appearance in [NSAppearance.Name.aqua, .darkAqua]
@@ -35,6 +36,7 @@ struct UISnapshots {
                                     connectAutomatically: .constant(true), actions: HomeActions())
             try render(view, size: nil, appearance: .aqua, to: output.appendingPathComponent("menu-\(name)-light.png"))
         }
+        try renderLoginItem(output: output)
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("paraair-ui-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -754,6 +756,82 @@ struct UISnapshots {
         return failures
     }
 
+    // MARK: Open at login
+
+    /// The toggle beside "Connect the drive when ParaAir opens", from a fixture status.
+    /// Nothing here reaches ServiceManagement, System Settings or the app's preferences.
+    @MainActor
+    static func renderLoginItem(output: URL) throws {
+        let input = Dictionary(uniqueKeysWithValues: homeScenarios)["5-connected"]!
+        let states: [(String, LoginItemStatus)] = [("enabled", .enabled), ("disabled", .notRegistered), ("approval", .requiresApproval)]
+        for (name, status) in states {
+            let model = LoginItemModel(service: FixtureLoginItemService(status), rememberChoice: {})
+            for appearance in name == "approval" ? [NSAppearance.Name.aqua, .darkAqua] : [.aqua] {
+                try render(DriveHomeContent(input: input, details: details(for: input), connectAutomatically: .constant(true),
+                                            actions: HomeActions(), loginItem: model),
+                           size: CGSize(width: 620, height: 680), appearance: appearance,
+                           to: output.appendingPathComponent("home-login-\(name)-\(suffix(appearance)).png"))
+            }
+            try render(MenuBarPanel(input: input, details: details(for: input), connectAutomatically: .constant(true),
+                                    actions: HomeActions(), loginItem: model),
+                       size: nil, appearance: .aqua, to: output.appendingPathComponent("menu-login-\(name)-light.png"))
+        }
+        let refused = FixtureLoginItemService(.notRegistered)
+        refused.failsChanges = true
+        let failed = LoginItemModel(service: refused, rememberChoice: {})
+        failed.setEnabled(true)
+        try render(DriveHomeContent(input: input, details: details(for: input), connectAutomatically: .constant(true),
+                                    actions: HomeActions(), loginItem: failed),
+                   size: CGSize(width: 620, height: 680), appearance: .aqua,
+                   to: output.appendingPathComponent("home-login-failed-light.png"))
+    }
+
+    @MainActor
+    static func checkLoginItem() -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: Bool, _ message: String) { if !condition { failures.append(message) } }
+        var choices = 0
+        func model(_ service: FixtureLoginItemService) -> LoginItemModel { LoginItemModel(service: service, rememberChoice: { choices += 1 }) }
+
+        let on = FixtureLoginItemService(.enabled)
+        let enabled = model(on)
+        expect(enabled.isOn && !enabled.needsApproval, "an enabled login item shows the toggle on")
+        enabled.setEnabled(true)
+        expect(on.calls.isEmpty && choices == 0, "turning on an enabled login item does nothing")
+        enabled.setEnabled(false)
+        expect(on.calls == ["unregister"] && enabled.status == .notRegistered && !enabled.isOn && choices == 1,
+               "turning it off unregisters and records the choice")
+
+        let off = FixtureLoginItemService(.notRegistered)
+        let disabled = model(off)
+        expect(!disabled.isOn, "a login item that isn't registered shows the toggle off")
+        disabled.setEnabled(true)
+        expect(off.calls == ["register"] && disabled.isOn && !disabled.changeFailed && choices == 2,
+               "turning it on registers and records the choice")
+
+        let pending = model(FixtureLoginItemService(.requiresApproval))
+        expect(!pending.isOn && pending.needsApproval, "a login item awaiting approval is off and points to System Settings")
+
+        let refused = FixtureLoginItemService(.notRegistered)
+        refused.failsChanges = true
+        let failed = model(refused)
+        failed.setEnabled(true)
+        expect(failed.changeFailed && !failed.isOn, "a refused change keeps the toggle off and says so")
+
+        // A change made in System Settings shows up on the next refresh.
+        let live = FixtureLoginItemService(.enabled)
+        let watched = model(live)
+        live.status = .requiresApproval
+        watched.refresh()
+        expect(watched.needsApproval, "refresh reads the current status")
+
+        let copy = [LoginItemToggle.title, LoginItemToggle.approvalNote, LoginItemToggle.failureNote, LoginItemToggle.settingsButton]
+        expect(!copy.joined().contains("\u{2014}"), "login item copy avoids em dashes")
+        expect(LoginItemToggle.approvalNote == "Allowed in System Settings only." && LoginItemToggle.settingsButton == "Open Login Items…",
+               "approval copy matches the spec")
+        return failures
+    }
+
     // MARK: Rendering
 
     static func suffix(_ appearance: NSAppearance.Name) -> String { appearance == .darkAqua ? "dark" : "light" }
@@ -831,6 +909,26 @@ final class SummaryBox: @unchecked Sendable {
         get { lock.withLock { value } }
         set { lock.withLock { value = newValue } }
     }
+}
+
+/// A login item status for the snapshots. Records calls; never reaches ServiceManagement.
+@MainActor
+final class FixtureLoginItemService: LoginItemService {
+    var status: LoginItemStatus
+    var failsChanges = false
+    private(set) var calls: [String] = []
+    init(_ status: LoginItemStatus) { self.status = status }
+    func register() throws {
+        calls.append("register")
+        if failsChanges { throw DriveError(EPERM, "fixture refused") }
+        status = .enabled
+    }
+    func unregister() throws {
+        calls.append("unregister")
+        if failsChanges { throw DriveError(EPERM, "fixture refused") }
+        status = .notRegistered
+    }
+    func openSystemSettings() { calls.append("open-settings") }
 }
 
 /// In-memory vault so the harness never touches Keychain.

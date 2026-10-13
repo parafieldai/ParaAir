@@ -10,6 +10,11 @@ import CFinderSidebar
 struct StreamDriveApp: App {
     @StateObject private var model = MenuModel()
     @Environment(\.openWindow) private var openWindow
+    init() {
+        // Before MenuModel exists: a copy opened from the disk image moves to Applications and relaunches.
+        let location = AppInstaller.prepareAtLaunch()
+        LoginItemModel.applyLaunchDefault(location: location, service: SystemLoginItemService())
+    }
     var body: some Scene {
         Window("ParaAir", id: "connections") {
             DriveHomeView(model: model)
@@ -29,7 +34,7 @@ struct StreamDriveApp: App {
         MenuBarExtra {
             MenuBarPanel(input: model.homeInputs(), details: model.homeDetails(),
                          connectAutomatically: $model.mountOnLaunch,
-                         actions: model.homeActions(openWindow: openWindow))
+                         actions: model.homeActions(openWindow: openWindow), loginItem: model.loginItem)
                 .onAppear { model.reload() }
         } label: {
             Image(nsImage: BrandMenuIcon.image).renderingMode(.template)
@@ -66,6 +71,7 @@ final class MenuModel: ObservableObject {
     /// The selected folder's ParaAir Cloud account, shared with Storage Settings.
     @Published private(set) var cloudAccount: CloudAccountModel
     let activity = DriveActivityMonitor()
+    let loginItem = LoginItemModel(service: SystemLoginItemService())
     @Published private(set) var uploadActivity: UploadActivity?
     private var observations = Set<AnyCancellable>()
     private var cloudObservation: AnyCancellable?
