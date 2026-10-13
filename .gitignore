@@ -29,3 +29,6 @@ __pycache__/
 /notes/
 /legal-drafts
 /cloud/
+
+# Pinned deploy tooling installed by .github/workflows/pages.yml.
+/.github/deploy-tools/node_modules/

@@ -1,0 +1,29 @@
+# Weekly version updates. Workflows pin actions to full commit SHAs; Dependabot moves the SHA
+# and its "# vX.Y.Z" comment together. A short cooldown skips releases younger than a week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+  # Pinned Wrangler used only by .github/workflows/pages.yml.
+  - package-ecosystem: npm
+    directory: /.github/deploy-tools
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      deploy-tools:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

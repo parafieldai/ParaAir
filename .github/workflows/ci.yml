@@ -1,0 +1,214 @@
+# ParaAir CI: every pull request (forks included) and every push to main. See docs/ci-cd.md.
+#
+# Security model
+# - Event is pull_request, never pull_request_target: a fork's code runs with a read-only
+#   GITHUB_TOKEN and no secrets. This workflow references no secrets at all.
+# - Fork PR runs wait for a maintainer to approve them (repository setting "Require approval
+#   for all external contributors", applied by scripts/github-settings.sh). Review the diff,
+#   especially .github/ and scripts/, before approving.
+# - Every action is pinned to a full commit SHA (the tag is in the trailing comment).
+# - Caches are saved only on pushes to main, so a pull request cannot seed a cache that a
+#   later main or release build restores.
+#
+# The job names below are the required status checks on main: swift, native, app, contract, site.
+# Renaming a job means updating REQUIRED_CHECKS in scripts/github-settings.sh in the same change.
+#
+# Runners (checked 2026-10-13):
+# - macOS jobs use the hosted "xcode-27" image: macOS 27.0.1 with Xcode 27.0 (27A266a, default),
+#   27.1 and 27.2 beta, 3 M1 cores, 7 GB RAM, 14 GB SSD, free for public repositories.
+#   https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md
+#   https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+#   It is a public preview: https://github.com/actions/runner-images/issues/14404
+# - "macos-26" exists (macOS 26.6, Xcode 26.6 default, macOS SDK 26.5) but cannot build the app:
+#   it calls FSClient.mountSingleVolume and openFileSystemExtensionsSettings, which FSKit marks
+#   FSKIT_API_AVAILABILITY_V3 = macOS 27.0 and which exist only in the macOS 27 SDK.
+#   https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md
+# - Each macOS job first checks for Xcode 27.0 and the macOS 27 SDK and fails with an explicit
+#   message if the image changes, instead of failing later in the compiler.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pinned Xcode on the xcode-27 image; the image keeps version-named symlinks.
+  DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+  # build-juicefs.sh and build-app.sh refuse to run below 100 GiB free (workspace disk policy).
+  # Hosted runners have a 14 GB SSD allowance, so CI lowers the floor; the scripts honour this
+  # variable only when CI=true.
+  PARAAIR_CI_MIN_FREE_GIB: "8"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  HOMEBREW_NO_ANALYTICS: "1"
+
+jobs:
+  swift:
+    name: swift
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the Xcode 27 toolchain
+        run: |
+          if [[ ! -d "$DEVELOPER_DIR" ]]; then
+            echo "::error::$DEVELOPER_DIR is not on this runner image. Pick an installed Xcode 27 from the image readme and update DEVELOPER_DIR (docs/ci-cd.md, Runners)."
+            exit 1
+          fi
+          sw_vers; xcodebuild -version; swift --version; df -h /System/Volumes/Data
+      - name: swift build
+        run: swift build --build-system native --jobs 4
+      - name: swift test (native-library tests skip themselves)
+        run: swift test --build-system native --jobs 4
+      - name: CLI acceptance on a local fixture
+        run: bash scripts/acceptance.sh "$(swift build --build-system native --show-bin-path)/streamdrive"
+
+  native:
+    name: native
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the Xcode 27 toolchain
+        run: |
+          if [[ ! -d "$DEVELOPER_DIR" ]]; then
+            echo "::error::$DEVELOPER_DIR is not on this runner image. Pick an installed Xcode 27 from the image readme and update DEVELOPER_DIR (docs/ci-cd.md, Runners)."
+            exit 1
+          fi
+          sw_vers; xcodebuild -version; swift --version; df -h /System/Volumes/Data
+      # Go is only in the image's tool cache. The pinned JuiceFS go.mod asks for go 1.25.10;
+      # with GOTOOLCHAIN=auto (set by build-juicefs.sh) a newer 1.25 patch is used as is.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: false
+      # Key: pinned revision, checksum and patch (build-juicefs.sh, patch-juicefs.py), then the
+      # bridge sources. A bridge-only change still restores the module cache and most of the build cache.
+      - name: Restore the JuiceFS archive and Go caches
+        id: native-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build-native/juicefs.tar.gz
+            .build-native/gomodcache
+            .build-native/gocache
+          key: native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-juicefs.sh', 'scripts/patch-juicefs.py') }}-${{ hashFiles('native/bridge/**', 'native/meta_client.go') }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-juicefs.sh', 'scripts/patch-juicefs.py') }}-
+      - name: Build the JuiceFS bridge, Go tests, Go race tests
+        # --race runs the whole bridge package under the race detector except
+        # TestMetadataAndObjectBackupRestore (pre-existing upstream race in JuiceFS dumpDir).
+        run: bash scripts/build-juicefs.sh --test --race
+      - name: Save the JuiceFS archive and Go caches (main only)
+        if: github.event_name == 'push' && steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build-native/juicefs.tar.gz
+            .build-native/gomodcache
+            .build-native/gocache
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+      - name: swift test with the real JuiceFS library
+        env:
+          STREAMDRIVE_NATIVE_LIBRARY: ${{ github.workspace }}/native/lib/libstreamdrive.dylib
+        run: swift test --build-system native --jobs 4
+
+  app:
+    name: app
+    runs-on: xcode-27
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check Xcode 27 and the macOS 27 SDK
+        run: |
+          if [[ ! -d "$DEVELOPER_DIR" ]]; then
+            echo "::error::$DEVELOPER_DIR is not on this runner image. Pick an installed Xcode 27 from the image readme and update DEVELOPER_DIR (docs/ci-cd.md, Runners)."
+            exit 1
+          fi
+          sdk="$(xcrun --sdk macosx --show-sdk-version)"
+          if (( ${sdk%%.*} < 27 )); then
+            echo "::error::macOS SDK $sdk found. The app needs the macOS 27 SDK (FSKit mountSingleVolume is macOS 27.0 API); this runner cannot build it."
+            exit 1
+          fi
+          sw_vers; xcodebuild -version; echo "macOS SDK $sdk"; df -h /System/Volumes/Data
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: false
+      - name: Restore the JuiceFS archive and Go caches
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build-native/juicefs.tar.gz
+            .build-native/gomodcache
+            .build-native/gocache
+          key: native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-juicefs.sh', 'scripts/patch-juicefs.py') }}-${{ hashFiles('native/bridge/**', 'native/meta_client.go') }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-juicefs.sh', 'scripts/patch-juicefs.py') }}-
+      - name: Build the JuiceFS bridge
+        env:
+          GOFLAGS: -mod=readonly
+        run: bash scripts/build-juicefs.sh
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+          xcodegen --version
+      # Ad hoc build: no signing variables are set. The script also runs the FSKit callback,
+      # native mount lifecycle and drive appearance harnesses; it never registers, mounts or
+      # launches the app.
+      - name: Build the app (ad hoc) and run its harnesses
+        run: bash scripts/build-app.sh
+      - name: Render UI snapshots (offscreen; checks presentation logic)
+        run: bash scripts/render-ui-snapshots.sh "$RUNNER_TEMP/ui-snapshots"
+      - name: Upload UI snapshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-snapshots
+          path: ${{ runner.temp }}/ui-snapshots
+          if-no-files-found: warn
+          retention-days: 14
+
+  contract:
+    name: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: manifests.json matches its generator
+        run: node contract/paraair-cloud-v1/generate-manifests.mjs --check
+      - name: errors.json and paths.json structure
+        run: node scripts/check-contract.mjs
+
+  site:
+    name: site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Static checks of site/
+        run: python3 -I scripts/check-site.py site
