@@ -142,8 +142,17 @@ p { margin: 0; }
 }
 .brand { display: inline-flex; align-items: center; gap: 10px; font: 600 1.125rem/1 var(--font-body); letter-spacing: -0.01em; text-decoration: none; }
 .brand-mark { width: 22px; height: 22px; }
-.nav-cta { font-size: var(--text-sm); font-weight: 600; text-decoration: none; color: var(--ink-2); }
-.nav-cta:hover { color: var(--ink); }
+.nav { display: flex; align-items: center; gap: var(--space-lg); }
+.nav-link, .nav-cta { font-size: var(--text-sm); font-weight: 600; text-decoration: none; color: var(--ink-2); white-space: nowrap; }
+.nav-link { display: inline-flex; align-items: center; gap: var(--space-xs); }
+.nav-icon { width: 18px; height: 18px; fill: currentColor; flex: none; }
+.nav-link:hover, .nav-cta:hover { color: var(--ink); }
+.nav-link:focus-visible, .nav-cta:focus-visible { outline: 2px solid var(--ink); outline-offset: 4px; }
+/* Narrow phones keep the mark; the link keeps its accessible name from aria-label. */
+@media (max-width: 400px) {
+  .nav { gap: var(--space-md); }
+  .nav-label { display: none; }
+}
 
 /* Hero: the field of pieces is the signature */
 .hero {
