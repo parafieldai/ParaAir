@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ParaAir pricing</title>
+  <meta name="description" content="ParaAir is free with your own storage. ParaAir Cloud Personal is planned at $10 a month or $100 a year for 1 TB. Invite-only for now, and billing isn't switched on yet.">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="glide.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Hallmark · macrostructure: custom (two-path ledger) · tone: calm-technical · anchor hue: Glide sage
+       theme: custom (brand, shared with index.html) · paper #20282C / #F1EFE7 · accent #9AC7B4 · display New York (ui-serif) + body system-ui
+       signature: the allowance meter (a Glide mark reads 3 TB of pieces fast, then the rest slowly) -->
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="masthead">
+    <a class="brand" href="./" aria-label="ParaAir home">
+      <svg class="brand-mark" viewBox="0 0 454 460" aria-hidden="true">
+        <polygon class="mark-a" points="0,150 454,0 316,298 244,208"/>
+        <polygon class="mark-b" points="244,208 316,298 156,460 168,256"/>
+      </svg>
+      <span>ParaAir</span>
+    </a>
+    <nav class="nav" aria-label="Primary">
+      <a class="nav-link" href="pricing.html" aria-current="page">Pricing</a>
+      <a class="nav-link" href="https://github.com/parafieldai/ParaAir" aria-label="ParaAir source code on GitHub">
+        <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-label">GitHub</span>
+      </a>
+      <a class="nav-cta" href="#own-storage">Download</a>
+    </nav>
+  </header>
+
+  <main id="main" class="pricing">
+    <div class="ledger">
+      <h1>What ParaAir costs.</h1>
+
+      <section class="path" id="own-storage" aria-labelledby="own-title">
+        <h2 class="path-name" id="own-title">Your own storage</h2>
+        <p class="path-price"><span class="price">Free</span></p>
+        <div class="path-desc">
+          <p>The open-source app, on a bucket you already pay&nbsp;for. Cloudflare&nbsp;R2 works today.</p>
+        </div>
+        <div class="path-action">
+          <a class="cta" data-release-download href="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.1/ParaAir-0.1.0-alpha.1.dmg">Download for Mac</a>
+          <p class="requires"><span data-release-label>0.1.0&nbsp;alpha&nbsp;1</span> · <span data-release-size>51&nbsp;MB</span> · <a data-release-notes href="https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.1">Release&nbsp;notes</a></p>
+          <p class="requires">Apple&nbsp;Silicon · macOS&nbsp;26&nbsp;or&nbsp;later</p>
+        </div>
+      </section>
+
+      <section class="path path-cloud" id="cloud" aria-labelledby="cloud-title">
+        <h2 class="path-name" id="cloud-title">ParaAir Cloud Personal</h2>
+        <p class="path-price"><span class="price">$10</span> <span class="price-unit">a month</span></p>
+        <p class="price-alt">or $100 a year</p>
+        <div class="path-desc">
+          <p>1&nbsp;TB of our storage. No buckets, no&nbsp;keys.</p>
+          <p class="path-status"><strong>Invite-only for now.</strong> Billing isn’t switched on, so nobody is charged yet. These are the planned prices for when it opens; taxes may&nbsp;apply.</p>
+        </div>
+        <div class="path-action">
+          <a class="path-link" href="mailto:contact@parafield.ai?subject=ParaAir%20Cloud%20invite">Ask for an invite</a>
+        </div>
+      </section>
+    </div>
+
+    <section class="scene scene-meter" aria-labelledby="meter-title" data-scene>
+      <div class="scene-copy">
+        <h2 id="meter-title">3&nbsp;TB a month at full speed.</h2>
+        <p>Personal includes streaming and downloads up to 3× its storage each month. After that, speed drops to about 100&nbsp;Mbit/s until the next cycle. There are no overage&nbsp;charges.</p>
+      </div>
+      <figure class="meter">
+        <p class="meter-key">1&nbsp;TB stored</p>
+        <div class="meter-lane meter-stored" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        <p class="meter-key">Streamed and downloaded in a month</p>
+        <div class="meter-lane meter-read" aria-hidden="true">
+          <svg class="meter-glider" viewBox="0 0 454 460">
+            <polygon class="mark-a" points="0,150 454,0 316,298 244,208"/>
+            <polygon class="mark-b" points="244,208 316,298 156,460 168,256"/>
+          </svg>
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="slow"></i><i class="slow"></i><i class="slow"></i><i class="slow"></i>
+        </div>
+        <p class="meter-scale"><span>3&nbsp;TB at full&nbsp;speed</span> <span>then about 100&nbsp;Mbit/s</span></p>
+        <figcaption>One square is 250&nbsp;GB.</figcaption>
+      </figure>
+    </section>
+
+    <section class="spec" aria-labelledby="spec-title">
+      <h2 id="spec-title">Everything in Personal.</h2>
+      <table class="spec-table">
+        <caption>Planned terms for when billing opens. Taxes may apply.</caption>
+        <tbody>
+          <tr>
+            <th scope="row">Price</th>
+            <td><span class="fig">$10 a month</span><span class="more">or $100 a year</span></td>
+          </tr>
+          <tr>
+            <th scope="row">Storage</th>
+            <td><span class="fig">1&nbsp;TB</span></td>
+          </tr>
+          <tr>
+            <th scope="row">Added storage</th>
+            <td><span class="fig">$10 per&nbsp;TB a month</span></td>
+          </tr>
+          <tr>
+            <th scope="row">Streaming and downloads</th>
+            <td><span class="fig">3&nbsp;TB a month at full speed</span><span class="more">That is 3× your plan’s storage. Then about 100&nbsp;Mbit/s until the next cycle, with no overage charges.</span></td>
+          </tr>
+          <tr>
+            <th scope="row">Deleted and replaced files</th>
+            <td><span class="fig">Kept 30 days</span></td>
+          </tr>
+          <tr>
+            <th scope="row">After cancelling</th>
+            <td><span class="fig">Read-only for 30 days</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="later" aria-labelledby="team-title">
+      <h2 id="team-title">Team, later.</h2>
+      <p>$16 per member a month, or $160 per member a year. 1&nbsp;TB per member, pooled, and added storage at $10 per&nbsp;TB a month, pooled. Deleted and replaced files kept 90&nbsp;days.</p>
+      <p>Not available yet: its shared-drive roles, admin and audit aren’t built.</p>
+    </section>
+
+    <section class="faq" aria-labelledby="faq-title">
+      <h2 id="faq-title">Transfer, limits and cancelling.</h2>
+      <div class="faq-list">
+        <details>
+          <summary>What counts as transfer?</summary>
+          <p>Streaming and downloads: the data read from your ParaAir Cloud storage. Each month includes 3× your plan’s storage at full speed, which is 3&nbsp;TB on Personal.</p>
+        </details>
+        <details>
+          <summary>What happens at the limit?</summary>
+          <p>Speed drops to about 100&nbsp;Mbit/s until the next cycle, then full speed returns. There are no overage charges.</p>
+        </details>
+        <details>
+          <summary>What does cancelling do?</summary>
+          <p>You keep read-only access for 30 days, so you can still open and copy your files.</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="colophon">
+    <p>ParaAir by Parafield · <a href="https://github.com/parafieldai/ParaAir">Source code</a> (Apache-2.0) · Built on <a href="https://github.com/juicedata/juicefs">JuiceFS</a> · © 2026</p>
+  </footer>
+
+  <script src="motion.js" defer></script>
+</body>
+</html>

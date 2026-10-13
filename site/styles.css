@@ -16,9 +16,13 @@
   --rule: color-mix(in oklab, var(--ink) 14%, var(--paper));
   --piece-off: color-mix(in oklab, var(--ink) 12%, var(--paper));
   --field-off: color-mix(in oklab, var(--ink) 6%, var(--paper));
+  --piece-on: var(--sage);
+  --piece-slow: color-mix(in oklab, var(--piece-on) 52%, var(--paper));
+  --piece-stored: color-mix(in oklab, var(--ink) 50%, var(--paper));
   --accent: var(--sage);
   --accent-ink: var(--charcoal);
   --accent-text: var(--sage);
+  --nav-current: var(--sage);
   --grain-opacity: 0.07;
 
   --font-display: ui-serif, "New York", "Iowan Old Style", Charter, Georgia, serif;
@@ -29,6 +33,8 @@
   --text-lg: clamp(1.125rem, 1rem + 0.5vw, 1.375rem);
   --text-xl: clamp(2rem, 1.2rem + 3vw, 3.6rem);
   --text-display: clamp(2.7rem, 1.2rem + 6vw, 6.9rem);
+  --text-path: clamp(1.625rem, 1.2rem + 1.5vw, 2.5rem);
+  --text-fig: clamp(1.25rem, 1.05rem + 0.8vw, 1.75rem);
 
   --space-xs: 8px;
   --space-sm: 12px;
@@ -52,6 +58,8 @@
     --ink: var(--charcoal);
     --piece-off: color-mix(in oklab, var(--ink) 10%, var(--paper));
     --field-off: color-mix(in oklab, var(--ink) 5%, var(--paper));
+    --piece-on: var(--accent-text);
+    --nav-current: color-mix(in oklab, var(--sage) 46%, var(--charcoal));
     --accent: var(--charcoal);
     --accent-ink: var(--warm);
     --accent-text: color-mix(in oklab, var(--sage) 38%, var(--charcoal));
@@ -150,6 +158,8 @@ p { margin: 0; }
 .nav-link { display: inline-flex; align-items: center; gap: var(--space-xs); }
 .nav-icon { width: 18px; height: 18px; fill: currentColor; flex: none; }
 .nav-link:hover, .nav-cta:hover { color: var(--ink); }
+/* The current page reads as current through colour alone: no dot, no underline. */
+.nav-link[aria-current="page"] { color: var(--nav-current); }
 .nav-link:focus-visible, .nav-cta:focus-visible { outline: 2px solid var(--ink); outline-offset: 4px; }
 /* Narrow phones keep the mark; the link keeps its accessible name from aria-label. */
 @media (max-width: 400px) {
@@ -341,3 +351,226 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: -0.015em
   .cta:hover::after { transition: none; transform: translateX(-120%); }
 }
 .access-notes { display: grid; gap: var(--space-xs); justify-items: center; }
+
+/* ------------------------------------------------------------------------------------------------
+ * Pricing page (site/pricing.html). Hallmark · macrostructure: custom (two-path ledger)
+ * Two paths priced like a ledger: the name and the price share a baseline, the prices share one
+ * column. The signature is the allowance meter. Everything below is scoped to .pricing.
+ * --------------------------------------------------------------------------------------------- */
+.pricing h1 { font-size: var(--text-xl); line-height: 1.04; letter-spacing: -0.015em; }
+.pricing p, .pricing td { text-wrap: pretty; }
+
+.pricing .ledger {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: clamp(104px, 9vw, 120px) var(--gutter) 0;
+}
+.pricing .path {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  grid-template-areas: "name price" "desc action";
+  column-gap: var(--space-xl);
+  row-gap: var(--space-md);
+  margin-top: clamp(48px, 4.5vw, 64px);
+}
+.pricing .path-cloud { grid-template-areas: "name price" "desc alt" "desc action"; }
+.pricing .path-name {
+  grid-area: name;
+  align-self: baseline;
+  font: 500 var(--text-path)/1.1 var(--font-display);
+  letter-spacing: -0.01em;
+}
+.pricing .path-price { grid-area: price; align-self: baseline; }
+.pricing .price {
+  font: 500 var(--text-display)/0.9 var(--font-display);
+  letter-spacing: -0.01em;
+  /* Proportional figures: a lone price needs no column alignment, and tabular ones open "$ 10" up. */
+  font-variant-numeric: lining-nums proportional-nums;
+}
+.pricing .price-unit {
+  margin-left: 0.2em;
+  font: 600 var(--text-lg)/1 var(--font-body);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.pricing .price-alt { grid-area: alt; font-size: var(--text-lg); color: var(--ink-2); }
+.pricing .path-desc { grid-area: desc; display: grid; gap: var(--space-md); align-content: start; }
+.pricing .path-desc p { font-size: var(--text-lg); color: var(--ink-2); max-width: 36ch; }
+.pricing .path-desc .path-status { font-size: var(--text-base); max-width: 60ch; }
+.pricing .path-status strong { color: var(--ink); font-weight: 600; }
+.pricing .path-action { grid-area: action; display: grid; gap: var(--space-sm); justify-items: start; align-content: start; }
+.pricing .path-action .cta { margin-bottom: var(--space-xs); }
+.pricing .path-link {
+  font: 600 var(--text-lg)/1.3 var(--font-body);
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.22em;
+  white-space: nowrap;
+}
+.pricing .path-link:hover { color: var(--accent-text); }
+
+/* The allowance meter: one square is 250 GB. A Glide mark reads the full-speed 3 TB quickly and the
+ * rest slowly, lighting each square it passes. At rest (no script, off screen, reduced motion) the
+ * mark waits at the 3 TB line and every square is visible. */
+.meter { margin: 0; display: grid; gap: var(--space-sm); min-width: 0; }
+.meter-key { font-size: var(--text-sm); color: var(--ink-3); }
+.meter-lane {
+  --g: 24px;
+  --gap: 6px;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(20, minmax(0, 1fr));
+  gap: var(--gap);
+}
+.meter-lane i { grid-row: 1; aspect-ratio: 1; border-radius: 4px; position: relative; background: var(--piece-on); }
+.meter-stored { margin-bottom: var(--space-md); }
+.meter-stored i { background: var(--piece-stored); }
+.meter-read { container-type: inline-size; margin-top: calc(var(--g) + var(--space-xs)); }
+.meter-read .slow { background: var(--piece-slow); }
+.meter-read i:nth-of-type(13) { grid-column: 14; }
+.meter-read i:nth-of-type(14) { grid-column: 16; }
+.meter-read i:nth-of-type(15) { grid-column: 18; }
+.meter-read i:nth-of-type(16) { grid-column: 20; }
+.meter-read i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--ink);
+  opacity: 0;
+}
+.meter-read .slow::after { background: var(--piece-on); }
+.meter-glider {
+  position: absolute;
+  left: 0;
+  top: calc(-1 * (var(--g) + var(--space-xs)));
+  width: var(--g);
+  height: var(--g);
+  /* The mark's nose points up-right in its drawing; 45° turns it to fly right. Rest: the 3 TB line. */
+  transform: translateX(calc(62.5cqw - var(--g) / 2)) rotate(45deg);
+}
+.meter-scale {
+  display: grid;
+  grid-template-columns: repeat(20, minmax(0, 1fr));
+  column-gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+}
+.meter-scale span:first-child { grid-column: 1 / 13; }
+.meter-scale span:last-child { grid-column: 14 / 21; }
+.meter figcaption { margin-top: var(--space-sm); font-size: var(--text-sm); color: var(--ink-3); }
+
+/* Arrival times follow the glide: 30% of the loop for the first 62.5% of the lane, 56% for the rest. */
+.meter-read i:nth-of-type(1) { --at: 77ms; }
+.meter-read i:nth-of-type(2) { --at: 231ms; }
+.meter-read i:nth-of-type(3) { --at: 385ms; }
+.meter-read i:nth-of-type(4) { --at: 539ms; }
+.meter-read i:nth-of-type(5) { --at: 693ms; }
+.meter-read i:nth-of-type(6) { --at: 847ms; }
+.meter-read i:nth-of-type(7) { --at: 1001ms; }
+.meter-read i:nth-of-type(8) { --at: 1155ms; }
+.meter-read i:nth-of-type(9) { --at: 1309ms; }
+.meter-read i:nth-of-type(10) { --at: 1463ms; }
+.meter-read i:nth-of-type(11) { --at: 1617ms; }
+.meter-read i:nth-of-type(12) { --at: 1771ms; }
+.meter-read i:nth-of-type(13) { --at: 2398ms; }
+.meter-read i:nth-of-type(14) { --at: 3354ms; }
+.meter-read i:nth-of-type(15) { --at: 4309ms; }
+.meter-read i:nth-of-type(16) { --at: 5265ms; }
+.scene-meter.is-in .meter-glider { animation: meter-glide 6.4s linear infinite; }
+.scene-meter.is-in .meter-read i::after { animation: meter-lit 6.4s var(--ease-out) var(--at, 0ms) infinite; }
+@keyframes meter-glide {
+  0% { transform: translateX(calc(var(--g) / -2)) rotate(45deg); opacity: 0; }
+  4% { opacity: 1; }
+  30% { transform: translateX(calc(62.5cqw - var(--g) / 2)) rotate(45deg); }
+  86% { transform: translateX(calc(100cqw - var(--g) / 2)) rotate(45deg); opacity: 1; }
+  93%, 100% { transform: translateX(calc(100cqw - var(--g) / 2)) rotate(45deg); opacity: 0; }
+}
+@keyframes meter-lit {
+  0% { opacity: 0.85; }
+  14%, 100% { opacity: 0; }
+}
+
+/* Personal, as a spec sheet */
+.pricing .spec, .pricing .later, .pricing .faq {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: clamp(88px, 11vw, 152px) var(--gutter) 0;
+}
+.spec-table {
+  width: 100%;
+  max-width: 60rem;
+  margin-top: var(--space-lg);
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.spec-table caption {
+  caption-side: top;
+  text-align: left;
+  padding-bottom: var(--space-md);
+  font-size: var(--text-base);
+  color: var(--ink-2);
+}
+.spec-table th, .spec-table td {
+  text-align: left;
+  vertical-align: baseline;
+  padding: var(--space-md) 0;
+  border-top: 1px solid var(--rule);
+}
+.spec-table tr:last-child th, .spec-table tr:last-child td { border-bottom: 1px solid var(--rule); }
+.spec-table th { width: 36%; padding-right: var(--space-lg); font-weight: 400; color: var(--ink-2); }
+.spec-table .fig { font: 500 var(--text-fig)/1.25 var(--font-display); color: var(--ink); }
+.spec-table .more { display: block; margin-top: var(--space-xs); color: var(--ink-2); max-width: 46ch; }
+
+/* Team: a footnote, priced but not for sale */
+.pricing .later { padding-top: clamp(56px, 7vw, 96px); }
+.later h2 { font: 500 var(--text-lg)/1.3 var(--font-display); letter-spacing: 0; }
+.later p { margin-top: var(--space-xs); max-width: 60ch; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+/* Questions: native details, no divider rules. The marker is a file piece that lights when its answer is open. */
+.pricing .faq { padding-bottom: clamp(96px, 12vw, 168px); }
+.faq-list { margin-top: var(--space-lg); max-width: 52rem; }
+.faq summary {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md) 0;
+  font: 500 var(--text-lg)/1.3 var(--font-display);
+  cursor: pointer;
+  list-style: none;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--piece-stored);
+  transition: background-color var(--dur) var(--ease-out);
+}
+.faq summary:hover { color: var(--accent-text); }
+.faq summary:focus-visible { outline-offset: 4px; }
+.faq details[open] summary::before { background: var(--piece-on); }
+.faq details p { padding: 0 0 var(--space-md) calc(12px + var(--space-md)); max-width: 58ch; color: var(--ink-2); }
+
+@media (max-width: 900px) {
+  .pricing .path {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "name" "price" "desc" "action";
+    row-gap: var(--space-md);
+  }
+  .pricing .path-cloud { grid-template-areas: "name" "price" "alt" "desc" "action"; }
+  .pricing .price-alt { margin-top: calc(var(--space-md) * -0.5); }
+  .pricing .path-action { margin-top: var(--space-xs); }
+}
+@media (max-width: 560px) {
+  .meter-lane { --g: 16px; --gap: 3px; }
+  .meter-scale { column-gap: 3px; }
+  .spec-table th { width: 40%; padding-right: var(--space-md); font-size: var(--text-sm); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scene-meter.is-in .meter-glider, .scene-meter.is-in .meter-read i::after { animation: none; }
+  .faq summary::before { transition: none; }
+}

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Point the landing page's download buttons at one GitHub release.
+"""Point the site's download buttons at one GitHub release.
 
-Rewrites, in site/index.html, every element marked data-release-download (href), data-release-notes
-(href), data-release-label (text) and data-release-size (text). The page stays static: no script is
-needed to see the version or download it.
+Rewrites, in every page that offers the download (site/index.html and site/pricing.html by default),
+every element marked data-release-download (href), data-release-notes (href), data-release-label (text)
+and data-release-size (text). The pages stay static: no script is needed to see the version or download
+it. Every page is checked before any is written, and running it twice with the same release changes
+nothing the second time.
 
     python3 scripts/update-site-release.py --tag v0.1.0-alpha.2 --asset dist/ParaAir-0.1.0-alpha.2.dmg
 """
@@ -14,6 +16,8 @@ import sys
 from pathlib import Path
 
 REPO = "https://github.com/parafieldai/ParaAir"
+SITE = Path(__file__).resolve().parent.parent / "site"
+PAGES = ("index.html", "pricing.html")
 TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?$")
 
 
@@ -48,21 +52,29 @@ def main() -> int:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--asset", "--zip", dest="asset", required=True, type=Path,
                         help="the file the buttons download (the notarized .dmg)")
-    parser.add_argument("--page", type=Path, default=Path(__file__).resolve().parent.parent / "site" / "index.html")
+    parser.add_argument("--page", dest="pages", action="append", type=Path,
+                        help="a page to update; repeat for several (default: %s in site/)" % " and ".join(PAGES))
     args = parser.parse_args()
     if not args.asset.is_file():
         sys.exit(f"no such file: {args.asset}")
-    html = args.page.read_text(encoding="utf-8")
+    pages = args.pages or [SITE / name for name in PAGES]
     download = f"{REPO}/releases/download/{args.tag}/{args.asset.name}"
     notes = f"{REPO}/releases/tag/{args.tag}"
-    html, downloads = set_attr(html, "data-release-download", "href", download)
-    html, note_links = set_attr(html, "data-release-notes", "href", notes)
-    html, labels = set_text(html, "data-release-label", label(args.tag))
-    html, sizes = set_text(html, "data-release-size", size(args.asset))
-    if not (downloads and note_links and labels and sizes):
-        sys.exit("site/index.html is missing a data-release-download, -notes, -label or -size element")
-    args.page.write_text(html, encoding="utf-8")
-    print(f"site now offers {args.tag} ({downloads} download links)")
+    release_label, release_size = label(args.tag), size(args.asset)
+    updated = []
+    for page in pages:
+        html = page.read_text(encoding="utf-8")
+        html, downloads = set_attr(html, "data-release-download", "href", download)
+        html, note_links = set_attr(html, "data-release-notes", "href", notes)
+        html, labels = set_text(html, "data-release-label", release_label)
+        html, sizes = set_text(html, "data-release-size", release_size)
+        if not (downloads and note_links and labels and sizes):
+            sys.exit(f"{page} is missing a data-release-download, -notes, -label or -size element; nothing was written")
+        updated.append((page, html, downloads))
+    for page, html, _ in updated:
+        page.write_text(html, encoding="utf-8")
+    links = ", ".join(f"{page.name}: {count}" for page, _, count in updated)
+    print(f"site now offers {args.tag} (download links in {links})")
     return 0
 
 

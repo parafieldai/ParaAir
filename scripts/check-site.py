@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Static checks for the landing page in site/ (CI job "site"). Standard library only.
+"""Static checks for the pages in site/ (CI job "site"). Standard library only.
 
-- The deployed files exist: index.html, styles.css, motion.js, _headers.
-- No em dash in visible copy: index.html text and user-visible attributes, and
-  anywhere in motion.js or styles.css (either can put text on the page).
-- Every local href/src resolves to a file in site/, and every #fragment to an id.
+- The deployed files exist: index.html, pricing.html, styles.css, motion.js, _headers.
+- Every *.html page in site/ is checked, not only the required ones.
+- No em dash in visible copy: page text and user-visible attributes, and anywhere in
+  motion.js or styles.css (either can put text on the page).
+- The word "unlimited" never appears in visible copy (the transfer allowance has a limit).
+- Every local href/src resolves to a file in site/ (a directory resolves to its index.html),
+  and every #fragment to an id on the page it points at.
 - Nothing the _headers Content-Security-Policy would block: inline <script>,
   <style> elements, style= attributes or on*= event handlers.
 
@@ -12,22 +15,31 @@ Usage: python3 scripts/check-site.py [SITE_DIR]
 """
 from html.parser import HTMLParser
 from pathlib import Path
+import re
 import sys
 from urllib.parse import unquote, urlsplit
 
-REQUIRED = ["index.html", "styles.css", "motion.js", "_headers"]
-EM_DASH = "\u2014"  # em dash
+REQUIRED = ["index.html", "pricing.html", "styles.css", "motion.js", "_headers"]
+EM_DASH = "—"  # em dash
+BANNED_WORDS = re.compile(r"\bunlimited\b", re.IGNORECASE)
 VISIBLE_ATTRIBUTES = {"alt", "title", "aria-label", "aria-description", "placeholder", "value", "content", "label"}
 
 
 class Page(HTMLParser):
-    def __init__(self):
+    def __init__(self, name):
         super().__init__(convert_charrefs=True)
-        self.problems, self.ids, self.references, self.fragments = [], set(), [], []
+        self.name = name
+        self.problems, self.ids, self.references = [], set(), []
         self.skip = 0
 
     def where(self):
-        return "index.html:%d" % self.getpos()[0]
+        return "%s:%d" % (self.name, self.getpos()[0])
+
+    def check_copy(self, text, what):
+        if EM_DASH in text:
+            self.problems.append(self.where() + ": em dash in " + what)
+        if BANNED_WORDS.search(text):
+            self.problems.append(self.where() + ': "unlimited" in ' + what)
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
@@ -45,8 +57,8 @@ class Page(HTMLParser):
                 self.problems.append(self.where() + ": %s= handler (blocked by the CSP in _headers)" % name)
             if name == "id":
                 self.ids.add(value)
-            if name in VISIBLE_ATTRIBUTES and EM_DASH in value:
-                self.problems.append(self.where() + ": em dash in %s=" % name)
+            if name in VISIBLE_ATTRIBUTES:
+                self.check_copy(value, "%s=" % name)
             if name in ("href", "src"):
                 self.references.append((self.where(), value))
 
@@ -60,8 +72,16 @@ class Page(HTMLParser):
             self.skip -= 1
 
     def handle_data(self, data):
-        if not self.skip and EM_DASH in data:
-            self.problems.append(self.where() + ": em dash in visible text")
+        if not self.skip:
+            self.check_copy(data, "visible text")
+
+
+def resolve(site, path):
+    """The file a local path serves, the way a static host does: a directory serves its index.html."""
+    target = (site / unquote(path).lstrip("/")).resolve()
+    if target.is_dir():
+        target = target / "index.html"
+    return target
 
 
 def main(argv):
@@ -70,32 +90,44 @@ def main(argv):
     if problems:
         print("\n".join("site check: " + p for p in problems), file=sys.stderr)
         return 1
-    page = Page()
-    page.feed((site / "index.html").read_text(encoding="utf-8"))
-    page.close()
-    problems += page.problems
+    pages = {}
+    for path in sorted(site.glob("*.html")):
+        page = Page(path.name)
+        page.feed(path.read_text(encoding="utf-8"))
+        page.close()
+        pages[path.resolve()] = page
+        problems += page.problems
     for name in ("motion.js", "styles.css"):
         for number, line in enumerate((site / name).read_text(encoding="utf-8").splitlines(), 1):
             if EM_DASH in line:
                 problems.append("%s:%d: em dash" % (name, number))
-    for where, reference in page.references:
-        parts = urlsplit(reference)
-        if parts.scheme or parts.netloc:
-            continue  # https:, mailto:, data: and other absolute references
-        if not parts.path:
-            if parts.fragment and parts.fragment not in page.ids:
-                problems.append("%s: #%s has no matching id" % (where, parts.fragment))
-            continue
-        target = (site / unquote(parts.path).lstrip("/")).resolve()
-        if site.resolve() not in target.parents or not target.is_file():
-            problems.append("%s: %s does not resolve to a file in %s" % (where, reference, site))
+    local = 0
+    for source, page in pages.items():
+        for where, reference in page.references:
+            parts = urlsplit(reference)
+            if parts.scheme or parts.netloc:
+                continue  # https:, mailto:, data: and other absolute references
+            local += 1
+            if parts.path:
+                target = resolve(site, parts.path)
+                if site.resolve() not in target.parents or not target.is_file():
+                    problems.append("%s: %s does not resolve to a file in %s" % (where, reference, site))
+                    continue
+            else:
+                target = source
+            if parts.fragment:
+                ids = pages[target].ids if target in pages else None
+                if ids is None:
+                    problems.append("%s: #%s points into %s, which is not an HTML page" % (where, parts.fragment, target.name))
+                elif parts.fragment not in ids:
+                    problems.append("%s: #%s has no matching id in %s" % (where, parts.fragment, target.name))
     if "Content-Security-Policy:" not in (site / "_headers").read_text(encoding="utf-8"):
         problems.append("_headers: no Content-Security-Policy")
     if problems:
         print("\n".join("site check: " + p for p in problems), file=sys.stderr)
         return 1
-    print("site check PASS: %d files, %d local references, no em dash, CSP-compatible markup"
-          % (len(REQUIRED), sum(1 for _, r in page.references if not urlsplit(r).scheme)))
+    print("site check PASS: %d pages (%s), %d required files, %d local references, no em dash or \"unlimited\", "
+          "CSP-compatible markup" % (len(pages), ", ".join(p.name for p in pages.values()), len(REQUIRED), local))
     return 0
 
 
