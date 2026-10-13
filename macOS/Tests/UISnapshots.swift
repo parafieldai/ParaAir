@@ -19,6 +19,7 @@ struct UISnapshots {
         failures += checkBilling()
         failures += checkNaming()
         failures += checkLoginItem()
+        failures += checkVersionText()
 
         for (name, input) in homeScenarios {
             for appearance in [NSAppearance.Name.aqua, .darkAqua]
@@ -975,6 +976,20 @@ struct UISnapshots {
                                     actions: HomeActions(), loginItem: failed),
                    size: CGSize(width: 620, height: 680), appearance: .aqua,
                    to: output.appendingPathComponent("home-login-failed-light.png"))
+    }
+
+    static func checkVersionText() -> [String] {
+        var failures: [String] = []
+        func expect(_ value: AppVersionText, _ line: String) {
+            if value.line != line { failures.append("version text: expected \(line), got \(value.line)") }
+        }
+        expect(.make(marketing: "0.1.0", build: "148", releaseTag: "v0.1.0-alpha.2"), "0.1.0 alpha 2 (148)")
+        expect(.make(marketing: "0.2.0", build: "201", releaseTag: "v0.2.0-rc.1"), "0.2.0 release candidate 1 (201)")
+        expect(.make(marketing: "1.0.0", build: "300", releaseTag: "v1.0.0"), "1.0.0 (300)")
+        expect(.make(marketing: "0.1.0", build: "148", releaseTag: "v0.1.1-alpha.1"), "0.1.0 (148)")
+        expect(.make(marketing: "0.1.0", build: "1", releaseTag: "nightly"), "0.1.0 (1)")
+        expect(.make(marketing: nil, build: nil, releaseTag: nil), "Development build")
+        return failures
     }
 
     @MainActor

@@ -33,6 +33,7 @@ struct HomeDetails {
     var stateFolder: String
     var canEditAppearance = true
     var canChangeStateFolder = true
+    var version = AppVersionText.current.line
 }
 
 // MARK: - Home window
@@ -51,12 +52,12 @@ struct DriveHomeContent: View {
         let presentation = self.presentation
         VStack(spacing: 0) {
             DriveHeader(name: input.driveName ?? "ParaAir", icon: details.driveIcon,
-                        status: presentation.status, iconSize: 56, titleFont: .title2.bold())
+                        status: presentation.status, iconSize: 56, titleFont: .glideDisplay(.largeTitle))
                 .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 6)
             Form {
                 Section {
                     Text(presentation.status.detail)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Glide.quiet)
                         .fixedSize(horizontal: false, vertical: true)
                     ActionRow(presentation: presentation, actions: actions, large: true)
                 }
@@ -66,12 +67,14 @@ struct DriveHomeContent: View {
                     }
                 }
                 if !presentation.steps.isEmpty {
-                    Section("Setup") {
+                    Section {
                         ForEach(presentation.steps) { StepRow(step: $0) }
+                    } header: {
+                        Text("Setup").font(.glideHeading).foregroundStyle(Glide.ink)
                     }
                 }
                 if input.hasDrive {
-                    Section("Drive") {
+                    Section {
                         LabeledContent("Storage", value: details.storageSummary ?? "Saved storage connection")
                         if let cloud = input.cloudUsage {
                             PlanRows(usage: CloudUsagePresentation.make(cloud.workspace, state: cloud.state))
@@ -90,10 +93,13 @@ struct DriveHomeContent: View {
                                 .disabled(!details.canEditAppearance)
                             Button("Storage Settings…", action: actions.openStorageSettings)
                         }
+                    } header: {
+                        Text("Drive").font(.glideHeading).foregroundStyle(Glide.ink)
                     }
                 }
                 Section {
                     Toggle("Connect the drive when ParaAir opens", isOn: $connectAutomatically)
+                        .glideControlTint()
                     if let loginItem { LoginItemToggle(model: loginItem) }
                     DisclosureGroup("Advanced", isExpanded: $showsAdvanced) {
                         AdvancedControls(input: input, details: details, actions: actions)
@@ -102,6 +108,7 @@ struct DriveHomeContent: View {
             }
             .formStyle(.grouped)
         }
+        .glideSurface()
         .frame(minWidth: 560, minHeight: 520)
     }
 }
@@ -119,7 +126,7 @@ struct MenuBarPanel: View {
         let presentation = HomePresentation.make(input)
         VStack(alignment: .leading, spacing: 12) {
             DriveHeader(name: input.driveName ?? "ParaAir", icon: details.driveIcon,
-                        status: presentation.status, iconSize: 34, titleFont: .headline)
+                        status: presentation.status, iconSize: 34, titleFont: .glideDisplay(.title2, weight: .semibold))
             if let notice = presentation.notices.first(where: { $0.tone == .problem || $0.tone == .attention }) {
                 NoticeRow(notice: notice).lineLimit(4)
             }
@@ -131,6 +138,7 @@ struct MenuBarPanel: View {
             }
             Toggle("Connect the drive when ParaAir opens", isOn: $connectAutomatically)
                 .toggleStyle(.checkbox)
+                .glideControlTint()
             if let loginItem { LoginItemToggle(model: loginItem, style: .panel) }
             Divider()
             HStack {
@@ -145,6 +153,7 @@ struct MenuBarPanel: View {
         }
         .padding(16)
         .frame(width: 320)
+        .glideSurface()
     }
 }
 
@@ -163,13 +172,14 @@ private struct DriveHeader: View {
                 if let icon {
                     Image(nsImage: icon).resizable().scaledToFit()
                 } else {
-                    GlideMark()
+                    // The bare mark, as in the website's masthead: no tile behind it.
+                    GlideMark(badge: false).padding(iconSize * 0.12)
                 }
             }
             .frame(width: iconSize, height: iconSize)
             .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                Text(name).font(titleFont).lineLimit(1).truncationMode(.middle)
+                Text(name).font(titleFont).foregroundStyle(Glide.ink).lineLimit(1).truncationMode(.middle)
                 StatusLabel(status: status)
             }
             Spacer(minLength: 0)
@@ -188,7 +198,7 @@ struct StatusLabel: View {
             Image(systemName: Self.symbol(status.tone)).foregroundStyle(Self.color(status.tone))
         }
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(Glide.quiet)
     }
 
     static func symbol(_ tone: HomePresentation.Tone) -> String {
@@ -203,10 +213,10 @@ struct StatusLabel: View {
 
     static func color(_ tone: HomePresentation.Tone) -> Color {
         switch tone {
-        case .good: return .green
+        case .good: return Glide.good
         case .working: return .secondary
-        case .attention: return .orange
-        case .problem: return .red
+        case .attention: return Glide.attention
+        case .problem: return Glide.problem
         case .neutral: return .secondary
         }
     }
@@ -224,7 +234,7 @@ private struct ActionRow: View {
             } label: {
                 Text(presentation.primary.title)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glideProminent)
             .controlSize(large ? .large : .regular)
             .keyboardShortcut(.defaultAction)
             .disabled(!presentation.primary.enabled)
@@ -267,7 +277,7 @@ private struct PlanRows: View {
     var body: some View {
         if let plan = usage.planSize {
             LabeledContent("Plan") {
-                Text(plan).font(.title3.weight(.semibold)).monospacedDigit().foregroundStyle(.primary)
+                Text(plan).font(.glideDisplay(.title2, weight: .semibold)).monospacedDigit().foregroundStyle(Glide.ink)
             }
         }
         if let used = usage.usedSize {
@@ -275,7 +285,7 @@ private struct PlanRows: View {
                 HStack(spacing: 10) {
                     if let fraction = usage.fraction {
                         ProgressView(value: fraction)
-                            .tint(fraction >= 1 ? .orange : nil)
+                            .tint(fraction >= 1 ? Glide.attention : Glide.controlTint)
                             .frame(width: 120)
                             .accessibilityHidden(true)
                     }
@@ -295,12 +305,12 @@ private struct StepRow: View {
                 Text(step.title)
                     .fontWeight(step.state == .current ? .semibold : .regular)
                     .foregroundStyle(step.state == .upcoming ? .secondary : .primary)
-                Text(step.detail).font(.caption).foregroundStyle(.secondary)
+                Text(step.detail).font(.caption).foregroundStyle(Glide.quiet)
             }
         } icon: {
             switch step.state {
-            case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-            case .current: Image(systemName: "arrow.right.circle.fill").foregroundStyle(.tint)
+            case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(Glide.good)
+            case .current: Image(systemName: "arrow.right.circle.fill").foregroundStyle(Glide.ink)
             case .upcoming: Image(systemName: "circle").foregroundStyle(.tertiary)
             }
         }
@@ -331,6 +341,9 @@ private struct AdvancedControls: View {
             LabeledContent("State folder") {
                 Text(details.stateFolder).font(.caption.monospaced()).textSelection(.enabled)
                     .lineLimit(2).truncationMode(.middle)
+            }
+            LabeledContent("Version") {
+                Text(details.version).monospacedDigit().textSelection(.enabled)
             }
         }
         .padding(.top, 6)

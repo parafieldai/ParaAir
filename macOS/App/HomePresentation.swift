@@ -308,3 +308,35 @@ enum DriveNaming {
         return slug.isEmpty ? "ParaAir" : slug
     }
 }
+
+/// The version ParaAir shows in Advanced and the About window. A release tag such as
+/// v0.1.0-alpha.2 (ParaAirReleaseTag, set by scripts/build-app.sh) reads "0.1.0 alpha 2";
+/// a tag that doesn't match the bundle's version is ignored rather than shown wrongly.
+struct AppVersionText: Equatable {
+    var title: String
+    var build: String?
+
+    /// "0.1.0 alpha 2 (148)".
+    var line: String { build.map { "\(title) (\($0))" } ?? title }
+
+    static func make(marketing: String?, build: String?, releaseTag: String?) -> AppVersionText {
+        let version = marketing ?? "Development build"
+        var title = version
+        // v<marketing>-<alpha|beta|rc>.<n>; anything else leaves the plain version.
+        if let tag = releaseTag, tag.hasPrefix("v") {
+            let parts = tag.dropFirst().split(separator: "-", maxSplits: 1)
+            let stage = parts.count == 2 ? parts[1].split(separator: ".") : []
+            if parts.first.map(String.init) == marketing, stage.count == 2, ["alpha", "beta", "rc"].contains(stage[0]),
+               !stage[1].isEmpty, stage[1].allSatisfy(\.isASCII), stage[1].allSatisfy(\.isNumber) {
+                title = "\(version) \(stage[0] == "rc" ? "release candidate" : String(stage[0])) \(stage[1])"
+            }
+        }
+        return AppVersionText(title: title, build: build)
+    }
+
+    static var current: AppVersionText {
+        let info = Bundle.main.infoDictionary ?? [:]
+        return make(marketing: info["CFBundleShortVersionString"] as? String, build: info["CFBundleVersion"] as? String,
+                    releaseTag: info["ParaAirReleaseTag"] as? String)
+    }
+}

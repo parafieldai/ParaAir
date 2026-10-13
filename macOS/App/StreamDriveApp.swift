@@ -17,9 +17,19 @@ struct StreamDriveApp: App {
     }
     var body: some Scene {
         Window("ParaAir", id: "connections") {
-            DriveHomeView(model: model)
+            // Paper behind the title bar too, so the window reads as one surface.
+            DriveHomeView(model: model).containerBackground(Glide.paper, for: .window)
         }.defaultSize(width: 620, height: 640)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About ParaAir") {
+                    // The standard panel, with the release stage beside the version: "0.1.0 alpha 2 (148)".
+                    let version = AppVersionText.current
+                    var options: [NSApplication.AboutPanelOptionKey: Any] = [.applicationVersion: version.title]
+                    if let build = version.build { options[.version] = build }
+                    NSApp.orderFrontStandardAboutPanel(options: options)
+                }
+            }
             CommandGroup(replacing: .appTermination) {
                 Button("Quit ParaAir") { model.quit() }.keyboardShortcut("q")
             }
@@ -30,6 +40,7 @@ struct StreamDriveApp: App {
                             onSaved: { model.offerDrive($0) },
                             onCloudDriveReady: { model.adoptStateRoot($0) })
                 .id(model.stateRoot)
+                .containerBackground(Glide.paper, for: .window)
         }.defaultSize(width: 680, height: 730)
         MenuBarExtra {
             MenuBarPanel(input: model.homeInputs(), details: model.homeDetails(),

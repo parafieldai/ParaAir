@@ -21,7 +21,7 @@ struct DriveAppearanceView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Drive appearance").font(.title2.bold())
+            Text("Drive appearance").font(.glideDisplay(.title)).foregroundStyle(Glide.ink)
             HStack(spacing: 22) {
                 Image(nsImage: preview).resizable().scaledToFit().frame(width: 80, height: 80)
                 VStack(alignment: .leading, spacing: 10) {
@@ -34,15 +34,16 @@ struct DriveAppearanceView: View {
                 }
             }
             Text("The name updates in Finder’s sidebar. The volume name updates on the next mount. Your chosen icon appears in ParaAir; Finder may keep its system sidebar icon.")
-                .font(.callout).foregroundStyle(.secondary)
-            if let error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
+                .font(.callout).foregroundStyle(Glide.quiet)
+            if let error { Text(error).font(.callout).foregroundStyle(Glide.problem).textSelection(.enabled) }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") { save() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                Button("Save") { save() }.keyboardShortcut(.defaultAction).buttonStyle(.glideProminent)
             }
         }
         .padding(24).frame(width: 460)
+        .glideSurface()
     }
     private var preview: NSImage {
         if let customIcon, let image = NSImage(data: customIcon) { return image }
