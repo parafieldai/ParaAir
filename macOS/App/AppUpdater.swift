@@ -91,3 +91,12 @@ struct CheckForUpdatesButton: View {
             .disabled(!updater.canCheckForUpdates)
     }
 }
+
+/// Routes NSApplication's termination question to MenuModel.shouldTerminate.
+final class AppTermination: NSObject, NSApplicationDelegate {
+    @MainActor static weak var model: MenuModel?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated { Self.model?.shouldTerminate() ?? .terminateNow }
+    }
+}
