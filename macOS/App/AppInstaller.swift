@@ -45,7 +45,7 @@ enum AppInstaller {
         case .openInstalled:
             if open(destination, newInstance: !(installed?.running ?? false)) { quit() }
         case .install(let replacing):
-            installAndRelaunch(bundle, at: destination, replacing: replacing)
+            fallback = installAndRelaunch(bundle, at: destination, replacing: replacing)
         case .askToReplaceRunning:
             let old = installed?.version ?? BundleVersion(build: nil, marketing: nil)
             // Asked here, before anything else starts, so the old copy is never kept without asking.
@@ -54,7 +54,7 @@ enum AppInstaller {
                 return location
             }
             if quitRunningCopies(at: destination) {
-                installAndRelaunch(bundle, at: destination, replacing: true)
+                fallback = installAndRelaunch(bundle, at: destination, replacing: true)
             } else {
                 fallback = .stillOpen(old.label(distinctFrom: running))
             }
@@ -67,8 +67,14 @@ enum AppInstaller {
         return location
     }
 
-    /// Copies, opens the copy and quits. Returns only when something failed.
-    private static func installAndRelaunch(_ bundle: URL, at destination: URL, replacing: Bool) {
+    /// Copies, opens the copy and quits. Returns only when something failed, with the reason.
+    /// Replacing a copy ejects ParaAir's drives first: their file system extension runs from it.
+    private static func installAndRelaunch(_ bundle: URL, at destination: URL, replacing: Bool) -> ManualMove {
+        if replacing {
+            let busy = ParaAirVolumes.eject(ParaAirVolumes.mountedPaths()).filter { !$0.ejected }.map(\.name)
+            AppLog.install.notice("ejected drives before replacing busy=\(busy.count)")
+            if !busy.isEmpty { return .drivesInUse(busy) }
+        }
         do {
             try install(bundle, at: destination, replacing: replacing)
             if open(destination, newInstance: true) { quit() }
@@ -76,6 +82,7 @@ enum AppInstaller {
             let failure = error as NSError
             AppLog.install.error("move failed domain=\(failure.domain, privacy: .public) code=\(failure.code)")
         }
+        return .couldNotMove
     }
 
     private static func runningCopies(at destination: URL) -> [NSRunningApplication] {
@@ -193,11 +200,14 @@ enum AppInstaller {
         case couldNotMove
         /// The older copy didn't quit when asked; carries its version when known.
         case stillOpen(String?)
+        /// A ParaAir drive has open files, so it couldn't be ejected before replacing.
+        case drivesInUse([String])
 
         var title: String {
             switch self {
             case .couldNotMove: return "Move ParaAir to Applications"
             case .stillOpen: return "Quit ParaAir to finish installing"
+            case .drivesInUse(let drives): return UpdateGate.blockedTitle(drives)
             }
         }
         var detail: String {
@@ -206,6 +216,9 @@ enum AppInstaller {
                 return "ParaAir couldn’t move itself. Drag ParaAir into your Applications folder, then open it from there. Until then it runs from where it is now."
             case .stillOpen(let version):
                 return "ParaAir\(version.map { " " + $0 } ?? "") didn’t quit. Click the ParaAir menu bar icon, choose Quit ParaAir, then open this copy again. Until then this copy runs from where it is now."
+            case .drivesInUse(let drives):
+                return "ParaAir ejects its drives before replacing the copy in Applications, and \(drives.count == 1 ? "“\(drives[0])”" : "\(drives.count) drives") has files open. "
+                    + "Close them, then open this copy again. Nothing has changed, and files waiting to upload stay on this Mac."
             }
         }
     }

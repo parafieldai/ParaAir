@@ -91,3 +91,49 @@ struct CheckForUpdatesButton: View {
             .disabled(!updater.canCheckForUpdates)
     }
 }
+
+/// Routes NSApplication's termination question to MenuModel.shouldTerminate.
+final class AppTermination: NSObject, NSApplicationDelegate {
+    @MainActor static weak var model: MenuModel?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated { Self.model?.shouldTerminate() ?? .terminateNow }
+    }
+}
+
+/// Every ParaAir drive mounted on this Mac, from any state folder. The file system extension
+/// serving them runs from the installed app, so they are ejected before that app is replaced,
+/// by an in-app update (UpdateGate) or by a newer copy opened from the disk image.
+enum ParaAirVolumes {
+    static func mountedPaths() -> [String] {
+        var mounts: UnsafeMutablePointer<statfs>?
+        let count = getmntinfo(&mounts, MNT_NOWAIT)
+        guard let mounts else { return [] }
+        var paths: [String] = []
+        for index in 0..<Int(count) {
+            var entry = mounts[index]
+            let type = withUnsafePointer(to: &entry.f_fstypename) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) { String(cString: $0) }
+            }
+            guard type == "streamdrive" || type == "paraair" else { continue }
+            paths.append(withUnsafePointer(to: &entry.f_mntonname) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+            })
+        }
+        return paths.sorted()
+    }
+
+    /// Ejects each drive without forcing open files closed; reports each drive's name and result.
+    nonisolated static func eject(_ paths: [String]) -> [(name: String, ejected: Bool)] {
+        paths.map { path in
+            let name = FileManager.default.displayName(atPath: path)
+            do {
+                try NSWorkspace.shared.unmountAndEjectDevice(at: URL(fileURLWithPath: path, isDirectory: true))
+                return (name, true)
+            } catch {
+                AppLog.mount.error("eject before replacing the app failed: \(error.localizedDescription, privacy: .public)")
+                return (name, false)
+            }
+        }
+    }
+}

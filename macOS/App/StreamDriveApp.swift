@@ -9,6 +9,7 @@ import CFinderSidebar
 @main
 struct StreamDriveApp: App {
     @StateObject private var model = MenuModel()
+    @NSApplicationDelegateAdaptor(AppTermination.self) private var termination
     @Environment(\.openWindow) private var openWindow
     init() {
         // Before MenuModel exists: a copy opened from the disk image moves to Applications and relaunches.
@@ -173,12 +174,45 @@ final class MenuModel: ObservableObject {
         logLifecycle("launch")
         startRenewal()
         _ = updater
+        AppTermination.model = self
     }
 
     /// Sparkle updates; it ejects every drive before an update replaces the app (UpdateGate).
     lazy var updater = AppUpdater { [weak self] done in
         guard let self else { return done(.install) }
         self.ejectAllDrives(done)
+    }
+
+    /// Every way ParaAir quits passes here: Quit ParaAir, logging out, another app asking it to
+    /// quit. A downloaded update installs as ParaAir quits, so its drives are ejected first and the
+    /// update never replaces the app under a mounted drive's extension. A busy drive asks.
+    func shouldTerminate() -> NSApplication.TerminateReply {
+        guard updater.hasPendingInstall else { return .terminateNow }
+        reload()
+        guard !mounted.isEmpty else { return .terminateNow }
+        ejectBeforeTerminating()
+        return .terminateLater
+    }
+
+    private func ejectBeforeTerminating() {
+        ejectAllDrives { outcome in
+            switch outcome {
+            case .install:
+                NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            case .blocked(let drives):
+                let alert = NSAlert()
+                alert.messageText = UpdateGate.blockedTitle(drives)
+                alert.informativeText = UpdateGate.blockedMessage(drives)
+                alert.addButton(withTitle: "Try Again")
+                alert.addButton(withTitle: "Keep Running")
+                NSApp.activate(ignoringOtherApps: true)
+                if alert.runModal() == .alertFirstButtonReturn {
+                    self.ejectBeforeTerminating()
+                } else {
+                    NSApplication.shared.reply(toApplicationShouldTerminate: false)
+                }
+            }
+        }
     }
 
     /// Ejects every mounted ParaAir drive off the main thread, then reports which stayed busy.
@@ -188,16 +222,7 @@ final class MenuModel: ObservableObject {
         let paths = mounted.sorted()
         AppLog.mount.notice("eject for update drives=\(paths.count)")
         DispatchQueue.global(qos: .userInitiated).async {
-            let results = paths.map { path -> (name: String, ejected: Bool) in
-                let name = FileManager.default.displayName(atPath: path)
-                do {
-                    try NSWorkspace.shared.unmountAndEjectDevice(at: URL(fileURLWithPath: path, isDirectory: true))
-                    return (name, true)
-                } catch {
-                    AppLog.mount.error("eject for update failed: \(error.localizedDescription, privacy: .public)")
-                    return (name, false)
-                }
-            }
+            let results = ParaAirVolumes.eject(paths)
             DispatchQueue.main.async {
                 self.reload()
                 completion(UpdateGate.outcome(results))
@@ -537,22 +562,7 @@ final class MenuModel: ObservableObject {
         activity.watch(stateRoot: stateRoot, profile: profiles.first)
         readyConnection = profiles.isEmpty
             ? (try? ConnectionStore(root: stateRoot).list())?.first { $0.state == .storageReady } : nil
-        mounted.removeAll()
-        var mounts: UnsafeMutablePointer<statfs>?
-        let count = getmntinfo(&mounts, MNT_NOWAIT)
-        if let mounts {
-            for index in 0..<Int(count) {
-                var entry = mounts[index]
-                let type = withUnsafePointer(to: &entry.f_fstypename) {
-                    $0.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) { String(cString: $0) }
-                }
-                guard type == "streamdrive" || type == "paraair" else { continue }
-                let path = withUnsafePointer(to: &entry.f_mntonname) {
-                    $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
-                }
-                mounted.insert(path)
-            }
-        }
+        mounted = Set(ParaAirVolumes.mountedPaths())
         for profile in profiles where isMounted(profile) {
             let identity = stateRoot.path + "\0" + profile.name
             if sidebarAttempts.insert(identity).inserted { addToSidebar(profile, automatically: true) }
@@ -806,25 +816,9 @@ final class MenuModel: ObservableObject {
         }
     }
     func quit() {
-        // A downloaded update installs as ParaAir quits; eject first so it never replaces the app
-        // under a mounted drive's extension.
-        if updater.hasPendingInstall, !mounted.isEmpty {
-            ejectAllDrives { outcome in
-                switch outcome {
-                case .install:
-                    NSApplication.shared.terminate(nil)
-                case .blocked(let drives):
-                    let alert = NSAlert()
-                    alert.messageText = UpdateGate.blockedTitle(drives)
-                    alert.informativeText = UpdateGate.blockedMessage(drives)
-                    alert.addButton(withTitle: "Try Again")
-                    alert.addButton(withTitle: "Keep Running")
-                    if alert.runModal() == .alertFirstButtonReturn { self.quit() }
-                }
-            }
-            return
-        }
-        if !mounted.isEmpty {
+        // With an update waiting, quitting ejects the drives (shouldTerminate), so the
+        // "drive stays mounted" question doesn't apply.
+        if !mounted.isEmpty && !updater.hasPendingInstall {
             let alert = NSAlert()
             alert.messageText = "Quit ParaAir while a drive is mounted?"
             alert.informativeText = "The drive stays mounted, but cloud sign-in renewal stops. Eject the drive in Finder first, or keep ParaAir open for continued access."
