@@ -12,7 +12,9 @@ struct DriveHomeView: View {
     var body: some View {
         DriveHomeContent(input: model.homeInputs(), details: model.homeDetails(),
                          connectAutomatically: $model.mountOnLaunch,
-                         actions: model.homeActions(openWindow: openWindow), loginItem: model.loginItem)
+                         actions: model.homeActions(openWindow: openWindow), loginItem: model.loginItem,
+                         checkUpdatesAutomatically: model.updater.isAvailable
+                            ? Binding(get: { model.updater.automaticallyChecks }, set: { model.updater.automaticallyChecks = $0 }) : nil)
         .task { await model.refreshExtensionStatus() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             model.resumeAfterSettings()
@@ -102,6 +104,7 @@ extension MenuModel {
             billing: { [weak self] action in
                 show("storage-settings")
                 self?.cloudAccount.perform(action)
-            })
+            },
+            checkForUpdates: updater.isAvailable ? { [weak self] in self?.updater.checkForUpdates() } : nil)
     }
 }

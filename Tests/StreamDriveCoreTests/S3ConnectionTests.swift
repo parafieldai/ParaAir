@@ -24,6 +24,38 @@ final class S3ConnectionTests: XCTestCase {
         }
         XCTAssertNoThrow(try S3ConnectionTarget(provider: .nas, endpoint: URL(string: "https://nas.tailnet.ts.net:9000")!, bucket: "media", region: "us-east-1"))
     }
+    func testR2APITokenEndpointIsBuiltFromTheAccountID() throws {
+        let account = "0123456789abcdef0123456789abcdef"
+        XCTAssertEqual(try CloudflareR2Provider.s3Endpoint(accountID: account).absoluteString,
+                       "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com")
+        XCTAssertEqual(try CloudflareR2Provider.s3Endpoint(accountID: " 0123456789ABCDEF0123456789ABCDEF\n", jurisdiction: .eu).absoluteString,
+                       "https://0123456789abcdef0123456789abcdef.eu.r2.cloudflarestorage.com")
+        for bad in ["", "0123456789abcdef", "0123456789abcdef0123456789abcdeg", "0123456789abcdef0123456789abcdef.evil.example"] {
+            XCTAssertThrowsError(try CloudflareR2Provider.s3Endpoint(accountID: bad), bad)
+        }
+        XCTAssertTrue(CloudflareR2Provider.isS3Endpoint(URL(string: "https://\(account).r2.cloudflarestorage.com")!))
+        XCTAssertTrue(CloudflareR2Provider.isS3Endpoint(URL(string: "https://\(account).eu.r2.cloudflarestorage.com")!))
+        XCTAssertEqual(try CloudflareR2Provider.s3Endpoint(accountID: account, jurisdiction: .us).absoluteString,
+                       "https://0123456789abcdef0123456789abcdef.us.r2.cloudflarestorage.com")
+        XCTAssertTrue(CloudflareR2Provider.isS3Endpoint(try CloudflareR2Provider.s3Endpoint(accountID: account, jurisdiction: .us)))
+        for other in ["http://\(account).r2.cloudflarestorage.com", "https://\(account).r2.cloudflarestorage.com.evil.example",
+                      "https://r2.cloudflarestorage.com", "https://\(account).fedramp.r2.cloudflarestorage.com", "https://s3.us-west-004.backblazeb2.com"] {
+            XCTAssertFalse(CloudflareR2Provider.isS3Endpoint(URL(string: other)!), other)
+        }
+    }
+    func testR2APITokenConnectionUsesTheR2TargetAndItsOwnTitle() throws {
+        let endpoint = "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com"
+        let token = StorageConnection(provider: .customS3, name: "Studio R2", state: .storageReady, bucket: "studio-footage", endpoint: endpoint, region: "auto")
+        XCTAssertTrue(token.usesR2APIToken)
+        XCTAssertEqual(token.providerTitle, "Cloudflare R2 (API token)")
+        XCTAssertEqual(try token.nativeBucketURL(), endpoint + "/studio-footage")
+        // The R2 target only signs for "auto" (or us-east-1), so a wrong region fails before any request.
+        var wrongRegion = token; wrongRegion.region = "us-west-2"
+        XCTAssertThrowsError(try wrongRegion.nativeBucketURL())
+        let nas = StorageConnection(provider: .customS3, name: "NAS", state: .storageReady, bucket: "media", endpoint: "https://nas.example", region: "us-east-1")
+        XCTAssertFalse(nas.usesR2APIToken)
+        XCTAssertEqual(nas.providerTitle, "Custom S3 / NAS")
+    }
     func testAWSAndR2EndpointRegionsAreBoundToProvider() throws {
         XCTAssertNoThrow(try S3ConnectionTarget(provider: .aws, endpoint: URL(string: "https://s3.us-west-2.amazonaws.com")!, bucket: "test-bucket", region: "us-west-2"))
         XCTAssertThrowsError(try S3ConnectionTarget(provider: .aws, endpoint: URL(string: "https://s3.attacker.invalid")!, bucket: "test-bucket", region: "us-west-2"))

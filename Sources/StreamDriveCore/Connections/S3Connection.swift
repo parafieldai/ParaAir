@@ -41,7 +41,7 @@ public struct S3ConnectionTarget: Codable, Sendable {
             guard host == "s3.\(region).\(suffix)" || (region == "us-east-1" && host == "s3.amazonaws.com"),
                   components.port == nil || components.port == 443 else { throw S3ConnectionError.invalidTarget }
         case .r2:
-            guard Self.matches(host, "^[a-f0-9]{32}(\\.eu)?\\.r2\\.cloudflarestorage\\.com$"),
+            guard Self.matches(host, "^[a-f0-9]{32}(\\.(eu|us))?\\.r2\\.cloudflarestorage\\.com$"),
                   region == "auto" || region == "us-east-1", components.port == nil || components.port == 443
             else { throw S3ConnectionError.invalidTarget }
         case .backblazeB2:

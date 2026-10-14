@@ -130,6 +130,8 @@ if [[ " $native_archs " == *" $(uname -m) "* ]]; then
 else
   echo "Callback tests skipped: native target architecture does not include this build host." >&2
 fi
+# Sparkle (updates), pinned and checksum-verified by fetch-sparkle.sh.
+sparkle_dir="$(bash "$root/scripts/fetch-sparkle.sh")"
 app_binaries=()
 cli_binaries=()
 launcher_binaries=()
@@ -138,6 +140,7 @@ for architecture in $native_archs; do
   xcrun swiftc -parse-as-library -O -target "$architecture-apple-macos26.0" -sdk "$sdk" \
     -module-cache-path "$root/.build/xcode/ModuleCache.noindex" \
     -I "$products" -I "$root/Sources/CSQLite" -I "$root/macOS/CFinderSidebar" \
+    -F "$sparkle_dir" -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
     "$root/macOS/App/"*.swift "$products/StreamDriveCore.o" \
     -lsqlite3 -o "$binary"
   app_binaries+=("$binary")
@@ -208,6 +211,11 @@ mkdir -p "$extension/Contents/Frameworks" "$extension/Contents/Resources" "$app/
 /usr/bin/install -m 644 "$root/native/JUICEFS-LICENSE" "$extension/Contents/Resources/JUICEFS-LICENSE"
 /usr/bin/install -m 755 "$native_library" "$extension/Contents/Frameworks/libstreamdrive.dylib"
 /usr/bin/install -m 755 "$native_library" "$cli/Contents/Frameworks/libstreamdrive.dylib"
+# Sparkle's XPC services exist for sandboxed apps; ParaAir isn't sandboxed, so they are left out.
+sparkle="$app/Contents/Frameworks/Sparkle.framework"
+rm -rf "$sparkle"
+/usr/bin/ditto "$sparkle_dir/Sparkle.framework" "$sparkle"
+rm -rf "$sparkle/Versions/B/XPCServices" "$sparkle/XPCServices"
 identity="${STREAMDRIVE_SIGN_IDENTITY:--}"
 timestamp=(--timestamp=none)
 if [[ -n "${STREAMDRIVE_SIGN_IDENTITY:-}" ]]; then timestamp=(--timestamp); fi
@@ -215,6 +223,10 @@ if [[ -n "${STREAMDRIVE_SIGN_IDENTITY:-}" ]]; then timestamp=(--timestamp); fi
 "${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$app/Contents/Frameworks/libstreamdrive.dylib"
 "${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$cli/Contents/Frameworks/libstreamdrive.dylib"
 "${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$app/Contents/Helpers/paraair"
+# Sparkle inside out: its installer tool and updater app, then the framework itself.
+"${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$sparkle/Versions/B/Autoupdate"
+"${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$sparkle/Versions/B/Updater.app"
+"${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$sparkle"
 if [[ -n "$cli_entitlements" ]]; then
   "${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" --entitlements "$cli_entitlements" "$cli"
 else

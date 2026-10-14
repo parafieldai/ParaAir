@@ -20,6 +20,7 @@ struct UISnapshots {
         failures += checkNaming()
         failures += checkLoginItem()
         failures += checkVersionText()
+        failures += checkUpdateGate()
 
         for (name, input) in homeScenarios {
             for appearance in [NSAppearance.Name.aqua, .darkAqua]
@@ -976,6 +977,30 @@ struct UISnapshots {
                                     actions: HomeActions(), loginItem: failed),
                    size: CGSize(width: 620, height: 680), appearance: .aqua,
                    to: output.appendingPathComponent("home-login-failed-light.png"))
+        // Advanced open: the version with its release stage, Check for Updates and the automatic check setting.
+        var updates = HomeActions(); updates.checkForUpdates = {}
+        var versioned = details(for: input); versioned.version = "0.1.0 alpha 2 (161)"
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(DriveHomeContent(input: input, details: versioned, connectAutomatically: .constant(true), actions: updates,
+                                        loginItem: LoginItemModel(service: FixtureLoginItemService(.enabled), rememberChoice: {}),
+                                        checkUpdatesAutomatically: .constant(true), startsWithAdvancedOpen: true),
+                       size: CGSize(width: 620, height: 900), appearance: appearance,
+                       to: output.appendingPathComponent("home-advanced-updates-\(suffix(appearance)).png"))
+        }
+    }
+
+    static func checkUpdateGate() -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: Bool, _ message: String) { if !condition { failures.append("update gate: " + message) } }
+        expect(UpdateGate.outcome([]) == .install, "no mounted drive installs at once")
+        expect(UpdateGate.outcome([("Client Footage", true), ("Archive", true)]) == .install, "ejected drives install")
+        expect(UpdateGate.outcome([("Client Footage", true), ("Archive", false)]) == .blocked(drives: ["Archive"]), "a busy drive blocks")
+        expect(UpdateGate.blockedTitle(["Archive"]) == "“Archive” is in use", "one drive names it")
+        expect(UpdateGate.blockedTitle(["A", "B"]) == "2 drives are in use", "two drives count them")
+        let message = UpdateGate.blockedMessage(["Archive"])
+        expect(message.contains("Try Again") && message.contains("waiting to upload stay on this Mac") && !message.contains("—"),
+               "the message says what to do and that nothing is lost")
+        return failures
     }
 
     static func checkVersionText() -> [String] {

@@ -3,7 +3,9 @@
 # verifies state logic and renders PNGs. Does not launch, sign, mount or touch Keychain.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-products="$root/.build/xcode/Build/Products/Release"
+# PARAAIR_UI_PRODUCTS may point at a folder holding a StreamDriveCore.o and .swiftmodule built
+# without Xcode (swiftc -wmo -emit-module), for quick UI checks.
+products="${PARAAIR_UI_PRODUCTS:-$root/.build/xcode/Build/Products/Release}"
 out="${1:-$root/.runtime/ui-snapshots}"
 [[ -f "$products/StreamDriveCore.o" ]] || { echo "Build the app once with scripts/build-app.sh first." >&2; exit 1; }
 mkdir -p "$root/.build/uiux"

@@ -111,6 +111,20 @@ extension View {
     }
 }
 
+/// A web link as on the website: ink, underlined, not the system's blue.
+struct GlideLink: View {
+    let title: String
+    let destination: URL
+
+    init(_ title: String, destination: URL) { self.title = title; self.destination = destination }
+
+    var body: some View {
+        Link(destination: destination) { Text(title).underline() }
+            .tint(Glide.ink)
+            .help(destination.host ?? destination.absoluteString)
+    }
+}
+
 /// The badge's chamfered square, as a shape: the website's call-to-action silhouette.
 struct Chamfer: InsettableShape {
     var cut: CGFloat

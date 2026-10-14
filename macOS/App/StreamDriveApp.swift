@@ -30,6 +30,9 @@ struct StreamDriveApp: App {
                     NSApp.orderFrontStandardAboutPanel(options: options)
                 }
             }
+            CommandGroup(after: .appInfo) {
+                if model.updater.isAvailable { CheckForUpdatesButton(updater: model.updater) }
+            }
             CommandGroup(replacing: .appTermination) {
                 Button("Quit ParaAir") { model.quit() }.keyboardShortcut("q")
             }
@@ -169,6 +172,37 @@ final class MenuModel: ObservableObject {
         reload()
         logLifecycle("launch")
         startRenewal()
+        _ = updater
+    }
+
+    /// Sparkle updates; it ejects every drive before an update replaces the app (UpdateGate).
+    lazy var updater = AppUpdater { [weak self] done in
+        guard let self else { return done(.install) }
+        self.ejectAllDrives(done)
+    }
+
+    /// Ejects every mounted ParaAir drive off the main thread, then reports which stayed busy.
+    /// Ejecting keeps files waiting to upload on this Mac; they upload once a drive reconnects.
+    func ejectAllDrives(_ completion: @escaping (UpdateGate.Outcome) -> Void) {
+        reload()
+        let paths = mounted.sorted()
+        AppLog.mount.notice("eject for update drives=\(paths.count)")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let results = paths.map { path -> (name: String, ejected: Bool) in
+                let name = FileManager.default.displayName(atPath: path)
+                do {
+                    try NSWorkspace.shared.unmountAndEjectDevice(at: URL(fileURLWithPath: path, isDirectory: true))
+                    return (name, true)
+                } catch {
+                    AppLog.mount.error("eject for update failed: \(error.localizedDescription, privacy: .public)")
+                    return (name, false)
+                }
+            }
+            DispatchQueue.main.async {
+                self.reload()
+                completion(UpdateGate.outcome(results))
+            }
+        }
     }
 
     // MARK: Known state folders
@@ -772,6 +806,24 @@ final class MenuModel: ObservableObject {
         }
     }
     func quit() {
+        // A downloaded update installs as ParaAir quits; eject first so it never replaces the app
+        // under a mounted drive's extension.
+        if updater.hasPendingInstall, !mounted.isEmpty {
+            ejectAllDrives { outcome in
+                switch outcome {
+                case .install:
+                    NSApplication.shared.terminate(nil)
+                case .blocked(let drives):
+                    let alert = NSAlert()
+                    alert.messageText = UpdateGate.blockedTitle(drives)
+                    alert.informativeText = UpdateGate.blockedMessage(drives)
+                    alert.addButton(withTitle: "Try Again")
+                    alert.addButton(withTitle: "Keep Running")
+                    if alert.runModal() == .alertFirstButtonReturn { self.quit() }
+                }
+            }
+            return
+        }
         if !mounted.isEmpty {
             let alert = NSAlert()
             alert.messageText = "Quit ParaAir while a drive is mounted?"

@@ -159,6 +159,44 @@ struct ConnectionsView: View {
 
     private var cloudflareFields: some View {
         Group {
+            Picker("Connect with", selection: Binding(get: { model.cloudflareAccess }, set: { model.selectCloudflareAccess($0) })) {
+                Text("R2 API token").tag(ConnectionsModel.CloudflareAccess.apiToken)
+                Text("Cloudflare sign-in").tag(ConnectionsModel.CloudflareAccess.browser)
+            }
+            .pickerStyle(.segmented)
+            .disabled(model.isBusy || model.isReconnecting)
+            switch model.cloudflareAccess {
+            case .apiToken: r2TokenFields
+            case .browser: cloudflareSignInFields
+            }
+        }
+    }
+
+    /// An R2 API token: the account ID, the bucket and the token's S3 key pair.
+    private var r2TokenFields: some View {
+        Group {
+            LabeledContent {
+                GlideLink("Open R2 in Cloudflare", destination: URL(string: "https://dash.cloudflare.com/?to=/:account/r2/overview")!)
+            } label: {
+                Text("R2 API token")
+                Text("In R2, choose Manage API tokens and create one with Object Read & Write for this bucket. Cloudflare shows the secret only once.")
+            }
+            TextField("Account ID", text: $model.r2AccountID, prompt: Text("32 characters, shown in R2"))
+            Picker("Bucket location", selection: $model.r2Jurisdiction) {
+                Text("Standard").tag(CloudflareR2Provider.Jurisdiction.standard)
+                Text("European Union").tag(CloudflareR2Provider.Jurisdiction.eu)
+                Text("United States").tag(CloudflareR2Provider.Jurisdiction.us)
+            }
+            TextField("Bucket", text: $model.bucketName, prompt: Text("existing-bucket-name"))
+            SecureField("Access key ID", text: $model.accessKey)
+            SecureField("Secret access key", text: $model.secretKey)
+            Text("Keys are saved in this Mac’s Keychain. The saved connection keeps only the R2 address and bucket.")
+                .font(.caption).foregroundStyle(Glide.quiet)
+        }
+    }
+
+    private var cloudflareSignInFields: some View {
+        Group {
             if Bundle.main.object(forInfoDictionaryKey: "StreamDriveCloudflareClientID") == nil {
                 DisclosureGroup("Developer sign-in setup") {
                     VStack(alignment: .leading, spacing: 8) {
@@ -167,7 +205,7 @@ struct ConnectionsView: View {
                             .font(.caption).foregroundStyle(Glide.quiet)
                         HStack {
                             Button("Save Registration", action: model.saveRegistration)
-                            Link("Registration documentation", destination: URL(string: "https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/")!)
+                            GlideLink("Registration documentation", destination: URL(string: "https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/")!)
                         }
                     }.padding(.top, 8)
                 }
@@ -265,7 +303,7 @@ struct ConnectionsView: View {
         Group {
             if model.provider == .backblazeB2 {
                 LabeledContent {
-                    Link("B2 S3 setup guide", destination: URL(string: "https://www.backblaze.com/apidocs/introduction-to-the-s3-compatible-api")!)
+                    GlideLink("B2 S3 setup guide", destination: URL(string: "https://www.backblaze.com/apidocs/introduction-to-the-s3-compatible-api")!)
                 } label: {
                     Text("Backblaze B2")
                     Text("Use an application key restricted to your existing bucket, with its S3 endpoint and region.")
@@ -298,7 +336,7 @@ private struct SavedConnectionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(connection.name)
                 Label {
-                    Text(connection.provider.title + " · " + ConnectionsModel.stateTitle(connection.state))
+                    Text(connection.providerTitle + " · " + ConnectionsModel.stateTitle(connection.state))
                 } icon: {
                     Image(systemName: symbol).foregroundStyle(color)
                 }
@@ -364,6 +402,9 @@ struct BrowserSignInLinkField: NSViewRepresentable {
 @MainActor
 final class ConnectionsModel: ObservableObject {
     enum BucketListState { case notLoaded, loading, loaded, failed }
+    /// How a Cloudflare R2 bucket is reached. Browser sign-in needs a Cloudflare OAuth client
+    /// that accepts other accounts; an R2 API token (an S3 key pair) works for any account.
+    enum CloudflareAccess: Hashable { case apiToken, browser }
 
     @Published private(set) var provider: ConnectionProvider = .cloudflareR2
     @Published var connectionName = "Cloudflare R2"
@@ -376,6 +417,9 @@ final class ConnectionsModel: ObservableObject {
     @Published private(set) var cloudflareBucketListState: BucketListState = .notLoaded
     @Published var cloudflareBucketName = ""
     @Published var cloudflareNewBucketName = ""
+    @Published private(set) var cloudflareAccess: CloudflareAccess = .apiToken
+    @Published var r2AccountID = ""
+    @Published var r2Jurisdiction: CloudflareR2Provider.Jurisdiction = .standard
     @Published var awsStartURL = ""
     @Published var awsSSORegion = ""
     @Published private(set) var awsAuthorized = false
@@ -390,7 +434,7 @@ final class ConnectionsModel: ObservableObject {
     @Published var secretKey = ""
     @Published var sessionToken = ""
     @Published private(set) var isBusy = false
-    @Published private(set) var status = "Authorize storage to begin."
+    @Published private(set) var status = "Enter your R2 API token’s keys and the bucket it can reach."
     @Published private(set) var showDriveHomeAction = false
     @Published private(set) var savedConnections: [StorageConnection] = []
     @Published private(set) var reconnectTarget: StorageConnection?
@@ -420,6 +464,9 @@ final class ConnectionsModel: ObservableObject {
     var canVerify: Bool {
         guard !connectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         switch provider {
+        case .cloudflareR2 where cloudflareAccess == .apiToken:
+            return r2Endpoint != nil && !bucketName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !accessKey.isEmpty && !secretKey.isEmpty
         case .cloudflareR2: return cloudflareAuthorized && !cloudflareAccountID.isEmpty && !cloudflareBucketName.isEmpty
         case .awsS3: return awsAuthorized && !awsAccountID.isEmpty && !awsRoleName.isEmpty && !bucketName.isEmpty && !bucketRegion.isEmpty
         case .backblazeB2, .customS3:
@@ -427,6 +474,14 @@ final class ConnectionsModel: ObservableObject {
         }
     }
     var isReconnecting: Bool { reconnectTarget != nil }
+    /// The R2 S3 address for the typed account ID, or nil until it is a valid one.
+    var r2Endpoint: URL? { try? CloudflareR2Provider.s3Endpoint(accountID: r2AccountID, jurisdiction: r2Jurisdiction) }
+
+    func selectCloudflareAccess(_ value: CloudflareAccess) {
+        guard cloudflareAccess != value, reconnectTarget == nil, !isBusy else { return }
+        cancel(); cloudflareAccess = value; bucketName = ""
+        status = value == .apiToken ? "Enter your R2 API token’s keys and the bucket it can reach." : "Sign in to choose storage."
+    }
 
     func reload() {
         do { savedConnections = try store.list() }
@@ -437,7 +492,8 @@ final class ConnectionsModel: ObservableObject {
         guard provider != value, reconnectTarget == nil else { return }
         cancel(); clearAuthorization(); provider = value; connectionName = value.title
         bucketName = ""; bucketRegion = ""; endpoint = ""; awsStartURL = ""; awsSSORegion = ""
-        status = value == .cloudflareR2 || value == .awsS3 ? "Sign in to choose storage." : "Enter the credentials and target supplied by your storage service."
+        status = value == .cloudflareR2 && cloudflareAccess == .apiToken ? "Enter your R2 API token’s keys and the bucket it can reach."
+            : value == .cloudflareR2 || value == .awsS3 ? "Sign in to choose storage." : "Enter the credentials and target supplied by your storage service."
     }
 
     func beginNewConnection() {
@@ -646,8 +702,11 @@ final class ConnectionsModel: ObservableObject {
     func verifyAndSave() {
         guard canVerify, !isBusy else { return }
         let selectedProvider = provider
+        // An R2 API token is an S3 key pair: it is saved as an S3 connection to the R2 S3 host.
+        let r2Token = selectedProvider == .cloudflareR2 && cloudflareAccess == .apiToken ? r2Endpoint : nil
         let name = connectionName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let selectedBucket = selectedProvider == .cloudflareR2 ? cloudflareBucketName : bucketName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedBucket = selectedProvider == .cloudflareR2 && r2Token == nil ? cloudflareBucketName
+            : bucketName.trimmingCharacters(in: .whitespacesAndNewlines)
         let region = bucketRegion.trimmingCharacters(in: .whitespacesAndNewlines)
         let endpointText = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         let account = selectedProvider == .cloudflareR2 ? cloudflareAccountID : awsAccountID
@@ -661,7 +720,7 @@ final class ConnectionsModel: ObservableObject {
         start(status: "Verifying access to the selected bucket…") { id in
             let connection: StorageConnection
             let credentials: ConnectionSecrets
-            if selectedProvider == .cloudflareR2 {
+            if selectedProvider == .cloudflareR2 && r2Token == nil {
                 guard let tokens = pendingTokens, let expiry = tokens.expiresAt, expiry > Date().addingTimeInterval(30) else {
                     throw OAuthError.expired
                 }
@@ -675,7 +734,10 @@ final class ConnectionsModel: ObservableObject {
                 let s3: S3Credentials
                 var expiry: Date?
                 var sessionData: Data?
-                if selectedProvider == .awsS3 {
+                if let r2Token {
+                    target = try S3ConnectionTarget(provider: .r2, endpoint: r2Token, bucket: selectedBucket, region: "auto")
+                    s3 = try S3Credentials(accessKey: key, secretKey: secret, sessionToken: nil)
+                } else if selectedProvider == .awsS3 {
                     guard let session = pendingSession else { throw OAuthError.expired }
                     let suffix = region.hasPrefix("cn-") ? "amazonaws.com.cn" : "amazonaws.com"
                     guard let endpoint = URL(string: "https://s3.\(region).\(suffix)") else { throw S3ConnectionError.invalidTarget }
@@ -690,7 +752,7 @@ final class ConnectionsModel: ObservableObject {
                     s3 = try S3Credentials(accessKey: key, secretKey: secret, sessionToken: token.isEmpty ? nil : token)
                 }
                 _ = try await S3ConnectionProbe().headBucket(target: target, credentials: s3)
-                connection = StorageConnection(id: connectionID, provider: selectedProvider, name: name, state: .storageReady,
+                connection = StorageConnection(id: connectionID, provider: r2Token == nil ? selectedProvider : .customS3, name: name, state: .storageReady,
                     accountID: selectedProvider == .awsS3 ? account : nil, bucket: selectedBucket,
                     endpoint: target.endpoint.absoluteString, region: target.region,
                     roleName: selectedProvider == .awsS3 ? role : nil, startURL: pendingSession?.startURL.absoluteString)
@@ -736,7 +798,7 @@ final class ConnectionsModel: ObservableObject {
         cloudflareAccountID = ""; cloudflareBuckets = []; cloudflareBucketName = ""; cloudflareNewBucketName = ""
         cloudflareBucketListState = .notLoaded
         awsSession = nil; awsAuthorized = false; awsAccounts = []; awsAccountID = ""; awsRoles = []; awsRoleName = ""
-        accessKey = ""; secretKey = ""; sessionToken = ""
+        accessKey = ""; secretKey = ""; sessionToken = ""; r2AccountID = ""; r2Jurisdiction = .standard
     }
 
     private func start(status: String, operation: @escaping @MainActor (UUID) async throws -> Void) {

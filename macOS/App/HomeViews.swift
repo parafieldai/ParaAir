@@ -18,6 +18,8 @@ struct HomeActions {
     var quit: () -> Void = {}
     /// ParaAir Cloud plan actions; they run in Storage Settings, where the plan sheet and errors show.
     var billing: (CloudBillingPresentation.Action) -> Void = { _ in }
+    /// Sparkle's "Check for Updates…"; nil where the updater isn't available.
+    var checkForUpdates: (() -> Void)?
 }
 
 struct CredentialTarget: Identifiable {
@@ -44,6 +46,10 @@ struct DriveHomeContent: View {
     @Binding var connectAutomatically: Bool
     let actions: HomeActions
     var loginItem: LoginItemModel?
+    /// Sparkle's automatic check setting; nil hides the toggle.
+    var checkUpdatesAutomatically: Binding<Bool>?
+    /// The snapshot harness opens Advanced to render its controls.
+    var startsWithAdvancedOpen = false
     @State private var showsAdvanced = false
 
     private var presentation: HomePresentation { .make(input) }
@@ -102,7 +108,8 @@ struct DriveHomeContent: View {
                         .glideControlTint()
                     if let loginItem { LoginItemToggle(model: loginItem) }
                     DisclosureGroup("Advanced", isExpanded: $showsAdvanced) {
-                        AdvancedControls(input: input, details: details, actions: actions)
+                        AdvancedControls(input: input, details: details, actions: actions,
+                                         checkUpdatesAutomatically: checkUpdatesAutomatically)
                     }
                 }
             }
@@ -110,6 +117,7 @@ struct DriveHomeContent: View {
         }
         .glideSurface()
         .frame(minWidth: 560, minHeight: 520)
+        .onAppear { if startsWithAdvancedOpen { showsAdvanced = true } }
     }
 }
 
@@ -323,6 +331,7 @@ private struct AdvancedControls: View {
     let input: HomeInputs
     let details: HomeDetails
     let actions: HomeActions
+    var checkUpdatesAutomatically: Binding<Bool>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -343,7 +352,15 @@ private struct AdvancedControls: View {
                     .lineLimit(2).truncationMode(.middle)
             }
             LabeledContent("Version") {
-                Text(details.version).monospacedDigit().textSelection(.enabled)
+                HStack(spacing: 10) {
+                    Text(details.version).monospacedDigit().textSelection(.enabled)
+                    if let check = actions.checkForUpdates { Button("Check for Updates…", action: check) }
+                }
+            }
+            if let checkUpdatesAutomatically {
+                Toggle("Check for updates automatically", isOn: checkUpdatesAutomatically)
+                    .toggleStyle(.checkbox)
+                    .glideControlTint()
             }
         }
         .padding(.top, 6)
@@ -357,6 +374,7 @@ private struct AdvancedMenuItems: View {
 
     var body: some View {
         Button("Refresh Status", action: actions.refresh)
+        if let check = actions.checkForUpdates { Button("Check for Updates…", action: check) }
         Button("File System Extension Settings…", action: actions.openExtensionSettings)
         if input.mounted { Button("Add to Finder Sidebar", action: actions.addToSidebar) }
         if input.hasDrive {
