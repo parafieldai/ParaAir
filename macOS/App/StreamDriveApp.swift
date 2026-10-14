@@ -222,16 +222,7 @@ final class MenuModel: ObservableObject {
         let paths = mounted.sorted()
         AppLog.mount.notice("eject for update drives=\(paths.count)")
         DispatchQueue.global(qos: .userInitiated).async {
-            let results = paths.map { path -> (name: String, ejected: Bool) in
-                let name = FileManager.default.displayName(atPath: path)
-                do {
-                    try NSWorkspace.shared.unmountAndEjectDevice(at: URL(fileURLWithPath: path, isDirectory: true))
-                    return (name, true)
-                } catch {
-                    AppLog.mount.error("eject for update failed: \(error.localizedDescription, privacy: .public)")
-                    return (name, false)
-                }
-            }
+            let results = ParaAirVolumes.eject(paths)
             DispatchQueue.main.async {
                 self.reload()
                 completion(UpdateGate.outcome(results))
@@ -571,22 +562,7 @@ final class MenuModel: ObservableObject {
         activity.watch(stateRoot: stateRoot, profile: profiles.first)
         readyConnection = profiles.isEmpty
             ? (try? ConnectionStore(root: stateRoot).list())?.first { $0.state == .storageReady } : nil
-        mounted.removeAll()
-        var mounts: UnsafeMutablePointer<statfs>?
-        let count = getmntinfo(&mounts, MNT_NOWAIT)
-        if let mounts {
-            for index in 0..<Int(count) {
-                var entry = mounts[index]
-                let type = withUnsafePointer(to: &entry.f_fstypename) {
-                    $0.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) { String(cString: $0) }
-                }
-                guard type == "streamdrive" || type == "paraair" else { continue }
-                let path = withUnsafePointer(to: &entry.f_mntonname) {
-                    $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
-                }
-                mounted.insert(path)
-            }
-        }
+        mounted = Set(ParaAirVolumes.mountedPaths())
         for profile in profiles where isMounted(profile) {
             let identity = stateRoot.path + "\0" + profile.name
             if sidebarAttempts.insert(identity).inserted { addToSidebar(profile, automatically: true) }
