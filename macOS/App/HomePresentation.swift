@@ -340,3 +340,31 @@ struct AppVersionText: Equatable {
                     releaseTag: info["ParaAirReleaseTag"] as? String)
     }
 }
+
+/// Installing an update replaces the app bundle, and the file system extension serving each
+/// mounted drive runs from that bundle. So every ParaAir drive is ejected before the update
+/// installs. A drive that won't eject (a file is open on it) keeps the update waiting.
+/// Ejecting never discards anything: files waiting to upload stay on this Mac and upload
+/// after the update, when the drive reconnects.
+enum UpdateGate {
+    enum Outcome: Equatable {
+        case install
+        case blocked(drives: [String])
+    }
+
+    /// `ejected` holds each mounted drive's name and whether it ejected.
+    static func outcome(_ ejected: [(name: String, ejected: Bool)]) -> Outcome {
+        let busy = ejected.filter { !$0.ejected }.map(\.name)
+        return busy.isEmpty ? .install : .blocked(drives: busy)
+    }
+
+    static func blockedTitle(_ drives: [String]) -> String {
+        drives.count == 1 ? "“\(drives[0])” is in use" : "\(drives.count) drives are in use"
+    }
+
+    static func blockedMessage(_ drives: [String]) -> String {
+        let which = drives.count == 1 ? "it" : drives.map { "“\($0)”" }.joined(separator: ", ")
+        return "ParaAir ejects its drives before updating, and \(which) has files open. Close them, then choose Try Again. "
+            + "Nothing has changed, and files waiting to upload stay on this Mac."
+    }
+}

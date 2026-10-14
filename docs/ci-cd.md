@@ -1,6 +1,6 @@
 # ParaAir CI/CD
 
-Last updated: 2026-10-13
+Last updated: 2026-10-14
 
 How ParaAir is built, tested, released and deployed on GitHub Actions, for the public app repository [parafieldai/ParaAir](https://github.com/parafieldai/ParaAir). The hosted ParaAir Cloud service lives in a separate private repository with its own pipeline, documented there. This is the canonical document for this repository; [CONTRIBUTING.md](../CONTRIBUTING.md) is the contributor-facing summary.
 
@@ -103,6 +103,15 @@ This is the artifact layout of the hand-made `v0.1.0-alpha.1` release. After pub
 Signing variables passed to `build-app.sh`: `STREAMDRIVE_SIGN_IDENTITY` (SHA-1 of the imported identity), `STREAMDRIVE_TEAM_ID`, `STREAMDRIVE_APP_PROVISIONING_PROFILE`, `STREAMDRIVE_EXTENSION_PROVISIONING_PROFILE`, `STREAMDRIVE_CLI_PROVISIONING_PROFILE` (decoded to the runner's temp directory), `STREAMDRIVE_SIGNING_MODE=interactive`, `STREAMDRIVE_CLOUDFLARE_CLIENT_ID`, and `PARAAIR_CLOUD_BASE_URL` when set. `interactive` makes the script call `/usr/bin/codesign` directly; the default `noninteractive` mode re-launches each `codesign` in a new launchd Security session in the `gui/<uid>` domain, which has only been validated on the operator's Mac. The temporary keychain's partition list already prevents any prompt.
 
 The disk image is built by `scripts/make-dmg.sh` for both hand-made and CI releases: [dmgbuild](https://github.com/dmgbuild/dmgbuild) 1.6.7 lays out the app, an Applications link and the background from `scripts/dmg-background.swift` (a sage mid tone on which Finder's black or white icon labels both read at about 4.5:1; everything sits in the top 300 points because Finder on macOS 27 adds a toolbar band and a bottom bar).
+
+### In-app updates (Sparkle)
+
+From v0.1.0-alpha.2 the app updates itself with [Sparkle](https://sparkle-project.org) 2.10.0. `scripts/fetch-sparkle.sh` downloads that exact release and checks its SHA-256. `build-app.sh` links it, embeds it without its XPC services (they exist for sandboxed apps; ParaAir isn't sandboxed) and signs its `Autoupdate` tool, `Updater.app` and the framework with the app's identity before the app itself. Builds without `PARAAIR_RELEASE_TAG` never start the updater.
+
+- **Feed.** `https://paraair.pages.dev/appcast.xml`, the file `site/appcast.xml`, deployed with the site. Archives are the release zips on GitHub.
+- **Signatures.** Every archive and the feed itself are signed with one EdDSA key (`SURequireSignedFeed`, `SUVerifyUpdateBeforeExtraction`). The public key is `SUPublicEDKey` in `macOS/App/Info.plist`. The private key lives only in the release Mac's login Keychain under the Sparkle account `paraair`. Back it up with `generate_keys --account paraair -x <file>` into the password manager and delete the file. Losing it means no installed copy can ever accept another update.
+- **Publishing an update.** After the zip is notarized and stapled, run `python3 -I scripts/make-appcast.py --app <stapled app> --archive dist/ParaAir-<version>.zip --tag vX.Y.Z[-stage.N] --notes <notes.html>`. It reads the version and build from the app, signs the archive, puts the entry first, re-signs the feed and verifies it; `--check` validates a feed. Publish the GitHub Release first, then deploy the site with the new feed, so the feed never points at a missing archive. CI does not sign the feed yet: that needs the private key as a `release` secret (`sign_update --ed-key-file`).
+- **Drives during an update.** The file system extension serving every mounted drive runs from the bundle an update replaces, so ParaAir ejects all its drives before installing: when Sparkle relaunches the app, and before quitting when an update is waiting to install on quit. A drive with open files keeps the update waiting and says so (`UpdateGate`). Files waiting to upload stay on the Mac and upload once the drive reconnects.
 
 ### Site (`.github/workflows/pages.yml`)
 

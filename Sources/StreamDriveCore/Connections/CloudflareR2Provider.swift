@@ -175,6 +175,23 @@ public struct CloudflareR2Provider: Sendable {
         return try convert(result, accountID: accountID)
     }
 
+    /// Where an account's R2 buckets answer the S3 API, for R2 API tokens (an S3 access key
+    /// pair). A bucket created in a jurisdiction answers only on that jurisdiction's host.
+    /// https://developers.cloudflare.com/r2/api/tokens/ (FedRAMP is not offered here.)
+    public enum Jurisdiction: String, CaseIterable, Sendable { case standard, eu, us }
+
+    public static func s3Endpoint(accountID: String, jurisdiction: Jurisdiction = .standard) throws -> URL {
+        let account = accountID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        try validateAccountID(account)
+        return URL(string: "https://\(account)\(jurisdiction == .standard ? "" : "." + jurisdiction.rawValue).r2.cloudflarestorage.com")!
+    }
+
+    /// True for an R2 S3 API host: <32 hex account>.r2.cloudflarestorage.com, or its .eu or .us form.
+    public static func isS3Endpoint(_ url: URL) -> Bool {
+        guard url.scheme == "https", let host = url.host?.lowercased() else { return false }
+        return host.range(of: "^[a-f0-9]{32}(\\.(eu|us))?\\.r2\\.cloudflarestorage\\.com$", options: .regularExpression) != nil
+    }
+
     public static func bucketEndpoint(accountID: String, bucketName: String) throws -> URL {
         try validateAccountID(accountID); try validateBucketName(bucketName)
         return URL(string: "\(apiBase.absoluteString)/accounts/\(accountID)/r2/buckets/\(bucketName)")!

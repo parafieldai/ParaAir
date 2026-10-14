@@ -17,7 +17,8 @@ extension StorageConnection {
         guard let url = URL(string: endpoint), let region else {
             throw DriveError(EINVAL, "S3 connections require an HTTPS origin and signing region")
         }
-        let provider: S3EndpointProvider = self.provider == .awsS3 ? .aws : self.provider == .backblazeB2 ? .backblazeB2 : .custom
+        let provider: S3EndpointProvider = self.provider == .awsS3 ? .aws : self.provider == .backblazeB2 ? .backblazeB2
+            : usesR2APIToken ? .r2 : .custom
         return try S3ConnectionTarget(provider: provider, endpoint: url, bucket: bucket, region: region).bucketURL.absoluteString
     }
 

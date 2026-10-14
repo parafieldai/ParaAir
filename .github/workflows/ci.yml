@@ -212,3 +212,5 @@ jobs:
           persist-credentials: false
       - name: Static checks of site/
         run: python3 -I scripts/check-site.py site
+      - name: Update feed (site/appcast.xml) is well formed, newest first, every archive signed
+        run: if [ -f site/appcast.xml ]; then python3 -I scripts/make-appcast.py --check; fi

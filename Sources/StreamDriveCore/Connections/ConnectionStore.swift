@@ -65,6 +65,15 @@ public struct StorageConnection: Codable, Equatable, Identifiable, Sendable {
     }
 
     /// Bound into the Keychain payload so editing a public JSON cannot retarget keys.
+    /// An R2 bucket reached with an R2 API token is saved as an S3 connection to the R2 S3 host;
+    /// "Cloudflare R2" (provider .cloudflareR2) is the browser sign-in.
+    public var usesR2APIToken: Bool {
+        provider == .customS3 && endpoint.flatMap(URL.init(string:)).map(CloudflareR2Provider.isS3Endpoint) == true
+    }
+
+    /// The storage name people see, e.g. in Saved storage.
+    public var providerTitle: String { usesR2APIToken ? "Cloudflare R2 (API token)" : provider.title }
+
     public var credentialBinding: String {
         let fields = [id, provider.rawValue, accountID ?? "", bucket ?? "", endpoint ?? "", region ?? "", roleName ?? "", startURL ?? ""]
         let data = try! JSONEncoder().encode(fields)
