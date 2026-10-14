@@ -25,9 +25,35 @@ func fixture(t *testing.T) (*engine, config) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = e.fs.Close() })
+	objects := c.LocalObjectDirectory
+	t.Cleanup(func() {
+		_ = e.fs.Close()
+		settleObjects(t, objects)
+	})
 	c.CreateLocal = false
 	return e, c
+}
+
+// settleObjects removes the local object folder once nothing writes to it any more.
+// JuiceFS deletes replaced file data in goroutines (tryDeleteFileData) that closing
+// the session does not wait for, so t.TempDir's own RemoveAll can race a late object
+// operation and fail with "directory not empty".
+func settleObjects(t *testing.T, dir string) {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := os.RemoveAll(dir)
+		if err == nil {
+			time.Sleep(50 * time.Millisecond)
+			if _, statErr := os.Stat(dir); errors.Is(statErr, fs.ErrNotExist) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("object folder still changing 5s after close: %v", err)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 func write(t *testing.T, e *engine, p, version, operation string, data []byte) *entry {
 	t.Helper()
