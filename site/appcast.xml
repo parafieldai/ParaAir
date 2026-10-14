@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>ParaAir</title>
+    <link>https://paraair.pages.dev/appcast.xml</link>
+    <description>ParaAir updates</description>
+    <language>en</language>
+    <item>
+      <title>ParaAir 0.1.0 alpha 2</title>
+      <pubDate>Wed, 14 Oct 2026 23:57:37 GMT</pubDate>
+      <sparkle:version>16</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.2</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>ParaAir now updates itself. Before installing an update it ejects its drives; files waiting to upload stay on your Mac and upload afterwards.</li>
+<li>Connect Cloudflare R2 with an R2 API token, from any Cloudflare account.</li>
+<li>A new look that matches paraair.pages.dev, with clearer text in Light mode.</li>
+<li>Opening ParaAir from the disk image moves it to Applications, and it opens at login.</li>
+<li>The version, with its alpha number, is in Advanced and About ParaAir.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.2/ParaAir-0.1.0-alpha.2.zip" length="46402554" type="application/octet-stream" sparkle:edSignature="N68FFp61VxXIgtqJFn4mMiGTU3FlxSCwHJNKinYGjNLwDD8xq6UiVnxcIhEqjMXJWZv1HeZW9FIwbcop2fjNBw=="></enclosure>
+    </item>
+  </channel>
+</rss><!-- sparkle-signatures:
+edSignature: XRJjDS/RUaoDCt0Z7+DL87e1YRNndEMcMUuiP6TeAoagnrdVFfFhJPUu64wDERae16YTdbsJLZ4s5JYhGAK+DQ==
+length: 1850
+-->
