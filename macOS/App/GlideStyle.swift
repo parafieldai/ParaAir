@@ -156,6 +156,8 @@ struct Chamfer: InsettableShape {
 
 /// The one prominent action per view: a chamfered sage (Dark) or charcoal (Light) button, as
 /// on the website. On hover a band of light crosses the face once; the button never moves.
+/// It takes the height and font size of a native push button of the same control size, so it
+/// lines up with the native buttons beside it.
 struct GlideProminentButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         GlideProminentButton(configuration: configuration)
@@ -173,12 +175,32 @@ private struct GlideProminentButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sweep: CGFloat = -1.2
 
-    private var metrics: (font: CGFloat, horizontal: CGFloat, vertical: CGFloat, cut: CGFloat) {
-        switch controlSize {
-        case .mini, .small: return (11, 10, 4, 5)
-        case .large, .extraLarge: return (15, 20, 10, 8)
-        default: return (13, 14, 6, 6)
+    private var metrics: (font: CGFloat, horizontal: CGFloat, height: CGFloat, cut: CGFloat) {
+        let size = Self.appKitSize(controlSize)
+        let height = Self.nativeHeight(size)
+        return (NSFont.systemFontSize(for: size), (height * 0.55).rounded(), height, max(3, (height * 0.2).rounded()))
+    }
+
+    private static func appKitSize(_ size: ControlSize) -> NSControl.ControlSize {
+        switch size {
+        case .mini: return .mini
+        case .small: return .small
+        case .large: return .large
+        case .extraLarge: return .extraLarge
+        default: return .regular
         }
+    }
+
+    /// AppKit's push-button height for a control size (28 points for large on macOS 27), measured once.
+    private static var nativeHeights: [NSControl.ControlSize: CGFloat] = [:]
+    static func nativeHeight(_ size: NSControl.ControlSize) -> CGFloat {
+        if let height = nativeHeights[size] { return height }
+        let button = NSButton(title: "Ag", target: nil, action: nil)
+        button.bezelStyle = .push
+        button.controlSize = size
+        let height = button.fittingSize.height
+        nativeHeights[size] = height
+        return height
     }
 
     var body: some View {
@@ -188,7 +210,7 @@ private struct GlideProminentButton: View {
             .font(.system(size: metrics.font, weight: .semibold))
             .lineLimit(1)
             .padding(.horizontal, metrics.horizontal)
-            .padding(.vertical, metrics.vertical)
+            .frame(height: metrics.height)
             .foregroundStyle(isEnabled ? Glide.accentInk : Glide.ink.opacity(0.42))
             .background(shape.fill(isEnabled ? Glide.accent : Glide.ink.opacity(0.1)))
             .overlay {
