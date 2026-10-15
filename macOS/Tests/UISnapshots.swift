@@ -990,7 +990,7 @@ struct UISnapshots {
         }
     }
 
-    /// The chamfered prominent button sits beside native push buttons, so it must match their height.
+    /// The prominent button sits beside native push buttons, so it must match their height.
     @MainActor
     static func checkButtonHeights() -> [String] {
         var failures: [String] = []

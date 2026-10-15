@@ -125,39 +125,10 @@ struct GlideLink: View {
     }
 }
 
-/// The badge's chamfered square, as a shape: the website's call-to-action silhouette.
-struct Chamfer: InsettableShape {
-    var cut: CGFloat
-    var insetAmount: CGFloat = 0
-
-    func inset(by amount: CGFloat) -> Chamfer {
-        var shape = self
-        shape.insetAmount += amount
-        return shape
-    }
-
-    func path(in fullRect: CGRect) -> Path {
-        let rect = fullRect.insetBy(dx: insetAmount, dy: insetAmount)
-        // Insetting moves each diagonal in by the inset times (√2 − 1) relative to the cut.
-        let c = min(max(cut - insetAmount * 0.414, 0), rect.width / 2, rect.height / 2)
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX + c, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX - c, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + c))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - c))
-        path.addLine(to: CGPoint(x: rect.maxX - c, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX + c, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - c))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + c))
-        path.closeSubpath()
-        return path
-    }
-}
-
-/// The one prominent action per view: a chamfered sage (Dark) or charcoal (Light) button, as
-/// on the website. On hover a band of light crosses the face once; the button never moves.
-/// It takes the height and font size of a native push button of the same control size, so it
-/// lines up with the native buttons beside it.
+/// The one prominent action per view: sage (Dark) or charcoal (Light), the website's call-to-action
+/// colours. Its shape, height and font size are a native push button's for the same control size,
+/// so it sits in line with the native buttons beside it; the website's chamfered silhouette stays
+/// on the web. On hover a band of light crosses the face once; the button never moves.
 struct GlideProminentButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         GlideProminentButton(configuration: configuration)
@@ -175,10 +146,10 @@ private struct GlideProminentButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sweep: CGFloat = -1.2
 
-    private var metrics: (font: CGFloat, horizontal: CGFloat, height: CGFloat, cut: CGFloat) {
+    private var metrics: (font: CGFloat, horizontal: CGFloat, height: CGFloat) {
         let size = Self.appKitSize(controlSize)
         let height = Self.nativeHeight(size)
-        return (NSFont.systemFontSize(for: size), (height * 0.55).rounded(), height, max(3, (height * 0.2).rounded()))
+        return (NSFont.systemFontSize(for: size), (height * 0.55).rounded(), height)
     }
 
     private static func appKitSize(_ size: ControlSize) -> NSControl.ControlSize {
@@ -205,7 +176,7 @@ private struct GlideProminentButton: View {
 
     var body: some View {
         let metrics = self.metrics
-        let shape = Chamfer(cut: metrics.cut)
+        let shape = Capsule()
         configuration.label
             .font(.system(size: metrics.font, weight: .semibold))
             .lineLimit(1)
