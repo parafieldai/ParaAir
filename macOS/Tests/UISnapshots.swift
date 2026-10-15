@@ -21,6 +21,7 @@ struct UISnapshots {
         failures += checkLoginItem()
         failures += checkVersionText()
         failures += checkUpdateGate()
+        failures += checkButtonHeights()
 
         for (name, input) in homeScenarios {
             for appearance in [NSAppearance.Name.aqua, .darkAqua]
@@ -987,6 +988,18 @@ struct UISnapshots {
                        size: CGSize(width: 620, height: 900), appearance: appearance,
                        to: output.appendingPathComponent("home-advanced-updates-\(suffix(appearance)).png"))
         }
+    }
+
+    /// The prominent button sits beside native push buttons, so it must match their height.
+    @MainActor
+    static func checkButtonHeights() -> [String] {
+        var failures: [String] = []
+        for (name, size) in [("small", ControlSize.small), ("regular", .regular), ("large", .large), ("extraLarge", .extraLarge)] {
+            let glide = NSHostingView(rootView: Button("Open System Settings") {}.buttonStyle(.glideProminent).controlSize(size)).fittingSize.height
+            let native = NSHostingView(rootView: Button("Check Again") {}.controlSize(size)).fittingSize.height
+            if glide != native { failures.append("button height (\(name)): prominent \(glide) vs native \(native)") }
+        }
+        return failures
     }
 
     static func checkUpdateGate() -> [String] {

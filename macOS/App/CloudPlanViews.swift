@@ -395,10 +395,10 @@ private struct PlanCard<Footer: View>: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Chamfer(cut: 10).fill(Glide.surface))
-        .overlay(Chamfer(cut: 10)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Glide.surface))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .strokeBorder(selected && option.available ? Glide.ink : Glide.rule, lineWidth: selected && option.available ? 2 : 1))
-        .contentShape(Chamfer(cut: 10))
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onTapGesture { if option.available { select() } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(offer.name), \(offer.size), \(offer.price)")
