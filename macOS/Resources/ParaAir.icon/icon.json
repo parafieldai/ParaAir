@@ -1,0 +1,43 @@
+{
+  "fill": {
+    "solid": "extended-srgb:0.12549,0.15686,0.17255,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "wing.svg",
+          "name": "wing"
+        },
+        {
+          "glass": true,
+          "image-name": "tail.svg",
+          "name": "tail"
+        }
+      ],
+      "name": "Glide",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      },
+      "position": {
+        "scale": 1.2,
+        "translation-in-points": [
+          12,
+          0
+        ]
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}
