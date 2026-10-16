@@ -175,6 +175,15 @@ fi
 bash "$root/scripts/build-icons.sh"
 mkdir -p "$app/Contents/Resources"
 /usr/bin/install -m 644 "$root/macOS/Resources/ParaAirIcon.icns" "$app/Contents/Resources/ParaAirIcon.icns"
+# App icon: the Icon Composer file (macOS 26 rounded square with Liquid Glass), compiled to Assets.car
+# (CFBundleIconName) plus a flat ParaAir.icns (CFBundleIconFile). ParaAirIcon.* stay for the drive and disk image.
+icon_out="$(mktemp -d)"
+xcrun actool "$root/macOS/Resources/ParaAir.icon" --compile "$icon_out" --platform macosx --minimum-deployment-target 26.0 \
+  --app-icon ParaAir --output-partial-info-plist "$icon_out/partial.plist" >/dev/null
+[[ -f "$icon_out/Assets.car" && -f "$icon_out/ParaAir.icns" ]] || { echo "actool did not produce the app icon" >&2; exit 1; }
+/usr/bin/install -m 644 "$icon_out/Assets.car" "$app/Contents/Resources/Assets.car"
+/usr/bin/install -m 644 "$icon_out/ParaAir.icns" "$app/Contents/Resources/ParaAir.icns"
+rm -rf "$icon_out"
 /usr/bin/install -m 644 "$root/macOS/Resources/ParaAirIcon.png" "$app/Contents/Resources/ParaAirIcon.png"
 /usr/bin/install -m 644 "$root/macOS/Resources/ParaAirDriveIcon.png" "$app/Contents/Resources/ParaAirDriveIcon.png"
 /usr/bin/plutil -convert xml1 -o "$cli/Contents/Info.plist" "$root/macOS/CLI/Info.plist"
