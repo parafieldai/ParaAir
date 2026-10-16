@@ -107,7 +107,7 @@ Priority: **P0** blocks the public alpha, **P1** before beta, **P2** later. Effo
 
 ## Unverified claims and open tests
 
-- Whether FSKit extension approval survives a Developer ID update on macOS 27 (only a third-party report on 26.4.1 [35]). Partly answered 2026-10-15 on macOS 27.2: a disk-image replace (build 1 to 16) kept it; a Sparkle install on quit (16 to 17) left the module disabled until re-enabled in System Settings (see `docs/ci-cd.md`, In-app updates).
+- Whether FSKit extension approval survives a Developer ID update on macOS 27 (only a third-party report on 26.4.1 [35]). Answered 2026-10-16 on macOS 27.2: on a clean Mac, a disk-image install, a Sparkle install on quit and a Sparkle Install and Relaunch all kept the module enabled with no restart. An earlier failure came from stale LaunchServices data left by development copies. The per-app System Settings sheet cannot enable a module on 27.2; the By Category → File System Extensions view can (see `docs/ci-cd.md`, In-app updates).
 - Whether the extension-termination-on-update behaviour [19] (reported on macOS 15.7) and the ExtensionKit stale-registration bug [35][36] still occur on macOS 27.2.
 - How Spotlight treats an FSKit volume, and the supported way to stop it indexing one (`.metadata_never_index` is folklore, not Apple documentation).
 - Whether macOS drops quarantine and provenance xattrs on an FSKit volume without xattr support or emulates them with `._` files.
