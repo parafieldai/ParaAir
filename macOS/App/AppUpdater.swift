@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import Combine
 import Sparkle
+import StreamDriveCore
 
 /// Sparkle updates (feed and EdDSA key in Info.plist). The file system extension serving every
 /// mounted drive runs from the app bundle an update replaces, so drives are ejected first
@@ -10,8 +11,12 @@ import Sparkle
 /// - Install on quit: Sparkle installs when ParaAir terminates, so MenuModel.quit ejects first.
 /// Development builds (no ParaAirReleaseTag) never start the updater.
 @MainActor
-final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
+final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
     @Published private(set) var canCheckForUpdates = false
+    /// A scheduled check found an update while ParaAir wasn't in front: "ParaAir 0.1.0 alpha 3".
+    /// Shown as a row in the menu bar panel and home window (gentle reminders) instead of an
+    /// alert that would open behind other apps, since ParaAir has no Dock icon.
+    @Published private(set) var pendingUpdateTitle: String?
     /// A downloaded update installs when ParaAir quits.
     private(set) var hasPendingInstall = false
     private var controller: SPUStandardUpdaterController?
@@ -23,7 +28,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
         self.ejectDrives = ejectDrives
         super.init()
         guard Self.isReleaseBuild else { return }
-        let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
+        let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
         self.controller = controller
         controller.updater.publisher(for: \.canCheckForUpdates).assign(to: &$canCheckForUpdates)
     }
@@ -39,6 +44,29 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
         guard let controller else { return }
         NSApp.activate(ignoringOtherApps: true)
         controller.checkForUpdates(nil)
+    }
+
+    // MARK: SPUStandardUserDriverDelegate (gentle reminders)
+
+    nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }
+
+    /// Sparkle shows the alert itself only when it would be in front anyway (just after launch, or
+    /// after the Mac was idle); otherwise ParaAir shows the reminder row.
+    nonisolated func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool) -> Bool {
+        immediateFocus
+    }
+
+    nonisolated func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {
+        let title = update.title ?? "ParaAir \(update.displayVersionString)"
+        MainActor.assumeIsolated { if !handleShowingUpdate { pendingUpdateTitle = title } }
+    }
+
+    nonisolated func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
+        MainActor.assumeIsolated { pendingUpdateTitle = nil }
+    }
+
+    nonisolated func standardUserDriverWillFinishUpdateSession() {
+        MainActor.assumeIsolated { pendingUpdateTitle = nil }
     }
 
     // MARK: SPUUpdaterDelegate
@@ -115,7 +143,7 @@ enum ParaAirVolumes {
             let type = withUnsafePointer(to: &entry.f_fstypename) {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) { String(cString: $0) }
             }
-            guard type == "streamdrive" || type == "paraair" else { continue }
+            guard ParaAirBundle.volumeTypes.contains(type) else { continue }
             paths.append(withUnsafePointer(to: &entry.f_mntonname) {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
             })

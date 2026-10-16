@@ -24,6 +24,8 @@ struct HomeInputs: Equatable {
     var storageKind: StorageKind = .ownBucket
     var uploadActivity: UploadActivity?
     var cloudUsage: CloudUsage?
+    /// An update found by a scheduled check while ParaAir wasn't in front ("ParaAir 0.1.0 alpha 3").
+    var updateTitle: String?
 
     var hasDrive: Bool { driveName != nil }
 }
@@ -161,7 +163,7 @@ struct HomePresentation: Equatable {
                 .init(id: 2, title: "Create your drive", detail: "Name it however you like.",
                       state: input.hasDrive ? .done : (storageDone ? .current : .upcoming)),
                 .init(id: 3, title: "Turn on ParaAir in System Settings",
-                      detail: "General → Login Items & Extensions → File System Extensions.",
+                      detail: "General → Login Items & Extensions → By Category → File System Extensions.",
                       state: enabled ? .done : (storageOK ? .current : .upcoming)),
                 .init(id: 4, title: "Open it in Finder", detail: "It appears under Locations, like any drive.",
                       state: input.mounted ? .done : (storageOK && enabled ? .current : .upcoming)),
@@ -206,11 +208,13 @@ struct HomePresentation: Equatable {
         switch state {
         case .disabled:
             return .init(title: "Turn on ParaAir in System Settings",
-                         detail: "macOS asks once. Under File System Extensions, switch on ParaAir, then come back here.",
+                         detail: "macOS asks once. Switch on ParaAir in the File System Extensions list, then come back here. "
+                             + "The switch in ParaAir’s own extension sheet doesn’t stay on.",
                          tone: .attention)
         case .notDiscovered:
             return .init(title: "macOS hasn’t listed ParaAir yet",
-                         detail: "Open File System Extensions in System Settings. If ParaAir is missing, reinstall the app and check again.",
+                         detail: "Open File System Extensions in System Settings (Login Items & Extensions, By Category). "
+                             + "If ParaAir is missing, reinstall the app and check again.",
                          tone: .attention)
         case .ambiguous:
             return .init(title: "Another copy of ParaAir is installed",

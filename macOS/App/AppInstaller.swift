@@ -77,6 +77,9 @@ enum AppInstaller {
         }
         do {
             try install(bundle, at: destination, replacing: replacing)
+            // The copy on the disk image (or in Downloads) is about to go away; leaving it registered
+            // gives LaunchServices and FSKit a second ParaAir that no longer exists.
+            unregister(bundle)
             if open(destination, newInstance: true) { quit() }
         } catch {
             let failure = error as NSError
@@ -191,6 +194,31 @@ enum AppInstaller {
     }
 
     private final class OpenResult: @unchecked Sendable { var error: Error? }
+
+    /// Removes LaunchServices' and PlugInKit's records of a copy that is not the installed app.
+    /// Bounded and best effort: a failure only leaves the record macOS would have kept anyway.
+    private static func unregister(_ copy: URL) {
+        let tools: [(String, [String])] = [
+            ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", ["-u", copy.path]),
+            ("/usr/bin/pluginkit", ["-r", copy.appendingPathComponent("Contents/Extensions/StreamDriveFS.appex").path]),
+        ]
+        for (tool, arguments) in tools where FileManager.default.isExecutableFile(atPath: tool) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: tool)
+            process.arguments = arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                let deadline = Date().addingTimeInterval(5)
+                while process.isRunning && Date() < deadline { usleep(50_000) }
+                if process.isRunning { process.terminate() }
+                AppLog.install.notice("unregistered source copy tool=\((tool as NSString).lastPathComponent, privacy: .public) status=\(process.isRunning ? -1 : process.terminationStatus)")
+            } catch {
+                AppLog.install.error("unregister source copy failed tool=\((tool as NSString).lastPathComponent, privacy: .public)")
+            }
+        }
+    }
 
     /// Nothing has started yet (no renewal, mount or window), so leaving now is clean.
     private static func quit() -> Never { exit(0) }

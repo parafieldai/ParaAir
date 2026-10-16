@@ -166,7 +166,10 @@ if cmp -s "$app/Contents/MacOS/ParaAir" "$cli/Contents/MacOS/paraair"; then
   echo "App and CLI binaries must be distinct; check intermediate output paths." >&2; exit 1
 fi
 /usr/bin/plutil -convert xml1 -o "$app/Contents/Info.plist" "$root/macOS/App/Info.plist"
-/usr/bin/plutil -replace CFBundleIdentifier -string dev.streamdrive.app "$app/Contents/Info.plist"
+# Unsigned development builds get their own identity (ParaAirBundle): dev.streamdrive.app.dev, its
+# .filesystem extension and the "streamdrive-dev" volume type, so they never collide with an installed release.
+if [[ -n "${STREAMDRIVE_SIGN_IDENTITY:-}" ]]; then app_id=dev.streamdrive.app; fs_type=streamdrive; else app_id=dev.streamdrive.app.dev; fs_type=streamdrive-dev; fi
+/usr/bin/plutil -replace CFBundleIdentifier -string "$app_id" "$app/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleExecutable -string ParaAir "$app/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleShortVersionString -string "$app_version" "$app/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleVersion -string "$app_build" "$app/Contents/Info.plist"
@@ -184,6 +187,9 @@ if [[ -n "${STREAMDRIVE_CLOUDFLARE_CLIENT_ID:-}" ]]; then
 fi
 extension="$app/Contents/Extensions/StreamDriveFS.appex"
 /usr/bin/ditto "$products/StreamDriveFS.appex" "$extension"
+/usr/bin/plutil -replace CFBundleIdentifier -string "$app_id.filesystem" "$extension/Contents/Info.plist"
+/usr/bin/plutil -replace EXAppExtensionAttributes.FSShortName -string "$fs_type" "$extension/Contents/Info.plist"
+/usr/bin/plutil -replace CFBundleIdentifier -string "$app_id.cli" "$cli/Contents/Info.plist"
 for info in "$cli/Contents/Info.plist" "$extension/Contents/Info.plist"; do
   /usr/bin/plutil -replace CFBundleShortVersionString -string "$app_version" "$info"
   /usr/bin/plutil -replace CFBundleVersion -string "$app_build" "$info"
@@ -204,7 +210,7 @@ fi
 if [[ -n "${STREAMDRIVE_SIGN_IDENTITY:-}" ]]; then
   python3 "$root/scripts/prepare-signing.py" configure --app "$app" --plan "$signing/plan.json"
 else
-  python3 "$root/scripts/prepare-signing.py" configure --app "$app"
+  python3 "$root/scripts/prepare-signing.py" configure --app "$app" --development
 fi
 mkdir -p "$extension/Contents/Frameworks" "$extension/Contents/Resources" "$app/Contents/Frameworks"
 /usr/bin/install -m 755 "$native_library" "$app/Contents/Frameworks/libstreamdrive.dylib"

@@ -50,7 +50,7 @@ final class NativeMountOperation {
             self?.markPending()
         }
         FSClient.shared.mountSingleVolume(resource: resource,
-            bundleID: "dev.streamdrive.app.filesystem",
+            bundleID: ParaAirBundle.filesystemIdentifier(),
             // One profile is already identified by this resource. Forwarding
             // helper CLI switches here lets activation succeed but makes the
             // native final mount fail with EINVAL on macOS 27.2. FSKit applies

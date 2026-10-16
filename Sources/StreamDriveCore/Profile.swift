@@ -366,7 +366,7 @@ public extension Engine {
                 })
             case .local:
                 let source = URL(fileURLWithPath: profile.localRoot!).resolvingSymlinksInPath()
-                if Bundle.main.bundleIdentifier == "dev.streamdrive.app.filesystem", !ProfileStateBinding.isInside(source, root) {
+                if ParaAirBundle.isFilesystemExtension, !ProfileStateBinding.isInside(source, root) {
                     throw DriveError(EACCES, "Filesystem extension fixture root must be inside the granted state directory")
                 }
                 return try LocalDirectoryBackend(root: source)
@@ -376,7 +376,7 @@ public extension Engine {
                 if let bundled, FileManager.default.fileExists(atPath: bundled.path) { library = bundled }
                 else if let configured = profile.libraryPath { library = URL(fileURLWithPath: configured).resolvingSymlinksInPath() }
                 else { library = root.appendingPathComponent("native/libstreamdrive.dylib") }
-                if Bundle.main.bundleIdentifier == "dev.streamdrive.app.filesystem", library != bundled, !ProfileStateBinding.isInside(library, root) {
+                if ParaAirBundle.isFilesystemExtension, library != bundled, !ProfileStateBinding.isInside(library, root) {
                     throw DriveError(EACCES, "Native library must be bundled with the signed extension or inside its granted state directory")
                 }
                 guard FileManager.default.fileExists(atPath: library.path) else {
