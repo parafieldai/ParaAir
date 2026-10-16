@@ -978,6 +978,16 @@ struct UISnapshots {
                                     actions: HomeActions(), loginItem: failed),
                    size: CGSize(width: 620, height: 680), appearance: .aqua,
                    to: output.appendingPathComponent("home-login-failed-light.png"))
+        // A gentle update reminder in the home window and the menu bar panel.
+        var ready = input; ready.updateTitle = "ParaAir 0.1.0 alpha 3"
+        var install = HomeActions(); install.checkForUpdates = {}
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(DriveHomeContent(input: ready, details: details(for: ready), connectAutomatically: .constant(true), actions: install),
+                       size: CGSize(width: 620, height: 680), appearance: appearance,
+                       to: output.appendingPathComponent("home-update-ready-\(suffix(appearance)).png"))
+        }
+        try render(MenuBarPanel(input: ready, details: details(for: ready), connectAutomatically: .constant(true), actions: install),
+                   size: nil, appearance: .aqua, to: output.appendingPathComponent("menu-update-ready-light.png"))
         // Advanced open: the version with its release stage, Check for Updates and the automatic check setting.
         var updates = HomeActions(); updates.checkForUpdates = {}
         var versioned = details(for: input); versioned.version = "0.1.0 alpha 2 (161)"

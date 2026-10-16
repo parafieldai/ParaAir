@@ -94,7 +94,7 @@ final class MenuModel: ObservableObject {
     private var stalePendingChecks = 0
     /// Modules with this extension's bundle identifier in the last FSKit listing; -1 when it failed.
     private var matchingModuleCount = 0
-    private static let extensionBundleID = "dev.streamdrive.app.filesystem"
+    private static let extensionBundleID = ParaAirBundle.filesystemIdentifier()
     private static let knownRootsKey = "knownStateRoots"
     private static let loginMountsKey = "loginMountStateRoots"
     private static let cloudTransientNotice = "ParaAir Cloud couldn’t be reached to renew sign-in. ParaAir keeps trying."
@@ -173,7 +173,7 @@ final class MenuModel: ObservableObject {
         reload()
         logLifecycle("launch")
         startRenewal()
-        _ = updater
+        updater.$pendingUpdateTitle.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         AppTermination.model = self
     }
 
@@ -811,7 +811,8 @@ final class MenuModel: ObservableObject {
         if #available(macOS 27.0, *), FSClient.shared.openFileSystemExtensionsSettings() { return }
         if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
             if !NSWorkspace.shared.open(url) {
-                mountMessage = "Couldn’t open System Settings. Open General → Login Items & Extensions → File System Extensions, then return and choose Check again."
+                mountMessage = "Couldn’t open System Settings. Open General → Login Items & Extensions → By Category → File System Extensions, "
+                    + "switch on ParaAir, then return and choose Check again."
             }
         }
     }

@@ -52,7 +52,8 @@ extension MenuModel {
             sidebarMessage: sidebarMessage,
             storageKind: profile?.backend == .paraairCloud ? .paraairCloud : .ownBucket,
             uploadActivity: profile == nil ? nil : uploadActivity,
-            cloudUsage: profile?.backend == .paraairCloud && cloudAccount.signedInAccount != nil ? cloudAccount.usage : nil)
+            cloudUsage: profile?.backend == .paraairCloud && cloudAccount.signedInAccount != nil ? cloudAccount.usage : nil,
+            updateTitle: updater.pendingUpdateTitle)
     }
 
     func homeDetails() -> HomeDetails {

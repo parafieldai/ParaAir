@@ -25,6 +25,11 @@ BUNDLES = {
 }
 
 
+def development_identifier(identifier):
+    """dev.streamdrive.app[.x] -> dev.streamdrive.app.dev[.x] (unsigned builds; see ParaAirBundle.swift)."""
+    return "dev.streamdrive.app.dev" + identifier[len("dev.streamdrive.app"):]
+
+
 def utc(value):
     if not isinstance(value, dt.datetime):
         raise ValueError("Provisioning profile has an invalid date")
@@ -155,12 +160,15 @@ def configure(arguments):
         "extension": app / "Contents/Extensions/StreamDriveFS.appex",
         "cli": app / "Contents/Helpers/ParaAirCLI.app",
     }
+    if arguments.development and arguments.plan:
+        raise ValueError("A development build is unsigned; it takes no signing plan")
     plan = json.loads(pathlib.Path(arguments.plan).read_text()) if arguments.plan else None
     profiles = {}
     # Check the whole plan before modifying any bundle.
     for role, bundle in bundles.items():
         info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
-        if info.get("CFBundleIdentifier") != BUNDLES[role]:
+        expected = development_identifier(BUNDLES[role]) if arguments.development else BUNDLES[role]
+        if info.get("CFBundleIdentifier") != expected:
             raise ValueError("Unexpected bundle identifier for " + role)
         if plan:
             if plan[role]["bundle_id"] != BUNDLES[role]:
@@ -187,6 +195,8 @@ def main():
     package = commands.add_parser("configure")
     package.add_argument("--app", required=True)
     package.add_argument("--plan")
+    package.add_argument("--development", action="store_true",
+                         help="unsigned development build: dev.streamdrive.app.dev identifiers, never with --plan")
     arguments = parser.parse_args()
     try:
         preflight(arguments) if arguments.command == "validate" else configure(arguments)

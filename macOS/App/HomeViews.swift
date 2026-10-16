@@ -67,6 +67,9 @@ struct DriveHomeContent: View {
                         .fixedSize(horizontal: false, vertical: true)
                     ActionRow(presentation: presentation, actions: actions, large: true)
                 }
+                if let update = input.updateTitle, let install = actions.checkForUpdates {
+                    Section { UpdateReadyRow(title: update, install: install) }
+                }
                 if !presentation.notices.isEmpty {
                     Section {
                         ForEach(presentation.notices) { NoticeRow(notice: $0) }
@@ -135,6 +138,9 @@ struct MenuBarPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             DriveHeader(name: input.driveName ?? "ParaAir", icon: details.driveIcon,
                         status: presentation.status, iconSize: 34, titleFont: .glideDisplay(.title2, weight: .semibold))
+            if let update = input.updateTitle, let install = actions.checkForUpdates {
+                UpdateReadyRow(title: update, install: install, compact: true)
+            }
             if let notice = presentation.notices.first(where: { $0.tone == .problem || $0.tone == .attention }) {
                 NoticeRow(notice: notice).lineLimit(4)
             }
@@ -258,6 +264,30 @@ private struct ActionRow: View {
                     .controlSize(large ? .large : .regular)
             }
         }
+    }
+}
+
+/// A gentle update reminder: the update a scheduled check found, and the button that brings
+/// Sparkle's install window to the front.
+struct UpdateReadyRow: View {
+    let title: String
+    let install: () -> Void
+    var compact = false
+
+    var body: some View {
+        let layout = compact ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 10))
+        layout {
+            Label {
+                Text("\(title) is ready to install.").fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(Glide.good)
+            }
+            .font(.callout)
+            if !compact { Spacer(minLength: 0) }
+            Button("Install Update…", action: install)
+                .controlSize(compact ? .small : .regular)
+        }
+        .accessibilityElement(children: .contain)
     }
 }
 

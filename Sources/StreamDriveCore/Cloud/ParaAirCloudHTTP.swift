@@ -153,7 +153,7 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
     private static let queryAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~/")
     private static let pathAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~/")
     /// The app's main thread must never wait on the network; the CLI and tests may.
-    static var forbidsMainThread: Bool { Bundle.main.bundleIdentifier == "dev.streamdrive.app" }
+    static var forbidsMainThread: Bool { ParaAirBundle.isApp }
     static let offlineClass: Set<Int32> = [ENETDOWN, ENETUNREACH, EHOSTUNREACH, ECONNREFUSED, ECONNRESET, ETIMEDOUT, ENOTCONN]
 
     /// True while requests fail fast because the service looked unreachable.

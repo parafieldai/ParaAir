@@ -162,6 +162,23 @@ class SigningTests(unittest.TestCase):
             self.assertNotIn("ParaAirKeychainAccessGroup", info)
             self.assertFalse((contents / "embedded.provisionprofile").exists())
 
+    def test_development_build_uses_its_own_identifiers(self):
+        import argparse
+        self.assertEqual(self.signing.development_identifier("dev.streamdrive.app"), "dev.streamdrive.app.dev")
+        self.assertEqual(self.signing.development_identifier("dev.streamdrive.app.filesystem"), "dev.streamdrive.app.dev.filesystem")
+        with tempfile.TemporaryDirectory() as directory:
+            app = pathlib.Path(directory) / "ParaAir.app"
+            for path, identifier in [(app, "dev.streamdrive.app.dev"),
+                                     (app / "Contents/Extensions/StreamDriveFS.appex", "dev.streamdrive.app.dev.filesystem"),
+                                     (app / "Contents/Helpers/ParaAirCLI.app", "dev.streamdrive.app.dev.cli")]:
+                (path / "Contents").mkdir(parents=True, exist_ok=True)
+                (path / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": identifier}))
+            self.signing.configure(argparse.Namespace(app=str(app), plan=None, development=True))
+            with self.assertRaises(ValueError):
+                self.signing.configure(argparse.Namespace(app=str(app), plan=None, development=False))
+            with self.assertRaises(ValueError):
+                self.signing.configure(argparse.Namespace(app=str(app), plan="plan.json", development=True))
+
     def test_signed_packaging_embeds_matching_profile_and_group(self):
         with tempfile.TemporaryDirectory() as directory:
             bundle = pathlib.Path(directory) / "ParaAirCLI.app"
