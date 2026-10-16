@@ -7,6 +7,23 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>ParaAir updates</description>
     <language>en</language>
     <item>
+      <title>ParaAir 0.1.0 alpha 3</title>
+      <pubDate>Fri, 16 Oct 2026 11:14:22 GMT</pubDate>
+      <sparkle:version>21</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.3</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>A new app icon in the macOS 26 style.</li>
+<li>When an update is ready, ParaAir says so in its menu bar panel and window instead of an alert that can open behind other apps.</li>
+<li>Setup points to the switch that works: System Settings, Login Items &amp; Extensions, By Category, File System Extensions.</li>
+<li>Buttons match the size and shape of the macOS buttons beside them.</li>
+<li>Installing from the disk image no longer leaves a stale copy registered with macOS.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.3/ParaAir-0.1.0-alpha.3.zip" length="48137783" type="application/octet-stream" sparkle:edSignature="QNtKiu1D6TI3TX+wc+G7qad/vv/MdxqhMtUA3Pl8pOWmN1y96JoNTlKHitBEYG+dTm5zWmegNUPotKVBUQeHDA=="/>
+    </item>
+    <item>
       <title>ParaAir 0.1.0 alpha 2</title>
       <pubDate>Wed, 14 Oct 2026 23:57:37 GMT</pubDate>
       <sparkle:version>16</sparkle:version>
@@ -24,7 +41,8 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
       <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.2/ParaAir-0.1.0-alpha.2.zip" length="46402554" type="application/octet-stream" sparkle:edSignature="N68FFp61VxXIgtqJFn4mMiGTU3FlxSCwHJNKinYGjNLwDD8xq6UiVnxcIhEqjMXJWZv1HeZW9FIwbcop2fjNBw=="></enclosure>
     </item>
   </channel>
-</rss><!-- sparkle-signatures:
-edSignature: XRJjDS/RUaoDCt0Z7+DL87e1YRNndEMcMUuiP6TeAoagnrdVFfFhJPUu64wDERae16YTdbsJLZ4s5JYhGAK+DQ==
-length: 1850
+</rss>
+<!-- sparkle-signatures:
+edSignature: ZHTwGTbBuChkMOYsqQyaHf6hFMcpklJGnUssPMWfgnKyFGCFZ52RgamTmm8NyldkRYIlrQ1bUrn2OXBuAmWkBg==
+length: 3116
 -->
