@@ -288,7 +288,7 @@ public final class JuiceFSBackend: StorageBackend {
     /// cannot list (Cloudflare sign-in) keeps only the newest dump, replacing `previous`.
     public func backupIndex(replacing previous: String?) throws -> String? {
         guard localIndex else { return nil }
-        guard let key = try request(["op": "backupMeta", "destination": previous ?? ""])["backupKey"] as? String, !key.isEmpty else {
+        guard let key = try request(["op": "backupMeta", "previousBackup": previous ?? ""])["backupKey"] as? String, !key.isEmpty else {
             throw DriveError(EIO, "The index backup returned no key")
         }
         return key

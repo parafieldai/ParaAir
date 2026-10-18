@@ -380,7 +380,7 @@ func TestUnlistedStorageKeepsOnlyTheNewestBackup(t *testing.T) {
 		t.Fatalf("backupMeta failed: %s", first.Error)
 	}
 	time.Sleep(1100 * time.Millisecond) // dump names have one-second resolution
-	second := dispatch(request{Op: "backupMeta", Handle: id, Destination: first.BackupKey})
+	second := dispatch(request{Op: "backupMeta", Handle: id, PreviousBackup: first.BackupKey})
 	if !second.OK || second.BackupKey == first.BackupKey {
 		t.Fatalf("second backup: %+v", second)
 	}
@@ -394,7 +394,7 @@ func TestUnlistedStorageKeepsOnlyTheNewestBackup(t *testing.T) {
 	if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if third := dispatch(request{Op: "backupMeta", Handle: id, Destination: "meta/notes.txt"}); !third.OK {
+	if third := dispatch(request{Op: "backupMeta", Handle: id, PreviousBackup: "meta/notes.txt"}); !third.OK {
 		t.Fatalf("third backup failed: %s", third.Error)
 	}
 	if _, err := os.Stat(marker); err != nil {

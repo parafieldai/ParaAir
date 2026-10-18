@@ -49,7 +49,11 @@ final class IndexBackupTests: XCTestCase {
         _ = try drive.write(path, offset: 0, data: Data("content".utf8))
         _ = try drive.flushUploads(policy: .immediate)
     }
-    private let hourly = IndexBackupPolicy(quietNanoseconds: 0, maxDelayNanoseconds: 0, retryNanoseconds: 3_600_000_000_000)
+    private let hourly = IndexBackupPolicy(quietNanoseconds: 0, maxDelayNanoseconds: 0, minIntervalNanoseconds: 0,
+                                           retryNanoseconds: 3_600_000_000_000)
+    /// Due as soon as anything changed, but at most once an hour.
+    private let spaced = IndexBackupPolicy(quietNanoseconds: 0, maxDelayNanoseconds: 0, minIntervalNanoseconds: 3_600_000_000_000,
+                                           retryNanoseconds: 0)
 
     func testNothingToBackUpWithoutChanges() throws {
         XCTAssertFalse(try drive.backupIndexIfDue(policy: .immediate))
@@ -102,6 +106,27 @@ final class IndexBackupTests: XCTestCase {
         XCTAssertTrue(try drive.backupIndexIfDue(policy: .immediate))
         XCTAssertNil(try drive.status().indexBackup?.lastError)
         XCTAssertEqual(backend.backups, 2)
+    }
+
+    func testBackupsAreSpacedByTheMinimumInterval() throws {
+        try publish("/first")
+        XCTAssertTrue(try drive.backupIndexIfDue(policy: spaced))
+        try publish("/second")
+        XCTAssertFalse(try drive.backupIndexIfDue(policy: spaced), "a second full dump within the hour")
+        XCTAssertNotNil(try drive.status().indexBackup?.pendingSinceNanoseconds)
+        XCTAssertTrue(try drive.backupIndexIfDue(policy: .immediate))
+        XCTAssertEqual(backend.backups, 2)
+    }
+
+    func testAnIndexTooLargeForItsStorageWaitsADay() throws {
+        try publish("/file")
+        backend.outcome = { throw DriveError(EFBIG, "too large") }
+        XCTAssertThrowsError(try drive.backupIndexIfDue(policy: .immediate))
+        backend.outcome = { "meta/dump" }
+        // Even an immediate retry policy waits a day after EFBIG.
+        XCTAssertFalse(try drive.backupIndexIfDue(policy: .immediate))
+        XCTAssertEqual(backend.backups, 1)
+        XCTAssertEqual(try drive.status().indexBackup?.lastError, "too large")
     }
 
     func testDrivesWithoutALocalIndexStopTracking() throws {

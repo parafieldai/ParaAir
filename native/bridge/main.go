@@ -82,6 +82,8 @@ type request struct {
 	Patches         []patch `json:"patches,omitempty"`
 	Mode            uint16  `json:"mode,omitempty"`
 	Directory       bool    `json:"directory,omitempty"`
+	// backupMeta: the previous dump's key, replaced on storage that cannot rotate.
+	PreviousBackup string `json:"previousBackup,omitempty"`
 }
 type entry struct {
 	Path                string `json:"path"`
@@ -191,10 +193,6 @@ type engine struct {
 
 // quietLogs silences the embedded SDK's loggers once per process (see connect).
 var quietLogs sync.Once
-
-// backups serializes metadata backups in this process: upstream stages each dump in
-// $TMPDIR/meta/ under a name that only has one-second resolution.
-var backups sync.Mutex
 
 // backupKey matches the dumps StreamDriveBackup writes; nothing else is ever deleted.
 var backupKey = regexp.MustCompile(`^meta/dump-\d{4}-\d{2}-\d{2}-\d{6}\.json\.gz$`)
@@ -933,13 +931,11 @@ func dispatch(r request) response {
 	case "backupMeta":
 		// The metadata database exists only on this Mac; a dump in the bucket is what
 		// lets the drive be restored if the Mac or its state folder is lost.
-		backups.Lock()
 		out.BackupKey, err = vfs.StreamDriveBackup(e.meta, e.storage, time.Now())
-		backups.Unlock()
-		// Without listing there is no rotation: keep only the newest dump. Destination
-		// names the previous one, from the engine's state.
-		if err == nil && e.unlisted && r.Destination != out.BackupKey && backupKey.MatchString(r.Destination) {
-			_ = e.storage.Delete(context.Background(), r.Destination)
+		// Without listing there is no rotation: keep only the newest dump. The engine's
+		// state names the previous one.
+		if err == nil && e.unlisted && r.PreviousBackup != out.BackupKey && backupKey.MatchString(r.PreviousBackup) {
+			_ = e.storage.Delete(context.Background(), r.PreviousBackup)
 		}
 	case "metrics":
 		out.Metrics = &metrics{ObjectReadBytes: e.storage.bytes.Load(), ObjectGetRequests: e.storage.gets.Load(), ApplicationReadBytes: e.readBytes.Load(), ObjectBudget: e.objectBudget.snapshot()}

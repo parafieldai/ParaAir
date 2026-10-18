@@ -69,8 +69,10 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     var capacityRefreshNanoseconds: UInt64 = 60_000_000_000
     /// Uptime of the last index backup check; uploadQueue only.
     private var indexCheckedAt: UInt64 = 0
-    /// How often the engine is asked whether an index backup is due; tests shorten it.
+    /// How often the engine is asked whether an index backup is due, and its policy;
+    /// the callback harness shortens both.
     var indexCheckNanoseconds: UInt64 = 30_000_000_000
+    var indexBackupPolicy = IndexBackupPolicy.standard
     private var nodes: [String: DriveItem] = [:]
     private var nextID: UInt64 = 3
     private var generation: UInt64 = 1
@@ -344,8 +346,9 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
         let uptime = DispatchTime.now().uptimeNanoseconds
         guard uptime &- indexCheckedAt >= indexCheckNanoseconds else { return }
         indexCheckedAt = uptime
+        let policy = indexBackupPolicy
         indexQueue.async {
-            do { if try opened.backupIndexIfDue() { Self.indexLog.notice("Index backed up") } }
+            do { if try opened.backupIndexIfDue(policy: policy) { Self.indexLog.notice("Index backed up") } }
             catch { Self.indexLog.error("Index backup failed errno=\((error as? DriveError)?.code ?? EIO)") }
         }
     }
