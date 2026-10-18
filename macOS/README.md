@@ -1,6 +1,6 @@
 # ParaAir macOS client
 
-Last updated: 2026-10-09
+Last updated: 2026-10-18
 
 ParaAir embeds a real FSKit extension for macOS 26 and later and the `paraair` CLI helper. The extension implements Apple's `FSVolume.Operations`, `ReadWriteOperations`, and `OpenCloseOperations` protocols against `StreamDriveCore.Engine`. It lists metadata without reading contents, serves offset/length reads, and records writes in the engine's durable local journal. The existing R2 drive mounts through Apple's native API at `/Volumes/ParaAir` on macOS 27.2. Native eject/remount, byte-exact cached range reads, Finder bookmarks, listing and sidebar navigation pass. Previews and editing applications remain untested.
 
@@ -178,6 +178,7 @@ The signed host still reports the extension missing. PlugInKit lists one matchin
 - The reported allocated size comes from the engine's per-file local storage accounting. Remote logical size remains separate. Unknown S3 capacity is advertised as unknown, rather than an invented disk size.
 - Hard links, symlinks, extended attributes, BSD flags and chmod/chown are not yet implemented. Capability flags disclose these limits; unimplemented link operations return `ENOTSUP` and unsupported set-attribute fields remain unconsumed. Applications requiring those features need validation before real use.
 - Active item identifiers stay stable across the engine’s atomic uploads. Replaced or removed items become tombstones until FSKit releases them; stale item operations return `ESTALE` instead of accessing a new file at the old path. FSKit’s open-unlink emulation is enabled, but full POSIX behavior for applications holding files open across external replacements requires runtime validation.
+- macOS housekeeping files (`.DS_Store`, `._name`, `.paraair-refresh`) are served from the local journal and never reach storage; root `.fseventsd` and `.Spotlight-V100` are refused with `EACCES`. Because the volume has no native extended attributes, the kernel stores them as `._name` files, which therefore stay on this Mac.
 - Directory enumeration uses bounded snapshots and opaque cookies. Expired snapshots fail with FSKit's invalid-cookie error so clients can retry.
 
 ## Callback checks

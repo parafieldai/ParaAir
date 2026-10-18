@@ -1,6 +1,6 @@
 # ParaAir
 
-Last updated: 2026-10-13
+Last updated: 2026-10-18
 
 A development implementation of a CLI-first streaming drive for macOS 26+, with cloud object storage as the primary deployment and self-hosted NAS storage as an optional backend. A Swift FSKit extension presents the filesystem to Finder. A pinned JuiceFS engine supplies managed metadata and object storage. Reads fetch touched blocks, writes first enter a durable local journal, and explicit pinning downloads offline content.
 
@@ -157,6 +157,7 @@ flowchart LR
 - Publication seals a transaction, clones the remote base without downloading the whole file, applies changed extents, fsyncs, and atomically renames the stage. A transaction marker recognizes retries after a lost reply. A subsequent edit of the same file waits for that sealed transaction to resolve. Independent publication uses a separate connection and does not hold the local state lock throughout upload.
 - Cache eviction never deletes pending writes. A journal limit or low free-space condition rejects a new write before acknowledgment. Shrink/extend operations zero the newly exposed region; deleted data is not resurrected.
 - Cooperative clients take a distributed mutation lock and compare file versions. A stale edit becomes a retained conflict instead of silently overwriting the winner. The `uploads` command reports it. Automatic merge, force-overwrite and conflict-resolution UI are not implemented; keep the state directory intact. A partial conflicted file may need its old remote version to reconstruct untouched regions. Ordinary external JuiceFS writers must be quiesced because they do not acquire this adapter's mutation lock.
+- macOS housekeeping stays on this Mac: Finder's `.DS_Store`, AppleDouble `._name` files (how macOS stores extended attributes such as Finder tags and quarantine on a volume without native ones) and the `.paraair-refresh` name live only in the local journal and never upload, so Finder tags do not sync between Macs. Creating `.fseventsd` or `.Spotlight-V100` at the root is refused; macOS works without them. Copies of any of these already in storage are hidden. See `Housekeeping.swift`.
 - Completed pins describe an offline snapshot. Observed remote changes invalidate completion; re-pin to refresh. Offline operation uses previously cached metadata and blocks. Uncached data and new namespace operations require connectivity.
 - `status --json` reports allocated cache/pin/journal/state bytes separately from logical sizes. `objectReadBytes` and `objectGetRequests` count observed object payload transfers through this client, excluding metadata traffic and protocol overhead; a crash mid-request may undercount. Finder's allocated-size field cannot by itself prove total SSD usage.
 
