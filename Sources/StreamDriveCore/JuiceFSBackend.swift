@@ -1,4 +1,5 @@
 import Foundation
+import SystemConfiguration
 import Darwin
 
 /// Passed only in memory or stored in Keychain; never part of a drive profile
@@ -33,11 +34,101 @@ public struct S3Credentials: Codable, Sendable {
 
 /// Calls the pinned, FUSE-free JuiceFS engine. The application owns persistent
 /// caching and journaling; the native engine uses memory buffers only.
-public final class JuiceFSBackend: StorageBackend {
+/// This Mac as the owner of one drive. One Mac writes a drive at a time: each keeps its
+/// own copy of the index, and two writing one bucket would overwrite each other's data.
+/// The identity is a random ID kept in the drive's state folder, so a lost state folder
+/// (recovered from the bucket) is a new owner; the name is shown to the other Mac.
+public struct DriveOwner: Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public init(id: String, name: String) { self.id = id; self.name = name }
+    /// Reads, or creates, the owner ID in a drive's state directory.
+    public static func load(directory: URL) throws -> DriveOwner {
+        let file = directory.appendingPathComponent("owner.id")
+        // The computer name from SystemConfiguration; Host.current() may block on name lookups.
+        let name = (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? "another Mac"
+        func stored() -> String? {
+            guard let data = try? Data(contentsOf: file), data.count <= 64, let value = String(data: data, encoding: .utf8),
+                  UUID(uuidString: value) != nil else { return nil }
+            return value
+        }
+        if let id = stored() { return DriveOwner(id: id, name: name) }
+        try DurableIO.directory(directory)
+        // Created exclusively: two processes opening the drive for the first time must
+        // agree on one ID, or each would see the other as another Mac.
+        let id = UUID().uuidString.lowercased()
+        let descriptor = open(file.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        if descriptor >= 0 {
+            let written = id.withCString { write(descriptor, $0, strlen($0)) }
+            let synced = fsync(descriptor)
+            close(descriptor)
+            guard written == id.utf8.count, synced == 0 else {
+                try? FileManager.default.removeItem(at: file)
+                throw DriveError(EIO, "Cannot record this Mac's owner ID")
+            }
+            return DriveOwner(id: id, name: name)
+        }
+        guard errno == EEXIST, let winner = stored() else { throw DriveError(errno == EEXIST ? EIO : errno, "Cannot read this Mac's owner ID") }
+        return DriveOwner(id: winner, name: name)
+    }
+    fileprivate var configuration: [String: String] { ["ownerID": id, "ownerName": name] }
+}
+
+private extension Dictionary where Key == String, Value == Any {
+    /// The native configuration plus this Mac's owner identity, when there is one.
+    func owned(by owner: DriveOwner?) -> [String: Any] {
+        merging(owner?.configuration ?? [:]) { _, new in new }
+    }
+}
+
+/// The bridge's C ABI: JSON in, JSON out, errors reduced to a POSIX code and the operation.
+private struct NativeLibrary {
     private typealias Call = @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
     private typealias Free = @convention(c) (UnsafeMutablePointer<CChar>?) -> Void
-    private let callNative: Call
-    private let freeNative: Free
+    private let call: Call
+    private let free: Free
+
+    init(_ libraryURL: URL) throws {
+        guard libraryURL.isFileURL else { throw DriveError(EINVAL, "Native library requires a local file URL") }
+        guard let library = dlopen(libraryURL.path, RTLD_NOW | RTLD_LOCAL) else {
+            throw DriveError(ENOENT, "Cannot load the pinned JuiceFS library; run scripts/build-juicefs.sh")
+        }
+        guard let call = dlsym(library, "sd_call"), let free = dlsym(library, "sd_free") else {
+            throw DriveError(ENOSYS, "Native library is missing the StreamDrive bridge ABI")
+        }
+        // Go's runtime owns background threads: unloading its dylib is unsafe.
+        // dlopen handles intentionally remain loaded for this process lifetime.
+        self.call = unsafeBitCast(call, to: Call.self)
+        self.free = unsafeBitCast(free, to: Free.self)
+    }
+
+    func send(_ fields: [String: Any]) throws -> [String: Any] {
+        let encoded = try JSONSerialization.data(withJSONObject: fields)
+        guard let json = String(data: encoded, encoding: .utf8) else { throw DriveError(EINVAL, "Invalid native request") }
+        let result = try json.withCString { source -> [String: Any] in
+            guard let output = call(source) else { throw DriveError(EIO, "Native bridge returned no response") }
+            defer { free(output) }
+            let data = Data(bytes: output, count: strlen(output))
+            guard let decoded = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw DriveError(EIO, "Invalid native bridge response")
+            }
+            return decoded
+        }
+        guard result["ok"] as? Bool == true else {
+            let code = (result["errno"] as? NSNumber)?.int32Value ?? EIO
+            // Native/provider errors may contain credential-bearing URLs. The
+            // public boundary returns only the POSIX code and fixed operation.
+            let description = String(cString: strerror(code))
+            // The bridge reports how far a failed commit got; older bridges omit it.
+            let disposition = (result["disposition"] as? String).flatMap(CommitDisposition.init(rawValue:)) ?? .ambiguous
+            throw DriveError(code, "JuiceFS \(fields["op"] as? String ?? "operation") failed: \(description)", disposition: disposition)
+        }
+        return result
+    }
+}
+
+public final class JuiceFSBackend: StorageBackend {
+    private let native: NativeLibrary
     /// Guards `handle` only. Calls run outside it: the bridge serializes what must be
     /// serial, and close waits there for in-flight calls.
     private let lock = NSLock()
@@ -80,17 +171,20 @@ public final class JuiceFSBackend: StorageBackend {
     }
 
     public convenience init(libraryURL: URL, metadataURL: String, volumeName: String = "", cacheMemoryMiB: Int = 64,
-                            objectCredentials: S3Credentials? = nil) throws {
+                            objectCredentials: S3Credentials? = nil, owner: DriveOwner? = nil) throws {
         try objectCredentials?.validate()
-        var configuration: [String: Any] = ["metadataURL": metadataURL, "memoryMiB": cacheMemoryMiB]
+        var configuration = (["metadataURL": metadataURL, "memoryMiB": cacheMemoryMiB] as [String: Any]).owned(by: owner)
         if let objectCredentials { configuration["objectCredentials"] = objectCredentials.nativeConfiguration }
         try self.init(libraryURL: libraryURL, configuration: configuration)
     }
 
+    /// `owner` claims the drive for this Mac, and makes writes fail with EROFS once
+    /// another Mac has recovered it.
     public convenience init(libraryURL: URL, metadataURL: String, connection: StorageConnection, secrets: ConnectionSecrets,
-                            objectBudget: ObjectBudget? = nil) throws {
+                            objectBudget: ObjectBudget? = nil, owner: DriveOwner? = nil) throws {
         var configuration = try connection.nativeConfiguration(secrets: secrets)
         configuration["metadataURL"] = metadataURL; configuration["memoryMiB"] = 64
+        configuration = configuration.owned(by: owner)
         if let objectBudget { configuration["objectBudget"] = objectBudget.configuration }
         try self.init(libraryURL: libraryURL, configuration: configuration)
     }
@@ -105,6 +199,80 @@ public final class JuiceFSBackend: StorageBackend {
         configuration[connection.provider == .cloudflareR2 ? "createCloudflareTest" : "createS3Test"] = true
         if let objectBudget { configuration["objectBudget"] = objectBudget.configuration }
         return try JuiceFSBackend(libraryURL: libraryURL, configuration: configuration)
+    }
+
+    /// A drive whose index is backed up in a bucket: its volume (top-level folder) and
+    /// its newest backup's key under that folder.
+    public struct StoredDrive: Codable, Sendable, Equatable {
+        public let volume: String
+        public let latestBackup: String
+    }
+    /// What a restore loaded.
+    public struct RestoredIndex: Sendable, Equatable {
+        public let backupKey: String
+        public let volumeIdentity: String
+    }
+
+    /// The Mac that owns a backed-up drive, as its record in the bucket says.
+    public struct StoredOwner: Codable, Sendable, Equatable {
+        public let id: String
+        public let name: String
+        public let at: Date
+    }
+    public static func driveOwner(libraryURL: URL, connection: StorageConnection, secrets: ConnectionSecrets,
+                                  volume: String) throws -> StoredOwner? {
+        var configuration = try connection.nativeConfiguration(secrets: secrets)
+        configuration["s3BucketURL"] = try connection.nativeBucketURL()
+        configuration["volumeName"] = volume
+        return try driveOwner(libraryURL: libraryURL, configuration: configuration)
+    }
+    static func driveOwner(libraryURL: URL, configuration: [String: Any]) throws -> StoredOwner? {
+        guard let owner = try NativeLibrary(libraryURL).send(["op": "driveOwner", "config": configuration])["owner"] else { return nil }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(StoredOwner.self, from: JSONSerialization.data(withJSONObject: owner))
+    }
+
+    /// Loads a drive's backed-up index (the newest, or `backupKey`) from the connection's
+    /// bucket into a new SQLite file on this Mac, and records `owner` as the drive's owner.
+    /// An existing file is never reused, and a failed restore leaves none behind. The
+    /// backup must describe `volume` in this bucket.
+    public static func restoreCloud(libraryURL: URL, metadataURL: URL, connection: StorageConnection, secrets: ConnectionSecrets,
+                                    volume: String, backupKey: String? = nil, owner: DriveOwner? = nil) throws -> RestoredIndex {
+        var configuration = try connection.nativeConfiguration(secrets: secrets)
+        configuration["s3BucketURL"] = try connection.nativeBucketURL()
+        return try restore(libraryURL: libraryURL, configuration: configuration.owned(by: owner), metadataURL: metadataURL,
+                           volume: volume, backupKey: backupKey)
+    }
+    /// The same from a local folder standing in for a bucket (`initializeLocal` drives).
+    public static func restoreLocal(libraryURL: URL, metadataURL: URL, objectDirectory: URL, volume: String,
+                                    backupKey: String? = nil, owner: DriveOwner? = nil) throws -> RestoredIndex {
+        try restore(libraryURL: libraryURL, configuration: (["localObjectDirectory": objectDirectory.path] as [String: Any]).owned(by: owner),
+                    metadataURL: metadataURL, volume: volume, backupKey: backupKey)
+    }
+    private static func restore(libraryURL: URL, configuration: [String: Any], metadataURL: URL, volume: String,
+                                backupKey: String?) throws -> RestoredIndex {
+        guard metadataURL.isFileURL else { throw DriveError(EINVAL, "A restored drive needs a new local metadata database") }
+        var configuration = configuration
+        configuration["metadataURL"] = "sqlite3://" + metadataURL.path
+        configuration["volumeName"] = volume
+        if let backupKey { configuration["backupKey"] = backupKey }
+        let reply = try NativeLibrary(libraryURL).send(["op": "restoreMeta", "config": configuration])
+        guard let key = reply["backupKey"] as? String, let identity = reply["volumeIdentity"] as? String, !identity.isEmpty else {
+            throw DriveError(EIO, "The restore returned no backup or volume identity")
+        }
+        return RestoredIndex(backupKey: key, volumeIdentity: identity)
+    }
+    /// Drives backed up in the connection's bucket. Cloudflare sign-in storage cannot list
+    /// (ENOTSUP): its drives are restored by volume name.
+    public static func listDrives(libraryURL: URL, connection: StorageConnection, secrets: ConnectionSecrets) throws -> [StoredDrive] {
+        var configuration = try connection.nativeConfiguration(secrets: secrets)
+        configuration["s3BucketURL"] = try connection.nativeBucketURL()
+        return try listDrives(libraryURL: libraryURL, configuration: configuration)
+    }
+    static func listDrives(libraryURL: URL, configuration: [String: Any]) throws -> [StoredDrive] {
+        let reply = try NativeLibrary(libraryURL).send(["op": "listDrives", "config": configuration])
+        let data = try JSONSerialization.data(withJSONObject: reply["drives"] ?? [Any]())
+        return try JSONDecoder().decode([StoredDrive].self, from: data)
     }
 
     /// Explicit local-only fixture creation. Does not format any remote target.
@@ -124,17 +292,7 @@ public final class JuiceFSBackend: StorageBackend {
     }
 
     private init(libraryURL: URL, configuration: [String: Any]) throws {
-        guard libraryURL.isFileURL else { throw DriveError(EINVAL, "Native library requires a local file URL") }
-        guard let library = dlopen(libraryURL.path, RTLD_NOW | RTLD_LOCAL) else {
-            throw DriveError(ENOENT, "Cannot load the pinned JuiceFS library; run scripts/build-juicefs.sh")
-        }
-        guard let call = dlsym(library, "sd_call"), let free = dlsym(library, "sd_free") else {
-            throw DriveError(ENOSYS, "Native library is missing the StreamDrive bridge ABI")
-        }
-        // Go's runtime owns background threads: unloading its dylib is unsafe.
-        // dlopen handles intentionally remain loaded for this process lifetime.
-        callNative = unsafeBitCast(call, to: Call.self)
-        freeNative = unsafeBitCast(free, to: Free.self)
+        native = try NativeLibrary(libraryURL)
         localIndex = (configuration["metadataURL"] as? String)?.hasPrefix("sqlite3://") == true
         let response = try request(["op": "connect", "config": configuration], requiresHandle: false)
         guard let connected = (response["handle"] as? NSNumber)?.uint64Value, connected != 0 else {
@@ -152,27 +310,7 @@ public final class JuiceFSBackend: StorageBackend {
         }
         var value = fields
         value["handle"] = current
-        let encoded = try JSONSerialization.data(withJSONObject: value)
-        guard let json = String(data: encoded, encoding: .utf8) else { throw DriveError(EINVAL, "Invalid native request") }
-        let result = try json.withCString { source -> [String: Any] in
-            guard let output = callNative(source) else { throw DriveError(EIO, "Native bridge returned no response") }
-            defer { freeNative(output) }
-            let data = Data(bytes: output, count: strlen(output))
-            guard let decoded = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw DriveError(EIO, "Invalid native bridge response")
-            }
-            return decoded
-        }
-        guard result["ok"] as? Bool == true else {
-            let code = (result["errno"] as? NSNumber)?.int32Value ?? EIO
-            // Native/provider errors may contain credential-bearing URLs. The
-            // public boundary returns only the POSIX code and fixed operation.
-            let description = String(cString: strerror(code))
-            // The bridge reports how far a failed commit got; older bridges omit it.
-            let disposition = (result["disposition"] as? String).flatMap(CommitDisposition.init(rawValue:)) ?? .ambiguous
-            throw DriveError(code, "JuiceFS \(fields["op"] as? String ?? "operation") failed: \(description)", disposition: disposition)
-        }
-        return result
+        return try native.send(value)
     }
 
     private func entry(_ value: Any?) throws -> FileEntry {

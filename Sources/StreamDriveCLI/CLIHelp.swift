@@ -35,6 +35,19 @@ enum CLIHelp {
             ParaAir Cloud profiles only. trash lists deleted files that can still be restored.
             restore puts one back at its original path, or at --to PATH.
             """ + "\n"
+        case "stored-drives", "recover":
+            return """
+            Usage: paraair stored-drives --connection ID [--library PATH] [--json]
+                   paraair recover PROFILE --connection ID --volume NAME [--backup KEY] [--take-over] [--library PATH] [--json]
+            Drives back up their index into their own bucket (at most hourly, after changes).
+            stored-drives lists the drives backed up in a connection's bucket; connections made
+            with Cloudflare sign-in cannot list, so find the drive's folder in the bucket instead.
+            recover opens one in an empty state folder from its newest backup (or --backup KEY);
+            changes made after that backup are missing. One Mac writes a drive at a time: recover
+            refuses a drive another Mac used within a day unless --take-over is given, and the
+            recovered drive is this Mac's; the other Mac stops writing to it and keeps its
+            unsaved changes.
+            """ + "\n"
         case "cache":
             return """
             Usage: paraair cache PROFILE [--evict] [--limit-mib N] [--json]
@@ -73,6 +86,9 @@ enum CLIHelp {
               uploads PROFILE [--retry]           Inspect or retry durable pending uploads
               trash PROFILE                       List deleted ParaAir Cloud files that can be restored
               restore PROFILE NODE_ID [--to PATH] Restore a deleted ParaAir Cloud file
+              stored-drives --connection ID       List drives backed up in a connection's bucket
+              recover PROFILE --connection ID --volume NAME
+                                                  Open a backed-up drive on this Mac
               doctor [PROFILE]                    Check local prerequisites without network or Keychain access
               help [COMMAND]
 
