@@ -50,6 +50,30 @@ public struct UploadPolicy: Sendable, Equatable {
                                                pressureFraction: 0.5, respectsBackoff: true)
 }
 
+/// When a drive whose index lives only on this Mac backs that index up into its own
+/// storage: once changes have been quiet for a while, or soon after the first change
+/// when they keep coming. Failures retry after `retryNanoseconds`, doubling to an hour.
+public struct IndexBackupPolicy: Sendable, Equatable {
+    public var quietNanoseconds: Int64
+    public var maxDelayNanoseconds: Int64
+    public var retryNanoseconds: Int64
+    public init(quietNanoseconds: Int64, maxDelayNanoseconds: Int64, retryNanoseconds: Int64) {
+        self.quietNanoseconds = quietNanoseconds; self.maxDelayNanoseconds = maxDelayNanoseconds; self.retryNanoseconds = retryNanoseconds
+    }
+    public static let standard = IndexBackupPolicy(quietNanoseconds: 120_000_000_000, maxDelayNanoseconds: 900_000_000_000,
+                                                   retryNanoseconds: 300_000_000_000)
+    public static let immediate = IndexBackupPolicy(quietNanoseconds: 0, maxDelayNanoseconds: 0, retryNanoseconds: 0)
+}
+
+/// The last index backup of a drive whose index lives only on this Mac.
+public struct IndexBackupStatus: Codable, Sendable, Equatable {
+    /// Wall-clock nanoseconds of the last successful backup.
+    public var lastBackupNanoseconds: Int64?
+    /// Set while changes that reached storage are not in a backup yet.
+    public var pendingSinceNanoseconds: Int64?
+    public var lastError: String?
+}
+
 public struct PinStatus: Codable, Sendable {
     public var path: String
     public var complete: Bool
@@ -75,6 +99,8 @@ public struct DriveStatus: Codable, Sendable {
     /// Excludes metadata traffic and transport overhead; not a NIC counter.
     public var objectReadBytes: Int64
     public var objectGetRequests: Int64
+    /// Nil for drives whose index is not on this Mac (ParaAir Cloud, local folders).
+    public var indexBackup: IndexBackupStatus? = nil
 }
 
 private struct Segment: Codable { var offset: Int64; var length: Int64; var blob: String }
@@ -117,6 +143,18 @@ private struct Block: Codable {
     var accessed: Int64
 }
 private struct Metadata: Codable { var entry: FileEntry; var verified: Int64 }
+/// Stored as record ("index", "backup"). `notNeeded` once storage reports that the
+/// index is not local, so no further changes are tracked.
+private struct IndexBackupState: Codable {
+    var changedAt: Int64?
+    var firstChangeAt: Int64?
+    var lastBackupAt: Int64?
+    var lastAttemptAt: Int64?
+    var lastKey: String?
+    var lastError: String?
+    var failures = 0
+    var notNeeded = false
+}
 
 /// One in-progress block fetch. Readers of the same block wait for it instead of
 /// fetching again. It stays registered until the fetched block is published, so
@@ -178,6 +216,7 @@ public final class Engine {
     /// Uptime of each path's last local write, for idle detection without wall-clock jumps.
     private var lastWrite: [String: UInt64] = [:]
     private var lastProbe: UInt64?
+    private var indexBackupRunning = false
     private let cacheLimit: Int64
     private let reserve: Int64
     private let blockSize: Int
@@ -587,7 +626,7 @@ public final class Engine {
             if let _: Journal = try db.get("journal", path) { throw DriveError(EEXIST, "Path already exists") }
             namespaceEpoch &+= 1
             if directory {
-                let entry = try backend.createDirectory(path); try record(entry); try invalidateListings(); return entry
+                let entry = try backend.createDirectory(path); try record(entry); try invalidateListings(); try noteIndexChange(); return entry
             }
             try ensureJournalSpace(0)
             let timestamp = now()
@@ -686,7 +725,7 @@ public final class Engine {
                 case .applied(let entry):
                     try lock.withLock {
                         guard let current: Journal = try db.get("journal", path), current.transactionID == item.transactionID else { return }
-                        try db.transaction { try db.delete("journal", path); try record(entry); try invalidateListings() }
+                        try db.transaction { try db.delete("journal", path); try record(entry); try invalidateListings(); try noteIndexChange() }
                         namespaceEpoch &+= 1; offline = false; try recoverOrphans()
                     }
                     published(path, lock: pathLock, sealedAt: DispatchTime.now().uptimeNanoseconds)
@@ -782,7 +821,7 @@ public final class Engine {
             do { published = try publisher.commit(commit); recordTraffic(on: publisher) }
             catch { recordTraffic(on: publisher); throw error }
             try lock.withLock {
-                try db.transaction { try db.delete("journal", path); try record(published); try invalidateListings() }
+                try db.transaction { try db.delete("journal", path); try record(published); try invalidateListings(); try noteIndexChange() }
                 // Published: a failed cleanup is not a failed upload. Later passes reclaim the payloads.
                 namespaceEpoch &+= 1; offline = false; try? persistTraffic(); try? recoverOrphans()
             }
@@ -901,6 +940,7 @@ public final class Engine {
             }
             namespaceEpoch &+= 1
             try backend.move(from, to: to)
+            try noteIndexChange()
             try rekeyLocalFiles(pending, from: from, to: to)
             try db.clear("metadata"); try invalidateListings()
             // Cached content remains evictable; pin snapshots must be recreated.
@@ -934,6 +974,7 @@ public final class Engine {
                 for entry in leftovers { try backend.remove(entry.path, directory: entry.kind == .directory) }
                 try backend.remove(path, directory: true)
             }
+            try noteIndexChange()
             try db.transaction {
                 for item in pending where Housekeeping.staysLocal(item.path) && contains(path, item.path) { try db.delete("journal", item.path) }
             }
@@ -1085,7 +1126,7 @@ public final class Engine {
                                availableBytes: try DurableIO.freeBytes(root), pendingUploads: uploads.count,
                                conflictedUploads: uploads.filter { $0.state == "conflict" }.count,
                                pins: try db.all("pin"), offline: offline, objectReadBytes: traffic.objectReadBytes,
-                               objectGetRequests: traffic.objectGetRequests)
+                               objectGetRequests: traffic.objectGetRequests, indexBackup: try indexBackupStatus())
         }
     }
     private func pinPaths() throws -> [String] { let pins: [PinStatus] = try db.all("pin"); return pins.map(\.path) }
@@ -1249,6 +1290,70 @@ public final class Engine {
         var count: Int64 = 0
         while let file = files.nextObject() as? URL { count += DurableIO.allocatedBytes(file) }
         return count
+    }
+    private func indexBackupStatus() throws -> IndexBackupStatus? {
+        // Whether a drive's index is local is learned on its first attempt; until then, nothing to report.
+        guard let state: IndexBackupState = try db.get("index", "backup"), !state.notNeeded,
+              state.lastBackupAt != nil || state.lastError != nil else { return nil }
+        return IndexBackupStatus(lastBackupNanoseconds: state.lastBackupAt, pendingSinceNanoseconds: state.firstChangeAt,
+                                 lastError: state.lastError)
+    }
+    /// Records, under the state lock, that a change reached storage since the last index backup.
+    private func noteIndexChange() throws {
+        var state: IndexBackupState = try db.get("index", "backup") ?? IndexBackupState()
+        guard !state.notNeeded else { return }
+        let clock = now()
+        state.changedAt = clock
+        if state.firstChangeAt == nil { state.firstChangeAt = clock }
+        try db.put("index", "backup", state)
+    }
+    /// Backs up the drive's index into its storage when changes are waiting and the policy
+    /// says it is time. Returns whether a backup was made. One runs at a time per engine;
+    /// never call it under the state lock. A failure is recorded and rethrown.
+    @discardableResult
+    public func backupIndexIfDue(policy: IndexBackupPolicy = .standard) throws -> Bool {
+        assert(!lock.isHeldByCurrentThread, "Index backups must not run under the drive state lock")
+        let (due, previous) = try lock.withLock(timeout: 10) { () -> (Bool, String?) in
+            guard let state: IndexBackupState = try db.get("index", "backup"), !state.notNeeded,
+                  let changed = state.changedAt, let first = state.firstChangeAt else { return (false, nil) }
+            let clock = now()
+            if state.failures > 0, let attempt = state.lastAttemptAt {
+                let retry = min(policy.retryNanoseconds << Int64(min(state.failures - 1, 4)), 3_600_000_000_000)
+                if clock - attempt < retry { return (false, nil) }
+            }
+            return (clock - changed >= policy.quietNanoseconds || clock - first >= policy.maxDelayNanoseconds, state.lastKey)
+        }
+        guard due, memory.withLock({ () -> Bool in
+            if indexBackupRunning { return false }
+            indexBackupRunning = true; return true
+        }) else { return false }
+        defer { memory.withLock { indexBackupRunning = false } }
+        let started = now()
+        do {
+            let key = try backend.backupIndex(replacing: previous)
+            try lock.withLock(timeout: 10) {
+                var state: IndexBackupState = try db.get("index", "backup") ?? IndexBackupState()
+                if let key {
+                    state.lastBackupAt = started; state.lastAttemptAt = started; state.lastKey = key
+                    state.lastError = nil; state.failures = 0
+                    // A change made while the dump ran may be missing from it.
+                    if let changed = state.changedAt, changed > started { state.firstChangeAt = changed }
+                    else { state.changedAt = nil; state.firstChangeAt = nil }
+                } else {
+                    state = IndexBackupState(notNeeded: true)
+                }
+                try db.put("index", "backup", state)
+            }
+            return key != nil
+        } catch {
+            try lock.withLock(timeout: 10) {
+                var state: IndexBackupState = try db.get("index", "backup") ?? IndexBackupState()
+                state.lastAttemptAt = now(); state.failures += 1
+                state.lastError = (error as? DriveError)?.message ?? error.localizedDescription
+                try db.put("index", "backup", state)
+            }
+            throw error
+        }
     }
     /// Journal bytes that still have to upload: everything but local-only files.
     private func uploadableJournalAllocation() throws -> Int64 {

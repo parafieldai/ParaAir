@@ -228,7 +228,19 @@ final class CLIApplication {
         "\(value.profile) (\(value.backend); \(value.mounted ? "mounted" : "unmounted"))\n" +
         "Cache: \(humanBytes(value.drive.cacheBytes)) / \(humanBytes(value.drive.cacheLimitBytes)); pins: \(humanBytes(value.drive.pinnedBytes)); pending writes: \(humanBytes(value.drive.pendingWriteBytes)).\n" +
         "App state: \(humanBytes(value.drive.stateBytes)); total local allocation: \(humanBytes(value.drive.totalAllocatedBytes)); available: \(humanBytes(value.drive.availableBytes)).\n" +
-        "Uploads: \(value.drive.pendingUploads); conflicts: \(value.drive.conflictedUploads). Network connectivity was not probed.\n"
+        "Uploads: \(value.drive.pendingUploads); conflicts: \(value.drive.conflictedUploads). Network connectivity was not probed.\n" +
+        indexBackupText(value.drive.indexBackup)
+    }
+    /// Drives whose index lives on this Mac back it up into their own storage.
+    private func indexBackupText(_ value: IndexBackupStatus?) -> String {
+        guard let value else { return "" }
+        let last = value.lastBackupNanoseconds.map {
+            ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: TimeInterval($0) / 1_000_000_000))
+        } ?? "never"
+        var text = "Index backup: \(last)"
+        if value.pendingSinceNanoseconds != nil { text += "; newer changes pending" }
+        if let error = value.lastError { text += "; last attempt failed: \(error)" }
+        return text + ".\n"
     }
 
     private func prepareMountPoint(_ requested: String, stateRoot: URL, profile: DriveProfile) throws -> String {

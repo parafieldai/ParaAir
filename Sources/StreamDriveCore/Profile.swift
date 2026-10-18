@@ -441,6 +441,7 @@ private final class LazyProfileBackend: StorageBackend {
         try withBackend { try $0.commitStatus(transactionID: transactionID, path: path, expectedVersion: expectedVersion) }
     }
     func capacity() throws -> VolumeCapacity? { try withBackend { try $0.capacity() } }
+    func backupIndex(replacing previous: String?) throws -> String? { try withBackend { try $0.backupIndex(replacing: previous) } }
     func close() throws {
         lock.lock(); closed = true; let backend = connected; connected = nil; lock.unlock()
         try backend?.close()

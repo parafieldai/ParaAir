@@ -32,6 +32,8 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     typealias EngineOpener = (DriveProfile, URL) throws -> Engine
     private let queue = DispatchQueue(label: "dev.streamdrive.filesystem.io", qos: .userInitiated)
     private let uploadQueue = DispatchQueue(label: "dev.streamdrive.filesystem.upload", qos: .utility)
+    /// Index backups (a metadata dump and its upload) run here, never delaying uploads.
+    private let indexQueue = DispatchQueue(label: "dev.streamdrive.filesystem.index", qos: .utility)
     private let reads: OperationQueue = {
         let reads = OperationQueue()
         reads.name = "dev.streamdrive.filesystem.read"
@@ -65,6 +67,10 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     private var capacityRefreshedAt: UInt64 = 0
     /// How often capacity is refreshed or retried; tests shorten it.
     var capacityRefreshNanoseconds: UInt64 = 60_000_000_000
+    /// Uptime of the last index backup check; uploadQueue only.
+    private var indexCheckedAt: UInt64 = 0
+    /// How often the engine is asked whether an index backup is due; tests shorten it.
+    var indexCheckNanoseconds: UInt64 = 30_000_000_000
     private var nodes: [String: DriveItem] = [:]
     private var nextID: UInt64 = 3
     private var generation: UInt64 = 1
@@ -77,6 +83,7 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     private var uploadPaths = Set<String>()
     private var uploadCounts: UploadCounts?
     private static let uploadLog = Logger(subsystem: "dev.streamdrive.app.filesystem", category: "upload")
+    private static let indexLog = Logger(subsystem: "dev.streamdrive.app.filesystem", category: "index")
     var isOpenCloseInhibited = false
 
     init(stateRoot: URL, mountResource: FinderMountResource, readOnly: Bool, engine: Engine? = nil,
@@ -293,6 +300,7 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
                         self?.logUploads(records)
                     }
                     self?.refreshCapacityIfDue(opened)
+                    if !readOnly { self?.backupIndexIfDue(opened) }
                 }
                 self.locked { self.uploader = timer }
                 timer.resume()
@@ -327,6 +335,18 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
         locked {
             capacityUnknown = false
             if let value { capacity = value; reportsCapacity = true }
+        }
+    }
+    /// Runs on uploadQueue: every 30 s asks the engine whether the drive's index needs backing
+    /// up into its storage, and does it on indexQueue. Only drives whose index lives on this
+    /// Mac ever back up; the engine stops asking storage for the others.
+    private func backupIndexIfDue(_ opened: Engine) {
+        let uptime = DispatchTime.now().uptimeNanoseconds
+        guard uptime &- indexCheckedAt >= indexCheckNanoseconds else { return }
+        indexCheckedAt = uptime
+        indexQueue.async {
+            do { if try opened.backupIndexIfDue() { Self.indexLog.notice("Index backed up") } }
+            catch { Self.indexLog.error("Index backup failed errno=\((error as? DriveError)?.code ?? EIO)") }
         }
     }
     /// Runs on uploadQueue. Logs only when a count changes, without paths.
