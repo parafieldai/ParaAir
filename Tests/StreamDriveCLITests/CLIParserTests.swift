@@ -81,4 +81,18 @@ final class CLIParserTests: XCTestCase {
             XCTAssertThrowsError(try CLIParser.parse(invalid), invalid.joined(separator: " "))
         }
     }
+
+    func testParsesStoredDrivesAndRecover() throws {
+        XCTAssertEqual(try CLIParser.parse(["stored-drives", "--connection", "abc"]).command,
+                       .storedDrives(connection: "abc", library: nil))
+        XCTAssertEqual(try CLIParser.parse(["recover", "Studio", "--connection", "abc", "--volume", "streamdrive-x1", "--backup",
+                                            "meta/dump-2026-10-18-120000.json.gz"]).command,
+                       .recover(profile: "Studio", connection: "abc", volume: "streamdrive-x1",
+                                backup: "meta/dump-2026-10-18-120000.json.gz", takeOver: false, library: nil))
+        XCTAssertEqual(try CLIParser.parse(["recover", "Studio", "--connection", "abc", "--volume", "streamdrive-x1", "--take-over"]).command,
+                       .recover(profile: "Studio", connection: "abc", volume: "streamdrive-x1", backup: nil, takeOver: true, library: nil))
+        XCTAssertThrowsError(try CLIParser.parse(["recover", "Studio", "--connection", "abc"]))
+        XCTAssertThrowsError(try CLIParser.parse(["stored-drives"]))
+        XCTAssertThrowsError(try CLIParser.parse(["stored-drives", "extra", "--connection", "abc"]))
+    }
 }

@@ -6,6 +6,7 @@
 package vfs
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"io"
@@ -16,11 +17,16 @@ import (
 	"github.com/juicedata/juicefs/pkg/object"
 )
 
+// StreamDriveBackupPointer names the newest dump, so a restore needs no listing
+// (Cloudflare sign-in storage cannot list). Rotation ignores it: it is not a dump name.
+const StreamDriveBackupPointer = "meta/latest"
+
 // StreamDriveBackup dumps the whole tree without secrets or trash into blob/meta/,
-// records the time like upstream, and prunes older dumps in the background as
-// upstream does. It returns the dump's key relative to blob. The dump is staged in a
-// uniquely named temporary file: upstream's fixed $TMPDIR/meta/<name> would be shared
-// by every extension process serving a drive, since they share one container.
+// points meta/latest at it, records the time like upstream, and prunes older dumps in
+// the background as upstream does. It returns the dump's key relative to blob. The
+// dump is staged in a uniquely named temporary file: upstream's fixed
+// $TMPDIR/meta/<name> would be shared by every extension process serving a drive,
+// since they share one container.
 func StreamDriveBackup(m meta.Meta, blob object.ObjectStorage, now time.Time) (string, error) {
 	var iused, dummy uint64
 	_ = m.StatFS(meta.Background(), meta.RootInode, &dummy, &dummy, &iused, &dummy)
@@ -43,6 +49,9 @@ func StreamDriveBackup(m meta.Meta, blob object.ObjectStorage, now time.Time) (s
 	}
 	key := "meta/dump-" + now.UTC().Format("2006-01-02-150405") + ".json.gz"
 	if err := blob.Put(context.Background(), key, staged); err != nil {
+		return "", err
+	}
+	if err := blob.Put(context.Background(), StreamDriveBackupPointer, bytes.NewReader([]byte(key))); err != nil {
 		return "", err
 	}
 	_ = m.SetXattr(meta.Background(), 0, "lastBackup", []byte(now.Format(time.RFC3339)), meta.XattrCreateOrReplace)

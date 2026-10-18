@@ -60,6 +60,12 @@ type config struct {
 	CloudflareToken      string              `json:"cloudflareToken,omitempty"`
 	ObjectCredentials    *objectCredentials  `json:"objectCredentials,omitempty"`
 	ObjectBudget         *objectBudgetConfig `json:"objectBudget,omitempty"`
+	// restoreMeta: the drive's volume (top-level folder) and, optionally, which dump.
+	VolumeName string `json:"volumeName,omitempty"`
+	BackupKey  string `json:"backupKey,omitempty"`
+	// This Mac's identity as the drive's owner (owner.go); empty disables ownership.
+	OwnerID   string `json:"ownerID,omitempty"`
+	OwnerName string `json:"ownerName,omitempty"`
 }
 type patch struct {
 	Offset    int64  `json:"offset"`
@@ -111,8 +117,12 @@ type response struct {
 	Disposition string `json:"disposition,omitempty"`
 	// commitStatus answer: "applied" or "absent".
 	CommitState string `json:"commitState,omitempty"`
-	// backupMeta: the uploaded dump's key under the volume prefix.
+	// backupMeta: the uploaded dump's key under the volume prefix; restoreMeta: the one loaded.
 	BackupKey string `json:"backupKey,omitempty"`
+	// listDrives: drives backed up in the bucket.
+	Drives []storedDrive `json:"drives,omitempty"`
+	// driveOwner: the Mac that owns the drive, if any.
+	Owner *ownerRecord `json:"owner,omitempty"`
 }
 
 const (
@@ -189,6 +199,12 @@ type engine struct {
 	objectBudget *objectBudget
 	// Cloudflare sign-in storage cannot list, so JuiceFS cannot rotate its backups.
 	unlisted bool
+	// Ownership (owner.go): this Mac's identity, whether another Mac owns the drive,
+	// and when that was last read.
+	ownerID      string
+	ownerName    string
+	foreign      atomic.Bool
+	ownerChecked atomic.Int64
 }
 
 // quietLogs silences the embedded SDK's loggers once per process (see connect).
@@ -302,34 +318,61 @@ func reserveS3TestMetadata(c config) error {
 		if c.ObjectCredentials == nil || c.ObjectCredentials.AccessKey == "" || c.ObjectCredentials.SecretKey == "" {
 			return syscall.EINVAL
 		}
-		target, err := url.ParseRequestURI(c.S3BucketURL)
-		if err != nil || target.Scheme != "https" || target.Hostname() == "" || target.User != nil || target.RawQuery != "" || target.ForceQuery || target.Fragment != "" || target.RawPath != "" {
-			return syscall.EINVAL
-		}
-		bucket := strings.TrimPrefix(target.Path, "/")
-		if !regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`).MatchString(bucket) {
+		if !validS3BucketURL(c.S3BucketURL) {
 			return syscall.EINVAL
 		}
 	}
-	if !strings.HasPrefix(c.MetadataURL, "sqlite3://") {
-		return syscall.EINVAL
+	_, err := reserveMetadataFile(c.MetadataURL)
+	return err
+}
+
+// validS3BucketURL accepts https://host/bucket and nothing else: no credentials,
+// query, fragment or extra path.
+func validS3BucketURL(value string) bool {
+	target, err := url.ParseRequestURI(value)
+	if err != nil || target.Scheme != "https" || target.Hostname() == "" || target.User != nil || target.RawQuery != "" || target.ForceQuery || target.Fragment != "" || target.RawPath != "" {
+		return false
 	}
-	file := strings.TrimPrefix(c.MetadataURL, "sqlite3://")
+	return regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`).MatchString(strings.TrimPrefix(target.Path, "/"))
+}
+
+// regionalBucketURL carries a connection's signing region to the patched S3 client.
+func regionalBucketURL(bucketURL, region string) (string, error) {
+	if !regexp.MustCompile(`^[a-z0-9-]{1,64}$`).MatchString(region) {
+		return "", syscall.EINVAL
+	}
+	u, err := url.Parse(bucketURL)
+	if err != nil {
+		return "", syscall.EINVAL
+	}
+	q := u.Query()
+	q.Set("streamdrive-region", region)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// reserveMetadataFile creates a new, empty SQLite file for a new index, exclusively:
+// an existing file or sidecar means another drive's index, which is never reused.
+func reserveMetadataFile(metadataURL string) (string, error) {
+	if !strings.HasPrefix(metadataURL, "sqlite3://") {
+		return "", syscall.EINVAL
+	}
+	file := strings.TrimPrefix(metadataURL, "sqlite3://")
 	if !path.IsAbs(file) || path.Clean(file) != file || strings.ContainsAny(file, "?#%\x00") {
-		return syscall.EINVAL
+		return "", syscall.EINVAL
 	}
 	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
 		if _, err := os.Lstat(file + suffix); err == nil {
-			return syscall.EEXIST
+			return "", syscall.EEXIST
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+			return "", err
 		}
 	}
 	reserved, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return reserved.Close()
+	return file, reserved.Close()
 }
 
 func connect(c config) (*engine, error) {
@@ -424,17 +467,12 @@ func connect(c config) (*engine, error) {
 	} else {
 		bucketURL := format.Bucket
 		if c.S3Region != "" {
-			if format.Storage != "s3" || !regexp.MustCompile(`^[a-z0-9-]{1,64}$`).MatchString(c.S3Region) {
+			if format.Storage != "s3" {
 				return nil, syscall.EINVAL
 			}
-			u, e := url.Parse(bucketURL)
-			if e != nil {
-				return nil, syscall.EINVAL
+			if bucketURL, err = regionalBucketURL(bucketURL, c.S3Region); err != nil {
+				return nil, err
 			}
-			q := u.Query()
-			q.Set("streamdrive-region", c.S3Region)
-			u.RawQuery = q.Encode()
-			bucketURL = u.String()
 		}
 		blob, err = object.CreateStorage(strings.ToLower(format.Storage), bucketURL, accessKey, secretKey, sessionToken)
 	}
@@ -487,7 +525,8 @@ func connect(c config) (*engine, error) {
 		}
 	}()
 	ctx := meta.NewContext(uint32(os.Getpid()), uint32(os.Getuid()), []uint32{uint32(os.Getgid())})
-	e := &engine{fs: jf, meta: m, ctx: ctx, owner: uint64(time.Now().UnixNano()), storage: counted, objectBudget: budget, unlisted: cloudflare != nil}
+	e := &engine{fs: jf, meta: m, ctx: ctx, owner: uint64(time.Now().UnixNano()), storage: counted, objectBudget: budget, unlisted: cloudflare != nil,
+		ownerID: c.OwnerID, ownerName: c.OwnerName}
 	if err := jf.MkdirAll(ctx, internalRoot, 0700, 0077); err != 0 {
 		return nil, err
 	}
@@ -504,6 +543,7 @@ func connect(c config) (*engine, error) {
 	} else {
 		return nil, errNo
 	}
+	e.claimOwner(c.OwnerName)
 	connected = true
 	return e, nil
 }
@@ -778,6 +818,28 @@ func (e *engine) commitStatus(r request) (*entry, string, error) {
 	return nil, "", syscall.ESTALE
 }
 func dispatch(r request) response {
+	// Restore and discovery need no open drive.
+	if r.Op == "restoreMeta" {
+		key, identity, err := restoreMeta(r.Config)
+		if err != nil {
+			return errResponse(err)
+		}
+		return response{OK: true, BackupKey: key, VolumeIdentity: identity}
+	}
+	if r.Op == "driveOwner" {
+		owner, err := driveOwner(r.Config)
+		if err != nil {
+			return errResponse(err)
+		}
+		return response{OK: true, Owner: owner}
+	}
+	if r.Op == "listDrives" {
+		drives, err := listDrives(r.Config)
+		if err != nil {
+			return errResponse(err)
+		}
+		return response{OK: true, Drives: drives}
+	}
 	if r.Op == "connect" {
 		e, err := connect(r.Config)
 		if err != nil {
@@ -820,6 +882,12 @@ func dispatch(r request) response {
 	}
 	if testHookAfterLocks != nil {
 		testHookAfterLocks(r.Op)
+	}
+	switch r.Op {
+	case "commit", "mkdir", "remove", "rename", "backupMeta":
+		if err := e.ensureOwner(); err != nil {
+			return rejected(err)
+		}
 	}
 	var err error
 	if r.Op != "metrics" && r.Op != "identity" && r.Op != "backupMeta" {
@@ -932,6 +1000,9 @@ func dispatch(r request) response {
 		// The metadata database exists only on this Mac; a dump in the bucket is what
 		// lets the drive be restored if the Mac or its state folder is lost.
 		out.BackupKey, err = vfs.StreamDriveBackup(e.meta, e.storage, time.Now())
+		if err == nil && e.ownerID != "" {
+			_ = writeOwner(e.storage, e.ownerID, e.ownerName) // the owner's heartbeat
+		}
 		// Without listing there is no rotation: keep only the newest dump. The engine's
 		// state names the previous one.
 		if err == nil && e.unlisted && r.PreviousBackup != out.BackupKey && backupKey.MatchString(r.PreviousBackup) {

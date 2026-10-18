@@ -34,10 +34,73 @@ final class NativeBackendTests: XCTestCase {
         XCTAssertTrue(try engine.flushUploads().isEmpty)
         XCTAssertTrue(try engine.backupIndexIfDue(policy: .immediate))
         let meta = root.appendingPathComponent("volume/objects/streamdrive/meta")
-        let dumps = try FileManager.default.contentsOfDirectory(atPath: meta.path)
+        let dumps = try FileManager.default.contentsOfDirectory(atPath: meta.path).filter { $0 != "latest" }
         XCTAssertEqual(dumps.count, 1)
         XCTAssertTrue(dumps[0].hasPrefix("dump-") && dumps[0].hasSuffix(".json.gz"))
+        // meta/latest names it, so a restore needs no listing.
+        XCTAssertEqual(try String(contentsOf: meta.appendingPathComponent("latest"), encoding: .utf8), "meta/" + dumps[0])
         XCTAssertNotNil(try engine.status().indexBackup?.lastBackupNanoseconds)
+    }
+
+    /// Another Mac, or this one after losing its state, recovers a drive from the backup
+    /// of its index in its bucket: same files, same volume identity.
+    func testRecoveredIndexOpensTheSameDrive() throws {
+        let (library, root, backend) = try fixture()
+        let engine = try Engine(backend: backend, stateDirectory: root.appendingPathComponent("client-state"), minFreeBytes: 0)
+        _ = try engine.create("/kept.txt", directory: false)
+        _ = try engine.write("/kept.txt", offset: 0, data: Data("kept".utf8))
+        XCTAssertTrue(try engine.flushUploads().isEmpty)
+        XCTAssertTrue(try engine.backupIndexIfDue(policy: .immediate))
+        let objects = root.appendingPathComponent("volume/objects")
+        let listed = try JuiceFSBackend.listDrives(libraryURL: library, configuration: ["localObjectDirectory": objects.path])
+        XCTAssertEqual(listed.map(\.volume), ["streamdrive"])
+        let metadata = root.appendingPathComponent("recovered.sqlite3")
+        let restored = try JuiceFSBackend.restoreLocal(libraryURL: library, metadataURL: metadata, objectDirectory: objects, volume: "streamdrive")
+        XCTAssertEqual(restored.backupKey, listed.first?.latestBackup)
+        XCTAssertEqual(restored.volumeIdentity, try backend.volumeIdentity())
+        // Never over an existing index.
+        XCTAssertThrowsError(try JuiceFSBackend.restoreLocal(libraryURL: library, metadataURL: metadata, objectDirectory: objects,
+                                                             volume: "streamdrive")) { XCTAssertEqual(($0 as? DriveError)?.code, EEXIST) }
+        let recovered = try JuiceFSBackend(libraryURL: library, metadataURL: "sqlite3://" + metadata.path)
+        defer { try? recovered.close() }
+        let reader = try Engine(backend: recovered, stateDirectory: root.appendingPathComponent("recovered-state"), minFreeBytes: 0)
+        XCTAssertEqual(try reader.read("/kept.txt", offset: 0, length: 16), Data("kept".utf8))
+    }
+
+    /// One Mac writes a drive at a time: a recovery makes the recovering Mac the owner, and
+    /// the old Mac can read but no longer write.
+    func testRecoveryTransfersOwnership() throws {
+        let (library, root, backend) = try fixture()
+        let engine = try Engine(backend: backend, stateDirectory: root.appendingPathComponent("client-state"), minFreeBytes: 0)
+        _ = try engine.create("/kept.txt", directory: false)
+        _ = try engine.write("/kept.txt", offset: 0, data: Data("kept".utf8))
+        XCTAssertTrue(try engine.flushUploads().isEmpty)
+        XCTAssertTrue(try engine.backupIndexIfDue(policy: .immediate))
+        try backend.close()
+        let objects = root.appendingPathComponent("volume/objects")
+        let lookup: [String: Any] = ["localObjectDirectory": objects.path, "volumeName": "streamdrive"]
+        XCTAssertNil(try JuiceFSBackend.driveOwner(libraryURL: library, configuration: lookup))
+
+        let studio = try DriveOwner.load(directory: root.appendingPathComponent("studio-state"))
+        XCTAssertEqual(try DriveOwner.load(directory: root.appendingPathComponent("studio-state")), studio, "the owner ID is not kept")
+        let original = "sqlite3://" + root.appendingPathComponent("volume/metadata.sqlite3").path
+        let claimed = try JuiceFSBackend(libraryURL: library, metadataURL: original, owner: studio)
+        XCTAssertEqual(try JuiceFSBackend.driveOwner(libraryURL: library, configuration: lookup)?.id, studio.id)
+        try claimed.close()
+
+        let laptop = DriveOwner(id: UUID().uuidString.lowercased(), name: "Laptop")
+        _ = try JuiceFSBackend.restoreLocal(libraryURL: library, metadataURL: root.appendingPathComponent("laptop.sqlite3"),
+                                            objectDirectory: objects, volume: "streamdrive", owner: laptop)
+        let recorded = try XCTUnwrap(try JuiceFSBackend.driveOwner(libraryURL: library, configuration: lookup))
+        XCTAssertEqual(recorded.id, laptop.id)
+        XCTAssertEqual(recorded.name, "Laptop")
+
+        let returning = try JuiceFSBackend(libraryURL: library, metadataURL: original, owner: studio)
+        defer { try? returning.close() }
+        XCTAssertEqual(try returning.stat("/kept.txt").size, 4)
+        XCTAssertThrowsError(try returning.createDirectory("/after")) { XCTAssertEqual(($0 as? DriveError)?.code, EROFS) }
+        XCTAssertThrowsError(try returning.backupIndex(replacing: nil)) { XCTAssertEqual(($0 as? DriveError)?.code, EROFS) }
+        XCTAssertEqual(try JuiceFSBackend.driveOwner(libraryURL: library, configuration: lookup)?.id, laptop.id)
     }
 
     func testNativeSparseFileListsWithoutDataAndSeeksBeforeFullDownload() throws {

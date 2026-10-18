@@ -80,9 +80,10 @@ final class ConnectionBackend: StorageBackend {
     private var closed = false
 
     convenience init(libraryURL: URL, metadataURL: String, connectionID: String, store: ConnectionStore,
-                     vault: any ConnectionVault = KeychainConnectionVault(), bindVolume: @escaping (String) throws -> Void) throws {
+                     vault: any ConnectionVault = KeychainConnectionVault(), owner: DriveOwner? = nil,
+                     bindVolume: @escaping (String) throws -> Void) throws {
         try self.init(connectionID: connectionID, store: store, vault: vault, bindVolume: bindVolume, openSession: { record, secrets in
-            try JuiceFSBackend(libraryURL: libraryURL, metadataURL: metadataURL, connection: record, secrets: secrets)
+            try JuiceFSBackend(libraryURL: libraryURL, metadataURL: metadataURL, connection: record, secrets: secrets, owner: owner)
         })
     }
     init(connectionID: String, store: ConnectionStore, vault: any ConnectionVault, bindVolume: @escaping (String) throws -> Void,
@@ -240,6 +241,54 @@ public enum ConnectedDrive {
         // A failed save retains the new database for recovery; never format it a second time.
         try profiles.save(profile)
         return profile
+    }
+
+    /// Opens, in an empty state folder, a drive whose index is backed up in the connection's
+    /// bucket: after its Mac or state folder was lost, or to move it to this Mac. The index
+    /// comes from the newest backup (or `backupKey`), so changes made after it are missing.
+    /// The drive must not be in use on another Mac: two Macs writing one drive with separate
+    /// indexes overwrite each other's data.
+    /// Another Mac seen as the drive's owner within this long is assumed to be using it.
+    public static let ownerActiveSeconds: TimeInterval = 86_400
+
+    public static func recover(name: String, volume: String, connectionID: String, stateRoot: URL, libraryURL: URL,
+                               backupKey: String? = nil, takeOver: Bool = false, vault: any ConnectionVault = KeychainConnectionVault(),
+                               now: Date = Date()) throws -> (profile: DriveProfile, backupKey: String) {
+        try DriveProfile.validateName(name)
+        let profiles = ProfileStore(root: stateRoot)
+        guard try profiles.list().isEmpty else {
+            throw DriveError(EEXIST, "This Finder state folder already has a drive. Choose another state folder for another drive.")
+        }
+        let (record, secrets) = try ConnectionStore(root: stateRoot).credentials(connectionID, vault: vault)
+        let owner = try DriveOwner.load(directory: Engine.stateDirectory(profileName: name, stateRoot: stateRoot))
+        if !takeOver, let current = try JuiceFSBackend.driveOwner(libraryURL: libraryURL, connection: record, secrets: secrets, volume: volume),
+           current.id != owner.id, now.timeIntervalSince(current.at) < ownerActiveSeconds {
+            let seen = ISO8601DateFormatter().string(from: current.at)
+            // A Mac that lost its state folder has a new owner ID but the same name.
+            let thisMac = current.name == owner.name ? " If that is this Mac, whose ParaAir state was lost, taking it over is safe." : ""
+            throw DriveError(EBUSY, "This drive was in use on \(current.name) (last seen \(seen)). Quit ParaAir there first, or take it over; " +
+                             "that Mac then stops writing to it, and its changes since the last backup stay on it." + thisMac)
+        }
+        let metadataDirectory = stateRoot.appendingPathComponent("metadata", isDirectory: true)
+        try DurableIO.directory(metadataDirectory)
+        let metadata = metadataDirectory.appendingPathComponent(name + ".sqlite3")
+        let restored = try JuiceFSBackend.restoreCloud(libraryURL: libraryURL, metadataURL: metadata, connection: record,
+                                                       secrets: secrets, volume: volume, backupKey: backupKey, owner: owner)
+        let profile = Self.profile(name: name, connectionID: connectionID, metadata: metadata, libraryURL: libraryURL, stateRoot: stateRoot)
+        do { try profiles.save(profile) }
+        catch {
+            // The drive is already recorded as this Mac's; a retry (same owner ID) must start clean.
+            for suffix in ["", "-wal", "-shm", "-journal"] { try? FileManager.default.removeItem(atPath: metadata.path + suffix) }
+            throw error
+        }
+        return (profile, restored.backupKey)
+    }
+    /// Drives backed up in a connection's bucket. Cloudflare sign-in connections cannot
+    /// list (ENOTSUP); recover those by volume name.
+    public static func storedDrives(connectionID: String, stateRoot: URL, libraryURL: URL,
+                                    vault: any ConnectionVault = KeychainConnectionVault()) throws -> [JuiceFSBackend.StoredDrive] {
+        let (record, secrets) = try ConnectionStore(root: stateRoot).credentials(connectionID, vault: vault)
+        return try JuiceFSBackend.listDrives(libraryURL: libraryURL, connection: record, secrets: secrets)
     }
 
     /// New connected drives use 4 MiB blocks, matching JuiceFS's 4 MiB objects so

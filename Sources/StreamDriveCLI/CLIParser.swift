@@ -29,6 +29,8 @@ enum CLICommand: Equatable {
     case cloudAccounts
     case trash(profile: String)
     case restore(profile: String, nodeID: Int64, to: String?)
+    case storedDrives(connection: String, library: String?)
+    case recover(profile: String, connection: String, volume: String, backup: String?, takeOver: Bool, library: String?)
 }
 
 struct CLIUsageError: Error, LocalizedError, Equatable {
@@ -146,6 +148,21 @@ enum CLIParser {
                 throw usage("Usage: paraair restore PROFILE NODE_ID [--to PATH]")
             }
             command = .restore(profile: profile, nodeID: node, to: options.values["to"])
+        case "stored-drives":
+            let options = try parseOptions(commandArguments, valueNames: ["connection", "library"])
+            try noExtraArguments(options.positionals, command: name)
+            guard let connection = options.values["connection"] else { throw usage("Usage: paraair stored-drives --connection ID") }
+            command = .storedDrives(connection: connection, library: options.values["library"])
+        case "recover":
+            let options = try parseOptions(commandArguments, valueNames: ["connection", "volume", "backup", "library"], switchNames: ["take-over"])
+            commandArguments = options.positionals
+            let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
+            try noExtraArguments(commandArguments, command: name)
+            guard let connection = options.values["connection"], let volume = options.values["volume"] else {
+                throw usage("Usage: paraair recover PROFILE --connection ID --volume NAME [--backup KEY] [--take-over]")
+            }
+            command = .recover(profile: profile, connection: connection, volume: volume, backup: options.values["backup"],
+                               takeOver: options.switches.contains("take-over"), library: options.values["library"])
         case "uploads":
             let options = try parseOptions(commandArguments, switchNames: ["retry"])
             commandArguments = options.positionals

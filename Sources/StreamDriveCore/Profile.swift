@@ -336,10 +336,14 @@ private struct DeferredCloudVault: ConnectionVault {
 }
 
 public extension Engine {
+    /// A drive's local state: its journal, cache, bindings and owner ID.
+    static func stateDirectory(profileName: String, stateRoot: URL) -> URL {
+        stateRoot.standardizedFileURL.resolvingSymlinksInPath().appendingPathComponent("volumes/" + profileName, isDirectory: true)
+    }
     static func open(profile: DriveProfile, stateRoot: URL, dependencies: EngineOpenDependencies = .live) throws -> Engine {
         try profile.validate()
         let root = stateRoot.standardizedFileURL.resolvingSymlinksInPath()
-        let directory = root.appendingPathComponent("volumes/" + profile.name, isDirectory: true)
+        let directory = stateDirectory(profileName: profile.name, stateRoot: stateRoot)
         if let source = profile.localRoot {
             let resolved = URL(fileURLWithPath: source).resolvingSymlinksInPath().path
             guard root.path != resolved, !root.path.hasPrefix(resolved + "/") else {
@@ -371,12 +375,8 @@ public extension Engine {
                 }
                 return try LocalDirectoryBackend(root: source)
             case .juicefs:
-                let bundled = Bundle.main.privateFrameworksURL?.appendingPathComponent("libstreamdrive.dylib")
-                let library: URL
-                if let bundled, FileManager.default.fileExists(atPath: bundled.path) { library = bundled }
-                else if let configured = profile.libraryPath { library = URL(fileURLWithPath: configured).resolvingSymlinksInPath() }
-                else { library = root.appendingPathComponent("native/libstreamdrive.dylib") }
-                if ParaAirBundle.isFilesystemExtension, library != bundled, !ProfileStateBinding.isInside(library, root) {
+                let library = NativeLibraryLocation.resolve(configured: profile.libraryPath, stateRoot: root)
+                if ParaAirBundle.isFilesystemExtension, library != NativeLibraryLocation.bundled, !ProfileStateBinding.isInside(library, root) {
                     throw DriveError(EACCES, "Native library must be bundled with the signed extension or inside its granted state directory")
                 }
                 guard FileManager.default.fileExists(atPath: library.path) else {
@@ -385,7 +385,7 @@ public extension Engine {
                 let uri = try profile.credentialID.map { try KeychainSecretStore().metadataURL(for: $0) } ?? profile.metadataURL!
                 if let connectionID = profile.connectionID {
                     return try ConnectionBackend(libraryURL: library, metadataURL: uri, connectionID: connectionID,
-                                                 store: ConnectionStore(root: root), bindVolume: {
+                                                 store: ConnectionStore(root: root), owner: try DriveOwner.load(directory: directory), bindVolume: {
                         try ProfileStateBinding.bindVolume($0, directory: directory)
                     })
                 }
@@ -410,6 +410,17 @@ public extension Engine {
 
 /// Connects on first use. The lock covers only creating the backend; operations
 /// run outside it so one slow call never serializes the others.
+/// Where the pinned libstreamdrive.dylib is: bundled with the running app or extension,
+/// else a configured path, else the state folder's native/ copy.
+public enum NativeLibraryLocation {
+    public static var bundled: URL? { Bundle.main.privateFrameworksURL?.appendingPathComponent("libstreamdrive.dylib") }
+    public static func resolve(configured: String?, stateRoot: URL) -> URL {
+        if let bundled, FileManager.default.fileExists(atPath: bundled.path) { return bundled }
+        if let configured { return URL(fileURLWithPath: configured).resolvingSymlinksInPath() }
+        return stateRoot.appendingPathComponent("native/libstreamdrive.dylib")
+    }
+}
+
 private final class LazyProfileBackend: StorageBackend {
     private let lock = NSLock()
     private let make: () throws -> StorageBackend

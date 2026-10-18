@@ -56,6 +56,19 @@ final class CLIApplication {
             let destination = try to.map { try canonicalPath($0) }
             let entry = try cloudAPI(profile, root: stateRoot).restore(driveID: profile.cloudDriveID!, nodeID: nodeID, to: destination, idempotencyKey: UUID())
             return try render(entry, invocation: invocation, text: "Restored \(displayName(entry.path)).\n")
+        case .storedDrives(let connection, let library):
+            let drives = try ConnectedDrive.storedDrives(connectionID: connection, stateRoot: stateRoot,
+                                                        libraryURL: NativeLibraryLocation.resolve(configured: library.map(absolutePath), stateRoot: stateRoot))
+            let text = drives.map { "\($0.volume)\t\($0.latestBackup)" }.joined(separator: "\n")
+            return try render(drives, invocation: invocation, text: text.isEmpty ? "No backed-up drives in this bucket.\n" : text + "\n")
+        case .recover(let name, let connection, let volume, let backup, let takeOver, let library):
+            let recovered = try ConnectedDrive.recover(name: name, volume: volume, connectionID: connection, stateRoot: stateRoot,
+                                                       libraryURL: NativeLibraryLocation.resolve(configured: library.map(absolutePath), stateRoot: stateRoot),
+                                                       backupKey: backup, takeOver: takeOver)
+            let response = ProfileReference(profile: recovered.profile.name, backend: recovered.profile.backend.rawValue,
+                                            mountPoint: recovered.profile.mountPoint, mounted: false)
+            return try render(response, invocation: invocation,
+                              text: "Recovered '\(recovered.profile.name)' from \(recovered.backupKey). Open ParaAir to connect it in Finder.\n")
         case .connect(let arguments) where arguments.values["cloud-account"] != nil:
             let values = arguments.values
             guard let drive = values["cloud-drive"] else { throw CLIUsageError(message: "--cloud-account requires --cloud-drive") }
