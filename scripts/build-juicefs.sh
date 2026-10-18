@@ -42,6 +42,7 @@ python3 "$ROOT/scripts/patch-juicefs.py" "$SOURCE"
 mkdir -p "$SOURCE/sdk/streamdrive"
 cp "$ROOT/native/bridge/"*.go "$SOURCE/sdk/streamdrive/"
 cp "$ROOT/native/meta_client.go" "$SOURCE/pkg/meta/streamdrive_client.go"
+cp "$ROOT/native/vfs_backup.go" "$SOURCE/pkg/vfs/streamdrive_backup.go"
 export GOMODCACHE="$BUILD/gomodcache" GOCACHE="$BUILD/gocache" GOPATH="$BUILD/gopath" GOTOOLCHAIN=auto CGO_ENABLED=1
 # Keep Redis/SQLite/PostgreSQL metadata and S3-compatible/local object storage.
 TAGS='noazure,nobos,nob2,nocifs,nocos,nodragonfly,noetcd,nogs,nohdfs,noibmcos,noks3,nonfs,noobs,nooss,noqingstor,noqiniu,nosftp,nostorj,noswift,notikv,notos,noufile,nowebdav'

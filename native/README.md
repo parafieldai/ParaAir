@@ -1,10 +1,10 @@
 # Native JuiceFS bridge
 
-Last updated: 2026-10-02
+Last updated: 2026-10-18
 
 `../scripts/build-juicefs.sh --test` builds an in-process, FUSE-free C ABI and runs local integration tests. It pins JuiceFS revision `adcca1cc61bb4d668a945d64b2e176b44ac8e5b5` and verifies source archive SHA-256 `2d1df6b63c23badd6a31845e2b604fe702f7cc49e1352f2f7204d2ecc48e52d9`. JuiceFS and its pinned `go.mod`/`go.sum` are downloaded under `.build-native`, including the required Go 1.25.10 toolchain. The script checks 100 GiB free space, caps build parallelism at four, and keeps all caches in the project. Nothing is installed globally.
 
-The output is `native/lib/libstreamdrive.dylib` (and a generated C header). `JuiceFSBackend` resolves `sd_call` and `sd_free` dynamically. The JSON ABI owns returned C strings until `sd_free`; it never exposes Go pointers. Native read requests are capped at 8 MiB. Metadata and range calls are serialized per connection; object GET requests within the JuiceFS engine may run concurrently. The Go library remains loaded for the process lifetime because its background runtime threads cannot safely survive unloading.
+The output is `native/lib/libstreamdrive.dylib` (and a generated C header). `JuiceFSBackend` resolves `sd_call` and `sd_free` dynamically. The JSON ABI owns returned C strings until `sd_free`; it never exposes Go pointers. Native read requests are capped at 8 MiB. Metadata and range calls are serialized per connection; object GET requests within the JuiceFS engine may run concurrently. The Go library remains loaded for the process lifetime because its background runtime threads cannot safely survive unloading. The `backupMeta` operation uploads one metadata dump through `vfs.StreamDriveBackup` (`native/vfs_backup.go`, compiled into the pinned `pkg/vfs`), which reuses upstream's dump, `meta/dump-<UTC>.json.gz` naming and rotation; the Swift engine decides when to call it.
 
 The engine uses JuiceFS `pkg/fs`, `pkg/meta`, `pkg/chunk` and `pkg/object`. `meta_client.go` is an embedding adapter compiled beside the pinned metadata package. It preserves the upstream registered driver constructors while returning initialization errors; upstream `meta.NewClient` terminates the process on such errors, which is unsuitable inside a Mac extension. SDK logging is suppressed and the Swift boundary exposes fixed operation names and POSIX errors, never raw configuration or provider errors.
 

@@ -55,6 +55,7 @@ private final class GatedBackend: StorageBackend {
     private var gates: [String: Gate] = [:]
     private var reported: VolumeCapacity?
     private var failingCapacityCalls = 0
+    private var backups = 0
     init(root: URL) throws { base = try LocalDirectoryBackend(root: root) }
     func gate(_ call: String) -> Gate {
         let gate = Gate()
@@ -94,6 +95,9 @@ private final class GatedBackend: StorageBackend {
     func createDirectory(_ path: String) throws -> FileEntry { try base.createDirectory(path) }
     func move(_ source: String, to destination: String) throws { pass("move " + source); try base.move(source, to: destination) }
     func remove(_ path: String, directory: Bool) throws { try base.remove(path, directory: directory) }
+    /// Stands in for a drive whose index lives on this Mac.
+    var indexBackups: Int { lock.lock(); defer { lock.unlock() }; return backups }
+    func backupIndex(replacing previous: String?) throws -> String? { lock.lock(); backups += 1; lock.unlock(); return "meta/dump" }
 }
 /// Memory standing in for FSKit's read buffer.
 private final class MemoryDestination: ReadDestination {
@@ -345,6 +349,49 @@ private func runHousekeepingChecks(_ base: URL) throws {
     try check(stored.allSatisfy { !Housekeeping.isLocalOnlyName($0) }, "Housekeeping files reached storage: \(stored)")
 }
 
+/// The uploader timer asks the engine for index backups on a writable volume, and never
+/// on a read-only one.
+private func runIndexBackupChecks(_ base: URL) throws {
+    let fixture = base.appendingPathComponent("index-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: fixture) }
+    let remote = fixture.appendingPathComponent("remote")
+    let backend = try GatedBackend(root: remote)
+    try ProfileStore(root: fixture).save(DriveProfile(name: "indexed", backend: .local, localRoot: remote.path))
+    let resource = try FinderMountResource(stateRoot: fixture, requestedProfile: "indexed")
+    func activate(_ volume: StreamDriveVolume) throws {
+        volume.indexCheckNanoseconds = 100_000_000
+        volume.indexBackupPolicy = .immediate
+        let _: FSItem = try response { done in
+            volume.activate(taskOptions: []) { item, error in
+                if let error { done(.failure(error)) } else if let item { done(.success(item)) }
+                else { done(.failure(DriveError(EIO, "Activation returned no root"))) }
+            }
+        }
+    }
+    // A change already published but not backed up, as after a restart.
+    let state = fixture.appendingPathComponent("state")
+    let seeded = try Engine(backend: backend, stateDirectory: state, minFreeBytes: 0)
+    _ = try seeded.create("/published", directory: false)
+    _ = try seeded.write("/published", offset: 0, data: Data("published".utf8))
+    try check(try seeded.flushUploads().isEmpty, "The seeded change did not publish")
+    let readOnly = StreamDriveVolume(stateRoot: fixture, mountResource: resource, readOnly: true, openEngine: { _, _ in
+        try Engine(backend: backend, stateDirectory: state, minFreeBytes: 0)
+    }) { _ in }
+    try activate(readOnly)
+    Thread.sleep(forTimeInterval: 1.5) // past the uploader timer's first tick, at 1 s
+    try call { readOnly.deactivate(options: [], replyHandler: $0) }
+    try check(backend.indexBackups == 0, "A read-only volume backed up the index")
+    let writable = StreamDriveVolume(stateRoot: fixture, mountResource: resource, readOnly: false, openEngine: { _, _ in
+        try Engine(backend: backend, stateDirectory: state, minFreeBytes: 0)
+    }) { _ in }
+    try activate(writable)
+    let deadline = DispatchTime.now() + 10
+    while backend.indexBackups == 0, DispatchTime.now() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+    try call { writable.deactivate(options: [], replyHandler: $0) }
+    try check(backend.indexBackups == 1, "The uploader timer did not back up a pending index change (\(backend.indexBackups))")
+}
+
 @main
 struct VolumeCallbackTests {
     static func main() {
@@ -482,8 +529,9 @@ struct VolumeCallbackTests {
         try check(try attributes(child, volume: volume).size == 5, "Moved child no longer resolves its contents")
         try runUploadChecks(base)
         try runHousekeepingChecks(base)
+        try runIndexBackupChecks(base)
         try runConcurrencyChecks(base)
         try runCapacityChecks(base)
-        print("FSKit callback tests passed: replacement tombstones, removal tombstones, stable IDs, moved descendants, initial size, same-path rename, open-mode tracking, non-blocking synchronize, ordered sync, concurrent reads, rename during read, serial fallback, volume sizes, capacity retried after an offline activation, housekeeping kept local")
+        print("FSKit callback tests passed: replacement tombstones, removal tombstones, stable IDs, moved descendants, initial size, same-path rename, open-mode tracking, non-blocking synchronize, ordered sync, concurrent reads, rename during read, serial fallback, volume sizes, capacity retried after an offline activation, housekeeping kept local, index backups scheduled")
     }
 }

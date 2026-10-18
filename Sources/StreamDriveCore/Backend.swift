@@ -90,6 +90,11 @@ public protocol StorageBackend: AnyObject {
     func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus
     /// Quota-style volume size, or nil when the backend cannot report one.
     func capacity() throws -> VolumeCapacity?
+    /// Uploads a backup of a file index that exists only on this Mac into the storage it
+    /// describes, and returns the backup's key. Nil when the index is not local, so there
+    /// is nothing to back up. `previous` is the last backup's key, for storage that cannot
+    /// list its backups to rotate them.
+    func backupIndex(replacing previous: String?) throws -> String?
 }
 
 public extension StorageBackend {
@@ -103,6 +108,7 @@ public extension StorageBackend {
     }
     func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus { .unknown }
     func capacity() throws -> VolumeCapacity? { nil }
+    func backupIndex(replacing previous: String?) throws -> String? { nil }
 }
 
 public struct DriveError: Error, LocalizedError, Sendable {

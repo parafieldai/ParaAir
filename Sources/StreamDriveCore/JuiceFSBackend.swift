@@ -42,6 +42,8 @@ public final class JuiceFSBackend: StorageBackend {
     /// serial, and close waits there for in-flight calls.
     private let lock = NSLock()
     private var handle: UInt64 = 0
+    /// SQLite metadata lives only on this Mac; the objects alone cannot rebuild names.
+    private let localIndex: Bool
 
     /// Optional live-test payload budget. One identifier shares cumulative
     /// counters across native handles in this process; reopening never resets it.
@@ -133,6 +135,7 @@ public final class JuiceFSBackend: StorageBackend {
         // dlopen handles intentionally remain loaded for this process lifetime.
         callNative = unsafeBitCast(call, to: Call.self)
         freeNative = unsafeBitCast(free, to: Free.self)
+        localIndex = (configuration["metadataURL"] as? String)?.hasPrefix("sqlite3://") == true
         let response = try request(["op": "connect", "config": configuration], requiresHandle: false)
         guard let connected = (response["handle"] as? NSNumber)?.uint64Value, connected != 0 else {
             throw DriveError(EIO, "Native connection returned no handle")
@@ -279,6 +282,16 @@ public final class JuiceFSBackend: StorageBackend {
         let response = try request(["op": "metrics"])
         let data = try JSONSerialization.data(withJSONObject: response["metrics"] ?? [:])
         return try JSONDecoder().decode(Metrics.self, from: data)
+    }
+    /// A JuiceFS metadata dump in the bucket, under the drive's prefix at
+    /// `meta/dump-<UTC>.json.gz`, with JuiceFS's own rotation. Excludes secrets. Storage that
+    /// cannot list (Cloudflare sign-in) keeps only the newest dump, replacing `previous`.
+    public func backupIndex(replacing previous: String?) throws -> String? {
+        guard localIndex else { return nil }
+        guard let key = try request(["op": "backupMeta", "previousBackup": previous ?? ""])["backupKey"] as? String, !key.isEmpty else {
+            throw DriveError(EIO, "The index backup returned no key")
+        }
+        return key
     }
     public func transferMetrics() throws -> TransferMetrics? {
         let value = try metrics()

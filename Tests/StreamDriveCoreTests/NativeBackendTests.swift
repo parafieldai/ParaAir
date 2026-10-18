@@ -25,6 +25,21 @@ final class NativeBackendTests: XCTestCase {
         return (library, root, backend)
     }
 
+    /// A drive whose index is a SQLite file on this Mac backs it up into its own objects.
+    func testEngineBacksUpALocalIndexIntoStorage() throws {
+        let (_, root, backend) = try fixture()
+        let engine = try Engine(backend: backend, stateDirectory: root.appendingPathComponent("client-state"), minFreeBytes: 0)
+        _ = try engine.create("/kept.txt", directory: false)
+        _ = try engine.write("/kept.txt", offset: 0, data: Data("kept".utf8))
+        XCTAssertTrue(try engine.flushUploads().isEmpty)
+        XCTAssertTrue(try engine.backupIndexIfDue(policy: .immediate))
+        let meta = root.appendingPathComponent("volume/objects/streamdrive/meta")
+        let dumps = try FileManager.default.contentsOfDirectory(atPath: meta.path)
+        XCTAssertEqual(dumps.count, 1)
+        XCTAssertTrue(dumps[0].hasPrefix("dump-") && dumps[0].hasSuffix(".json.gz"))
+        XCTAssertNotNil(try engine.status().indexBackup?.lastBackupNanoseconds)
+    }
+
     func testNativeSparseFileListsWithoutDataAndSeeksBeforeFullDownload() throws {
         let (library, root, backend) = try fixture()
         let block = Data(repeating: 0x6f, count: 1_048_576)

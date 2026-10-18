@@ -82,6 +82,8 @@ type request struct {
 	Patches         []patch `json:"patches,omitempty"`
 	Mode            uint16  `json:"mode,omitempty"`
 	Directory       bool    `json:"directory,omitempty"`
+	// backupMeta: the previous dump's key, replaced on storage that cannot rotate.
+	PreviousBackup string `json:"previousBackup,omitempty"`
 }
 type entry struct {
 	Path                string `json:"path"`
@@ -109,6 +111,8 @@ type response struct {
 	Disposition string `json:"disposition,omitempty"`
 	// commitStatus answer: "applied" or "absent".
 	CommitState string `json:"commitState,omitempty"`
+	// backupMeta: the uploaded dump's key under the volume prefix.
+	BackupKey string `json:"backupKey,omitempty"`
 }
 
 const (
@@ -183,10 +187,15 @@ type engine struct {
 	storage      *countingStorage
 	readBytes    atomic.Int64
 	objectBudget *objectBudget
+	// Cloudflare sign-in storage cannot list, so JuiceFS cannot rotate its backups.
+	unlisted bool
 }
 
 // quietLogs silences the embedded SDK's loggers once per process (see connect).
 var quietLogs sync.Once
+
+// backupKey matches the dumps StreamDriveBackup writes; nothing else is ever deleted.
+var backupKey = regexp.MustCompile(`^meta/dump-\d{4}-\d{2}-\d{2}-\d{6}\.json\.gz$`)
 
 var engines = struct {
 	sync.Mutex
@@ -478,7 +487,7 @@ func connect(c config) (*engine, error) {
 		}
 	}()
 	ctx := meta.NewContext(uint32(os.Getpid()), uint32(os.Getuid()), []uint32{uint32(os.Getgid())})
-	e := &engine{fs: jf, meta: m, ctx: ctx, owner: uint64(time.Now().UnixNano()), storage: counted, objectBudget: budget}
+	e := &engine{fs: jf, meta: m, ctx: ctx, owner: uint64(time.Now().UnixNano()), storage: counted, objectBudget: budget, unlisted: cloudflare != nil}
 	if err := jf.MkdirAll(ctx, internalRoot, 0700, 0077); err != 0 {
 		return nil, err
 	}
@@ -813,7 +822,7 @@ func dispatch(r request) response {
 		testHookAfterLocks(r.Op)
 	}
 	var err error
-	if r.Op != "metrics" && r.Op != "identity" {
+	if r.Op != "metrics" && r.Op != "identity" && r.Op != "backupMeta" {
 		r.Path, err = normalized(r.Path)
 		if err != nil {
 			return rejected(err)
@@ -918,6 +927,15 @@ func dispatch(r request) response {
 		out.VolumeIdentity = e.meta.GetFormat().UUID
 		if out.VolumeIdentity == "" {
 			err = syscall.ENOTSUP
+		}
+	case "backupMeta":
+		// The metadata database exists only on this Mac; a dump in the bucket is what
+		// lets the drive be restored if the Mac or its state folder is lost.
+		out.BackupKey, err = vfs.StreamDriveBackup(e.meta, e.storage, time.Now())
+		// Without listing there is no rotation: keep only the newest dump. The engine's
+		// state names the previous one.
+		if err == nil && e.unlisted && r.PreviousBackup != out.BackupKey && backupKey.MatchString(r.PreviousBackup) {
+			_ = e.storage.Delete(context.Background(), r.PreviousBackup)
 		}
 	case "metrics":
 		out.Metrics = &metrics{ObjectReadBytes: e.storage.bytes.Load(), ObjectGetRequests: e.storage.gets.Load(), ApplicationReadBytes: e.readBytes.Load(), ObjectBudget: e.objectBudget.snapshot()}

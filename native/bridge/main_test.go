@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -305,6 +306,99 @@ func TestMetadataAndObjectBackupRestore(t *testing.T) {
 	defer recovered.fs.Close()
 	if got := read(t, recovered, "/preserved", 0, len(payload)); !bytes.Equal(got, payload) {
 		t.Fatal("restored metadata+objects changed content")
+	}
+}
+
+// The bridge's metadata backup uploads a JuiceFS dump that restores the drive into a
+// fresh metadata database on another Mac: names from the dump, data from the objects.
+func TestMetadataBackupUploadsRestorableDump(t *testing.T) {
+	e, c := fixture(t)
+	payload := bytes.Repeat([]byte("indexed"), 4096)
+	write(t, e, "/kept", "", "backup", payload)
+	engines.Lock()
+	engines.next++
+	id := engines.next
+	engines.values[id] = e
+	engines.Unlock()
+	defer func() { engines.Lock(); delete(engines.values, id); engines.Unlock() }()
+	response := dispatch(request{Op: "backupMeta", Handle: id})
+	if !response.OK {
+		t.Fatalf("backupMeta failed: %s", response.Error)
+	}
+	if !strings.HasPrefix(response.BackupKey, "meta/dump-") || !strings.HasSuffix(response.BackupKey, ".json.gz") {
+		t.Fatalf("unexpected backup key %q", response.BackupKey)
+	}
+	compressed, err := os.ReadFile(filepath.Join(c.LocalObjectDirectory, e.meta.GetFormat().Name, response.BackupKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot bytes.Buffer
+	if _, err := snapshot.ReadFrom(reader); err != nil {
+		t.Fatal(err)
+	}
+	restoredURL := "sqlite3://" + filepath.Join(t.TempDir(), "restored.db")
+	restoredMeta, err := meta.NewStreamDriveClient(restoredURL, meta.DefaultConf())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restoredMeta.LoadMeta(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := connect(config{MetadataURL: restoredURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.fs.Close()
+	if got := read(t, recovered, "/kept", 0, len(payload)); !bytes.Equal(got, payload) {
+		t.Fatal("the restored drive changed content")
+	}
+	// A second backup in the same process neither collides nor fails.
+	if again := dispatch(request{Op: "backupMeta", Handle: id}); !again.OK {
+		t.Fatalf("repeated backupMeta failed: %s", again.Error)
+	}
+}
+
+// Storage that cannot list (Cloudflare sign-in) cannot rotate backups, so each backup
+// replaces the previous one; a key that is not a backup is never deleted.
+func TestUnlistedStorageKeepsOnlyTheNewestBackup(t *testing.T) {
+	e, c := fixture(t)
+	e.unlisted = true
+	write(t, e, "/kept", "", "backup", []byte("indexed"))
+	engines.Lock()
+	engines.next++
+	id := engines.next
+	engines.values[id] = e
+	engines.Unlock()
+	defer func() { engines.Lock(); delete(engines.values, id); engines.Unlock() }()
+	prefix := filepath.Join(c.LocalObjectDirectory, e.meta.GetFormat().Name)
+	first := dispatch(request{Op: "backupMeta", Handle: id})
+	if !first.OK {
+		t.Fatalf("backupMeta failed: %s", first.Error)
+	}
+	time.Sleep(1100 * time.Millisecond) // dump names have one-second resolution
+	second := dispatch(request{Op: "backupMeta", Handle: id, PreviousBackup: first.BackupKey})
+	if !second.OK || second.BackupKey == first.BackupKey {
+		t.Fatalf("second backup: %+v", second)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, first.BackupKey)); !os.IsNotExist(err) {
+		t.Fatalf("the previous backup was kept: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, second.BackupKey)); err != nil {
+		t.Fatalf("the newest backup is missing: %v", err)
+	}
+	marker := filepath.Join(prefix, "meta", "notes.txt")
+	if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if third := dispatch(request{Op: "backupMeta", Handle: id, PreviousBackup: "meta/notes.txt"}); !third.OK {
+		t.Fatalf("third backup failed: %s", third.Error)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("a key that is not a backup was deleted: %v", err)
 	}
 }
 

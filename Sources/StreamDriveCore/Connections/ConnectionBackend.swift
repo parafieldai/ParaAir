@@ -198,6 +198,7 @@ final class ConnectionBackend: StorageBackend {
     func createDirectory(_ path: String) throws -> FileEntry { try perform { try $0.createDirectory(path) } }
     func move(_ source: String, to destination: String) throws { try perform { try $0.move(source, to: destination) } }
     func remove(_ path: String, directory: Bool) throws { try perform { try $0.remove(path, directory: directory) } }
+    func backupIndex(replacing previous: String?) throws -> String? { try perform { try $0.backupIndex(replacing: previous) } }
     /// Retired sessions' traffic plus the current session's, from one consistent lease.
     func transferMetrics() throws -> TransferMetrics? {
         let lease = try acquire()
