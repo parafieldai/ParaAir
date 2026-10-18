@@ -288,6 +288,13 @@ public final class Engine {
     /// a journal or fresh metadata answers, or when offline with metadata to fall back on.
     @discardableResult
     private func refreshMetadataIfNeeded(_ path: String, force: Bool = false, exceptPin: String? = nil) throws -> FileEntry? {
+        // Housekeeping files exist only in the local journal; storage is never asked.
+        if Housekeeping.staysLocal(path) {
+            guard try lock.withLock(timeout: 10, { (try db.get("journal", path) as Journal?) != nil }) else {
+                throw DriveError(ENOENT, "No such file")
+            }
+            return nil
+        }
         let (needed, epoch, hasCache) = try lock.withLock(timeout: 10) { () -> (Bool, UInt64, Bool) in
             if let _: Journal = try db.get("journal", path) { return (false, namespaceEpoch, true) }
             let cached: Metadata? = try db.get("metadata", path)
@@ -337,10 +344,14 @@ public final class Engine {
     /// Lists outside the state lock and records the result under it, unless the
     /// namespace changed meanwhile.
     private func list(_ path: String, exceptPin: String?) throws -> [FileEntry] {
+        if Housekeeping.staysLocal(path) {
+            _ = try currentEntry(path) // ENOENT when absent
+            throw DriveError(ENOTDIR, "Not a directory")
+        }
         let (started, epoch) = try lock.withLock(timeout: 10) { (now(), namespaceEpoch) }
         var entries: [FileEntry]
         do {
-            entries = try backend.list(path)
+            entries = try backend.list(path).filter { !Housekeeping.hides($0) }
             try lock.withLock(timeout: 10) {
                 offline = false
                 guard namespaceEpoch == epoch else { return }
@@ -355,7 +366,8 @@ public final class Engine {
         } catch {
             guard isOfflineError(error), let saved: [FileEntry] = try lock.withLock(timeout: 10, { try db.get("listing", path) }) else { throw error }
             try lock.withLock(timeout: 10) { offline = true }
-            entries = saved
+            // Listings saved by earlier versions may still name housekeeping files.
+            entries = saved.filter { !Housekeeping.hides($0) }
         }
         return try lock.withLock(timeout: 10) {
             let pending: [Journal] = try db.all("journal")
@@ -564,6 +576,9 @@ public final class Engine {
     }
     public func create(_ value: String, directory: Bool) throws -> FileEntry {
         let path = try canonicalPath(value)
+        if Housekeeping.isRefused(path) || (directory && Housekeeping.isLocalOnly(path)) {
+            throw DriveError(EACCES, "macOS system folders are not stored on this drive")
+        }
         // Existence checks may refresh metadata, so they run before the state lock.
         do { _ = try stat(path); throw DriveError(EEXIST, "Path already exists") }
         catch let error as DriveError where error.code == ENOENT {} // Only a confirmed missing path permits creation.
@@ -712,7 +727,7 @@ public final class Engine {
         let clock = now(), uptime = DispatchTime.now().uptimeNanoseconds
         let writes = memory.withLock { lastWrite }
         var eligible: [(item: Journal, cutoff: Int64)] = []
-        for item in pending where item.state != "conflict" {
+        for item in pending where item.state != "conflict" && !Housekeeping.staysLocal(item.path) {
             if policy.respectsBackoff, let next = item.nextAttemptAt, clock < next { continue }
             if item.sealed || pressure { eligible.append((item, .max)); continue }
             // After a restart only the persisted wall-clock modification time is known.
@@ -743,6 +758,7 @@ public final class Engine {
     }
     private func syncOne(_ path: String, modifiedNoLaterThan cutoff: Int64 = .max) throws {
         assert(!lock.isHeldByCurrentThread, "Uploads must not run under the drive state lock")
+        guard !Housekeeping.staysLocal(path) else { return }
         try legacyUploadLock.withShared {
         let pathLock = try uploadLock(for: path)
         try pathLock.withLock {
@@ -848,7 +864,7 @@ public final class Engine {
     public func uploads() throws -> [UploadRecord] {
         try lock.withLock {
             let pending: [Journal] = try db.all("journal")
-            return pending.map { item in
+            return pending.filter { !Housekeeping.staysLocal($0.path) }.map { item in
                 UploadRecord(transactionID: item.transactionID, path: item.path, logicalSize: item.size,
                              pendingBytes: item.segments.reduce(0) { $0 + DurableIO.allocatedBytes(journal.appendingPathComponent($1.blob)) },
                              state: item.state, lastError: item.lastError, lastErrno: item.lastErrno)
@@ -859,12 +875,20 @@ public final class Engine {
     /// excludes the local journal, which still has to upload.
     public func capacity() throws -> VolumeCapacity? {
         guard var value = try backend.capacity() else { return nil }
-        let pending = try lock.withLock { try directoryAllocation(journal) }
+        let pending = try lock.withLock { try uploadableJournalAllocation() }
         value.availableBytes = max(0, value.availableBytes - pending)
         return value
     }
     public func move(_ source: String, to destination: String) throws {
         let from = try canonicalPath(source), to = try canonicalPath(destination)
+        if Housekeeping.isRefused(from) { throw DriveError(ENOENT, "No such file") }
+        if Housekeeping.isRefused(to) { throw DriveError(EACCES, "macOS system folders are not stored on this drive") }
+        let localFrom = Housekeeping.isLocalOnly(from), localTo = Housekeeping.isLocalOnly(to)
+        if localFrom || localTo {
+            // AppleDouble companions follow their file's renames, so both ends stay on this Mac.
+            guard localFrom && localTo else { throw DriveError(EACCES, "macOS housekeeping files stay on this Mac") }
+            return try moveLocal(from, to: to)
+        }
         if from == to, from != "/" { _ = try stat(from); return }
         guard from != "/", to != "/", !contains(from, to) else { throw DriveError(EINVAL, "Invalid rename") }
         try settleChanges(under: [from, to])
@@ -872,11 +896,12 @@ public final class Engine {
             // Namespace changes require connectivity. Flush affected files first
             // so rename cannot orphan a journal or erase an acknowledged save.
             let pending: [Journal] = try db.all("journal")
-            guard !pending.contains(where: { contains(from, $0.path) || contains(to, $0.path) }) else {
+            guard !pending.contains(where: { !Housekeeping.staysLocal($0.path) && (contains(from, $0.path) || contains(to, $0.path)) }) else {
                 throw DriveError(EBUSY, "File changed during rename preparation; retry after saving")
             }
             namespaceEpoch &+= 1
             try backend.move(from, to: to)
+            try rekeyLocalFiles(pending, from: from, to: to)
             try db.clear("metadata"); try invalidateListings()
             // Cached content remains evictable; pin snapshots must be recreated.
             try invalidatePins(under: from); try invalidatePins(under: to)
@@ -885,16 +910,65 @@ public final class Engine {
     public func remove(_ value: String, directory: Bool) throws {
         let path = try canonicalPath(value)
         guard path != "/" else { throw DriveError(EBUSY, "Cannot remove the drive root") }
+        if Housekeeping.staysLocal(path) {
+            try lock.withLock {
+                guard (try db.get("journal", path) as Journal?) != nil else { throw DriveError(ENOENT, "No such file") }
+                namespaceEpoch &+= 1
+                try db.delete("journal", path); try recoverOrphans()
+            }
+            return
+        }
         try settleChanges(under: [path])
         try lock.withLock {
             let pending: [Journal] = try db.all("journal")
-            guard !pending.contains(where: { contains(path, $0.path) }) else {
+            guard !pending.contains(where: { !Housekeeping.staysLocal($0.path) && contains(path, $0.path) }) else {
                 throw DriveError(EBUSY, "File changed during removal preparation; retry after saving")
             }
             namespaceEpoch &+= 1
-            try backend.remove(path, directory: directory)
+            do { try backend.remove(path, directory: directory) }
+            catch let error as DriveError where directory && error.code == ENOTEMPTY {
+                // Earlier versions stored housekeeping files. They are hidden now, but
+                // storage still counts them, so a folder holding only those is emptied.
+                let leftovers = try backend.list(path)
+                guard !leftovers.isEmpty, leftovers.allSatisfy(Housekeeping.hides) else { throw error }
+                for entry in leftovers { try backend.remove(entry.path, directory: entry.kind == .directory) }
+                try backend.remove(path, directory: true)
+            }
+            try db.transaction {
+                for item in pending where Housekeeping.staysLocal(item.path) && contains(path, item.path) { try db.delete("journal", item.path) }
+            }
+            try recoverOrphans()
             try db.clear("metadata"); try invalidateListings(); try invalidatePins(under: path)
         }
+    }
+    /// Renames a local-only file. The destination folder must exist; an existing
+    /// local-only destination is replaced, as rename(2) does.
+    private func moveLocal(_ from: String, to: String) throws {
+        _ = try stat(parent(to))
+        try lock.withLock {
+            guard var item: Journal = try db.get("journal", from) else { throw DriveError(ENOENT, "No such file") }
+            guard from != to else { return }
+            namespaceEpoch &+= 1
+            item.path = to
+            try db.transaction { try db.delete("journal", from); try db.put("journal", to, item) }
+            try recoverOrphans()
+        }
+        touched(to)
+    }
+    /// After a rename in storage, local-only files inside `from` follow it, and those
+    /// inside a replaced `to` go with it.
+    private func rekeyLocalFiles(_ pending: [Journal], from: String, to: String) throws {
+        let local = pending.filter { Housekeeping.staysLocal($0.path) }
+        guard !local.isEmpty else { return }
+        try db.transaction {
+            for item in local where contains(to, item.path) { try db.delete("journal", item.path) }
+            for var item in local where item.path != from && contains(from, item.path) {
+                try db.delete("journal", item.path)
+                item.path = to + item.path.dropFirst(from.count)
+                try db.put("journal", item.path, item)
+            }
+        }
+        try recoverOrphans()
     }
     private func settleChanges(under paths: [String]) throws {
         let pending: [Journal] = try lock.withLock { try db.all("journal") }
@@ -903,6 +977,8 @@ public final class Engine {
     private func invalidateListings() throws { try db.clear("listing") }
     /// Marks pins covering `path` incomplete. A pin in progress learns of it at completion.
     private func invalidatePins(under path: String, except pinning: String? = nil) throws {
+        // Finder rewriting .DS_Store in a pinned folder changes nothing a pin holds.
+        guard !Housekeeping.staysLocal(path) else { return }
         let pins: [PinStatus] = try db.all("pin")
         for var pin in pins where pin.path != pinning && (contains(path, pin.path) || contains(pin.path, path)) {
             pin.complete = false; pin.lastError = "Content or namespace changed; pin again to refresh the offline snapshot"
@@ -923,7 +999,9 @@ public final class Engine {
             var pinnedFiles = Set<String>()
             while let next = stack.popLast() {
                 guard let entry = try pinnedEntry(next, pin: path) else { throw DriveError(EBUSY, "Upload pending edits before pinning") }
-                if entry.kind == .directory { stack.append(contentsOf: try list(next, exceptPin: path).map(\.path)); continue }
+                if entry.kind == .directory {
+                    stack.append(contentsOf: try list(next, exceptPin: path).map(\.path).filter { !Housekeeping.staysLocal($0) }); continue
+                }
                 var offset: Int64 = 0
                 while offset < entry.size {
                     _ = try block(entry, offset: offset, key: blockKey(entry, offset: offset), cachedLength: nil, mustPersist: true)
@@ -940,7 +1018,7 @@ public final class Engine {
             }
             try lock.withLock {
                 let pending: [Journal] = try db.all("journal")
-                if pending.contains(where: { contains(path, $0.path) }) {
+                if pending.contains(where: { !Housekeeping.staysLocal($0.path) && contains(path, $0.path) }) {
                     throw DriveError(EBUSY, "Files changed while pinning; pin again after they upload")
                 }
                 // invalidatePins records a change on the pin's row; an unpin removes it.
@@ -998,7 +1076,7 @@ public final class Engine {
         try lock.withLock {
             try persistTraffic()
             let sizes = try allocatedCache(), uploads = try uploads()
-            let pending = try directoryAllocation(journal)
+            let pending = try uploadableJournalAllocation()
             let total = try directoryAllocation(root)
             let traffic: TransferMetrics = try db.get("metrics", "traffic") ?? TransferMetrics()
             return DriveStatus(cacheBytes: sizes.evictable, pinnedBytes: sizes.pinned, pendingWriteBytes: pending,
@@ -1171,6 +1249,13 @@ public final class Engine {
         var count: Int64 = 0
         while let file = files.nextObject() as? URL { count += DurableIO.allocatedBytes(file) }
         return count
+    }
+    /// Journal bytes that still have to upload: everything but local-only files.
+    private func uploadableJournalAllocation() throws -> Int64 {
+        let pending: [Journal] = try db.all("journal")
+        let local = pending.filter { Housekeeping.staysLocal($0.path) }.flatMap(\.segments)
+            .reduce(Int64(0)) { $0 + DurableIO.allocatedBytes(journal.appendingPathComponent($1.blob)) }
+        return max(0, try directoryAllocation(journal) - local)
     }
     private func recoverOrphans() throws {
         let pending: [Journal] = try db.all("journal"), blocks: [Block] = try db.all("block")

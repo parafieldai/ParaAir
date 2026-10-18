@@ -314,6 +314,37 @@ private func probeIdentifier(_ root: URL) throws -> UUID {
     }
 }
 
+/// macOS housekeeping through FSKit: Finder's .DS_Store and the refresh name ParaAir
+/// creates to make Finder re-read a folder stay local, and synchronize still succeeds.
+private func runHousekeepingChecks(_ base: URL) throws {
+    let fixture = base.appendingPathComponent("housekeeping-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: fixture) }
+    let remote = fixture.appendingPathComponent("remote")
+    let backend = try LocalDirectoryBackend(root: remote)
+    try ProfileStore(root: fixture).save(DriveProfile(name: "housekeeping", backend: .local, localRoot: remote.path))
+    let engine = try Engine(backend: backend, stateDirectory: fixture.appendingPathComponent("state"), minFreeBytes: 0)
+    let volume = StreamDriveVolume(stateRoot: fixture, mountResource: try FinderMountResource(stateRoot: fixture, requestedProfile: "housekeeping"),
+                                   readOnly: false, engine: engine) { _ in }
+    let root = DriveItem(path: "/", identifier: .rootDirectory)
+    func create(_ name: String) throws -> FSItem {
+        try response { done in
+            volume.createItem(named: FSFileName(string: name), type: .file, inDirectory: root, attributes: FSItem.SetAttributesRequest()) { item, _, error in
+                if let error { done(.failure(error)) } else if let item { done(.success(item)) }
+                else { done(.failure(DriveError(EIO, "Create returned no item"))) }
+            }
+        }
+    }
+    let refresh = try create(Housekeeping.refreshName)
+    try call { volume.removeItem(refresh, named: FSFileName(string: Housekeeping.refreshName), fromDirectory: root, replyHandler: $0) }
+    let layout = try create(".DS_Store")
+    try call { done in volume.write(contents: Data("layout".utf8), to: layout, at: 0) { _, error in done(error) } }
+    try call { volume.synchronize(flags: .wait, replyHandler: $0) }
+    try check(try read(layout, volume: volume, length: 16) == Data("layout".utf8), "A local .DS_Store lost its contents")
+    let stored = (try? FileManager.default.contentsOfDirectory(atPath: remote.path)) ?? []
+    try check(stored.allSatisfy { !Housekeeping.isLocalOnlyName($0) }, "Housekeeping files reached storage: \(stored)")
+}
+
 @main
 struct VolumeCallbackTests {
     static func main() {
@@ -450,8 +481,9 @@ struct VolumeCallbackTests {
         try check((child as? DriveItem)?.path == "/moved/child", "Directory rename left a stale child path")
         try check(try attributes(child, volume: volume).size == 5, "Moved child no longer resolves its contents")
         try runUploadChecks(base)
+        try runHousekeepingChecks(base)
         try runConcurrencyChecks(base)
         try runCapacityChecks(base)
-        print("FSKit callback tests passed: replacement tombstones, removal tombstones, stable IDs, moved descendants, initial size, same-path rename, open-mode tracking, non-blocking synchronize, ordered sync, concurrent reads, rename during read, serial fallback, volume sizes, capacity retried after an offline activation")
+        print("FSKit callback tests passed: replacement tombstones, removal tombstones, stable IDs, moved descendants, initial size, same-path rename, open-mode tracking, non-blocking synchronize, ordered sync, concurrent reads, rename during read, serial fallback, volume sizes, capacity retried after an offline activation, housekeeping kept local")
     }
 }
