@@ -11,7 +11,7 @@ import (
 func owned(t *testing.T) (*engine, config, uint64) {
 	t.Helper()
 	_, c := fixture(t)
-	c.OwnerID, c.OwnerName = "mac-a", "Studio Mac"
+	c.OwnerID, c.OwnerName, c.DriveName = "mac-a", "Studio Mac", "Studio"
 	e, err := connect(c)
 	if err != nil {
 		t.Fatal(err)
@@ -27,14 +27,17 @@ func owned(t *testing.T) (*engine, config, uint64) {
 }
 
 func TestConnectClaimsAnUnownedDrive(t *testing.T) {
-	e, c, _ := owned(t)
+	e, c, id := owned(t)
 	record, err := readOwner(e.storage)
-	if err != nil || record == nil || record.ID != "mac-a" || record.Name != "Studio Mac" || time.Since(record.At) > time.Minute {
+	if err != nil || record == nil || record.ID != "mac-a" || record.Name != "Studio Mac" || record.Drive != "Studio" || time.Since(record.At) > time.Minute {
 		t.Fatalf("owner after connect: %+v, %v", record, err)
 	}
 	reported := dispatch(request{Op: "driveOwner", Config: config{LocalObjectDirectory: c.LocalObjectDirectory, VolumeName: e.meta.GetFormat().Name}})
 	if !reported.OK || reported.Owner == nil || reported.Owner.ID != "mac-a" {
 		t.Fatalf("driveOwner: %+v", reported)
+	}
+	if state := dispatch(request{Op: "ownership", Handle: id}); !state.OK || state.OwnedElsewhere {
+		t.Fatalf("ownership of an own drive: %+v", state)
 	}
 }
 
@@ -45,13 +48,16 @@ func TestWritesStopOnceAnotherMacOwnsTheDrive(t *testing.T) {
 	if made := dispatch(request{Op: "mkdir", Handle: id, Path: "/before"}); !made.OK {
 		t.Fatalf("mkdir as owner failed: %s", made.Error)
 	}
-	if err := writeOwner(e.storage, "mac-b", "Laptop"); err != nil {
+	if err := writeOwner(e.storage, "mac-b", "Laptop", "Studio"); err != nil {
 		t.Fatal(err)
 	}
 	saved := ownerRecheck
 	ownerRecheck = 0
 	defer func() { ownerRecheck = saved }()
 	expectErrno(t, dispatch(request{Op: "mkdir", Handle: id, Path: "/after"}), syscall.EROFS)
+	if state := dispatch(request{Op: "ownership", Handle: id}); !state.OK || !state.OwnedElsewhere || state.OwnerName != "Laptop" {
+		t.Fatalf("ownership after a takeover: %+v", state)
+	}
 	expectErrno(t, dispatch(request{Op: "backupMeta", Handle: id}), syscall.EROFS)
 	expectErrno(t, dispatch(request{Op: "rename", Handle: id, Path: "/before", Destination: "/renamed"}), syscall.EROFS)
 	if listed := dispatch(request{Op: "list", Handle: id, Path: "/"}); !listed.OK {
@@ -72,5 +78,19 @@ func TestRecoveryRecordsTheNewOwner(t *testing.T) {
 	}
 	if record, err := readOwner(e.storage); err != nil || record == nil || record.ID != "mac-b" || record.Name != "Laptop" {
 		t.Fatalf("owner after recovery: %+v, %v", record, err)
+	}
+}
+
+// An idle drive learns of a takeover when asked to refresh, without trying a write.
+func TestRefreshedOwnershipSeesATakeoverWithoutWriting(t *testing.T) {
+	e, _, id := owned(t)
+	if err := writeOwner(e.storage, "mac-b", "Laptop", "Studio"); err != nil {
+		t.Fatal(err)
+	}
+	if cached := dispatch(request{Op: "ownership", Handle: id}); !cached.OK || cached.OwnedElsewhere {
+		t.Fatalf("a cached answer read the bucket: %+v", cached)
+	}
+	if fresh := dispatch(request{Op: "ownership", Handle: id, Refresh: true}); !fresh.OK || !fresh.OwnedElsewhere || fresh.OwnerName != "Laptop" {
+		t.Fatalf("refreshed ownership: %+v", fresh)
 	}
 }

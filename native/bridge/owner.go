@@ -35,6 +35,8 @@ type ownerRecord struct {
 	ID   string    `json:"id"`
 	Name string    `json:"name"`
 	At   time.Time `json:"at"`
+	// The drive's name in Finder, so another Mac can tell drives apart.
+	Drive string `json:"drive,omitempty"`
 }
 
 // readOwner returns nil when the drive has no owner record yet.
@@ -58,9 +60,9 @@ func readOwner(volume object.ObjectStorage) (*ownerRecord, error) {
 	return &record, nil
 }
 
-func writeOwner(volume object.ObjectStorage, id, name string) error {
+func writeOwner(volume object.ObjectStorage, id, name, drive string) error {
 	// Whole seconds: every ISO 8601 decoder reads them, fractions not always.
-	value, err := json.Marshal(ownerRecord{ID: id, Name: name, At: time.Now().UTC().Truncate(time.Second)})
+	value, err := json.Marshal(ownerRecord{ID: id, Name: name, At: time.Now().UTC().Truncate(time.Second), Drive: drive})
 	if err != nil {
 		return err
 	}
@@ -81,7 +83,7 @@ func isNotFound(err error) bool {
 }
 
 // claimOwner runs at connect. Offline, nothing is claimed and the first write checks.
-func (e *engine) claimOwner(name string) {
+func (e *engine) claimOwner(name, drive string) {
 	if e.ownerID == "" {
 		return
 	}
@@ -91,9 +93,10 @@ func (e *engine) claimOwner(name string) {
 	}
 	if record != nil && record.ID != e.ownerID {
 		e.foreign.Store(true)
+		e.foreignName.Store(&record.Name)
 	} else {
 		e.foreign.Store(false)
-		_ = writeOwner(e.storage, e.ownerID, name)
+		_ = writeOwner(e.storage, e.ownerID, name, drive)
 	}
 	e.ownerChecked.Store(time.Now().UnixNano())
 }
@@ -111,6 +114,9 @@ func (e *engine) ensureOwner() error {
 			return err
 		}
 		e.foreign.Store(record != nil && record.ID != e.ownerID)
+		if record != nil {
+			e.foreignName.Store(&record.Name)
+		}
 		e.ownerChecked.Store(now)
 	}
 	if e.foreign.Load() {

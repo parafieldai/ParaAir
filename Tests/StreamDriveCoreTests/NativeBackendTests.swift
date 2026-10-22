@@ -88,18 +88,22 @@ final class NativeBackendTests: XCTestCase {
         XCTAssertEqual(try JuiceFSBackend.driveOwner(libraryURL: library, configuration: lookup)?.id, studio.id)
         try claimed.close()
 
-        let laptop = DriveOwner(id: UUID().uuidString.lowercased(), name: "Laptop")
+        let laptop = DriveOwner(id: UUID().uuidString.lowercased(), name: "Laptop", driveName: "Studio Projects")
         _ = try JuiceFSBackend.restoreLocal(libraryURL: library, metadataURL: root.appendingPathComponent("laptop.sqlite3"),
                                             objectDirectory: objects, volume: "streamdrive", owner: laptop)
         let recorded = try XCTUnwrap(try JuiceFSBackend.driveOwner(libraryURL: library, configuration: lookup))
         XCTAssertEqual(recorded.id, laptop.id)
         XCTAssertEqual(recorded.name, "Laptop")
+        XCTAssertEqual(recorded.drive, "Studio Projects")
+        let listed = try JuiceFSBackend.listDrives(libraryURL: library, configuration: ["localObjectDirectory": objects.path])
+        XCTAssertEqual(listed.first?.owner?.drive, "Studio Projects", "the drive list names the drive")
 
         let returning = try JuiceFSBackend(libraryURL: library, metadataURL: original, owner: studio)
         defer { try? returning.close() }
         XCTAssertEqual(try returning.stat("/kept.txt").size, 4)
         XCTAssertThrowsError(try returning.createDirectory("/after")) { XCTAssertEqual(($0 as? DriveError)?.code, EROFS) }
         XCTAssertThrowsError(try returning.backupIndex(replacing: nil)) { XCTAssertEqual(($0 as? DriveError)?.code, EROFS) }
+        XCTAssertEqual(try returning.ownership(refresh: true), StorageOwnership(ownedElsewhere: true, ownerName: "Laptop"))
         XCTAssertEqual(try JuiceFSBackend.driveOwner(libraryURL: library, configuration: lookup)?.id, laptop.id)
     }
 

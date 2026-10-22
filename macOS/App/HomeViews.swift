@@ -381,6 +381,9 @@ private struct AdvancedControls: View {
                 Text(details.stateFolder).font(.caption.monospaced()).textSelection(.enabled)
                     .lineLimit(2).truncationMode(.middle)
             }
+            if let backup = input.indexBackup {
+                LabeledContent("Index backup") { Text(backup.value).textSelection(.enabled) }
+            }
             LabeledContent("Version") {
                 HStack(spacing: 10) {
                     Text(details.version).monospacedDigit().textSelection(.enabled)

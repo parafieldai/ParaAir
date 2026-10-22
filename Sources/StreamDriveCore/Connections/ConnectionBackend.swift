@@ -200,6 +200,8 @@ final class ConnectionBackend: StorageBackend {
     func move(_ source: String, to destination: String) throws { try perform { try $0.move(source, to: destination) } }
     func remove(_ path: String, directory: Bool) throws { try perform { try $0.remove(path, directory: directory) } }
     func backupIndex(replacing previous: String?) throws -> String? { try perform { try $0.backupIndex(replacing: previous) } }
+    /// Only from the current session: asking must never open one.
+    func ownership(refresh: Bool) throws -> StorageOwnership? { try lock.withLock { session }?.backend.ownership(refresh: refresh) }
     /// Retired sessions' traffic plus the current session's, from one consistent lease.
     func transferMetrics() throws -> TransferMetrics? {
         let lease = try acquire()
@@ -251,8 +253,9 @@ public enum ConnectedDrive {
     /// Another Mac seen as the drive's owner within this long is assumed to be using it.
     public static let ownerActiveSeconds: TimeInterval = 86_400
 
-    public static func recover(name: String, volume: String, connectionID: String, stateRoot: URL, libraryURL: URL,
-                               backupKey: String? = nil, takeOver: Bool = false, vault: any ConnectionVault = KeychainConnectionVault(),
+    public static func recover(name: String, finderName: String? = nil, volume: String, connectionID: String, stateRoot: URL,
+                               libraryURL: URL, backupKey: String? = nil, takeOver: Bool = false,
+                               vault: any ConnectionVault = KeychainConnectionVault(),
                                now: Date = Date()) throws -> (profile: DriveProfile, backupKey: String) {
         try DriveProfile.validateName(name)
         let profiles = ProfileStore(root: stateRoot)
@@ -260,14 +263,16 @@ public enum ConnectedDrive {
             throw DriveError(EEXIST, "This Finder state folder already has a drive. Choose another state folder for another drive.")
         }
         let (record, secrets) = try ConnectionStore(root: stateRoot).credentials(connectionID, vault: vault)
-        let owner = try DriveOwner.load(directory: Engine.stateDirectory(profileName: name, stateRoot: stateRoot))
+        let owner = try DriveOwner.load(directory: Engine.stateDirectory(profileName: name, stateRoot: stateRoot), driveName: finderName ?? name)
         if !takeOver, let current = try JuiceFSBackend.driveOwner(libraryURL: libraryURL, connection: record, secrets: secrets, volume: volume),
            current.id != owner.id, now.timeIntervalSince(current.at) < ownerActiveSeconds {
-            let seen = ISO8601DateFormatter().string(from: current.at)
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .full
+            let seen = formatter.localizedString(for: min(current.at, now), relativeTo: now)
             // A Mac that lost its state folder has a new owner ID but the same name.
             let thisMac = current.name == owner.name ? " If that is this Mac, whose ParaAir state was lost, taking it over is safe." : ""
-            throw DriveError(EBUSY, "This drive was in use on \(current.name) (last seen \(seen)). Quit ParaAir there first, or take it over; " +
-                             "that Mac then stops writing to it, and its changes since the last backup stay on it." + thisMac)
+            throw DriveError(EBUSY, "\(current.name) used this drive \(seen). Quit ParaAir there first, or take the drive over: "
+                             + "\(current.name) then stops changing it, and changes made there since the last backup stay on that Mac." + thisMac)
         }
         let metadataDirectory = stateRoot.appendingPathComponent("metadata", isDirectory: true)
         try DurableIO.directory(metadataDirectory)

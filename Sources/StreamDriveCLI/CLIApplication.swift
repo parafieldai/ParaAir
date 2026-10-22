@@ -59,7 +59,10 @@ final class CLIApplication {
         case .storedDrives(let connection, let library):
             let drives = try ConnectedDrive.storedDrives(connectionID: connection, stateRoot: stateRoot,
                                                         libraryURL: NativeLibraryLocation.resolve(configured: library.map(absolutePath), stateRoot: stateRoot))
-            let text = drives.map { "\($0.volume)\t\($0.latestBackup)" }.joined(separator: "\n")
+            let text = drives.map { drive in
+                let owner = drive.owner.map { "last used on \(displayName($0.name)) \(ISO8601DateFormatter().string(from: $0.at))" } ?? "no owner recorded"
+                return "\(drive.volume)\t\(displayName(drive.owner?.drive ?? "-"))\t\(owner)\t\(drive.latestBackup)"
+            }.joined(separator: "\n")
             return try render(drives, invocation: invocation, text: text.isEmpty ? "No backed-up drives in this bucket.\n" : text + "\n")
         case .recover(let name, let connection, let volume, let backup, let takeOver, let library):
             let recovered = try ConnectedDrive.recover(name: name, volume: volume, connectionID: connection, stateRoot: stateRoot,
@@ -242,7 +245,8 @@ final class CLIApplication {
         "Cache: \(humanBytes(value.drive.cacheBytes)) / \(humanBytes(value.drive.cacheLimitBytes)); pins: \(humanBytes(value.drive.pinnedBytes)); pending writes: \(humanBytes(value.drive.pendingWriteBytes)).\n" +
         "App state: \(humanBytes(value.drive.stateBytes)); total local allocation: \(humanBytes(value.drive.totalAllocatedBytes)); available: \(humanBytes(value.drive.availableBytes)).\n" +
         "Uploads: \(value.drive.pendingUploads); conflicts: \(value.drive.conflictedUploads). Network connectivity was not probed.\n" +
-        indexBackupText(value.drive.indexBackup)
+        indexBackupText(value.drive.indexBackup) +
+        (value.drive.ownedElsewhere.map { "Now used on \(displayName($0.ownerName ?? "another Mac")); read-only on this Mac.\n" } ?? "")
     }
     /// Drives whose index lives on this Mac back it up into their own storage.
     private func indexBackupText(_ value: IndexBackupStatus?) -> String {

@@ -29,6 +29,8 @@ var volumeName = regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]$`)
 type storedDrive struct {
 	Volume       string `json:"volume"`
 	LatestBackup string `json:"latestBackup"`
+	// From the owner record, when the drive has one.
+	Owner *ownerRecord `json:"owner,omitempty"`
 }
 
 // bucketStorage opens the bucket a connection names, without any drive's index, and
@@ -160,7 +162,7 @@ func restoreMeta(c config) (key string, identity string, err error) {
 	}
 	// The recovered drive is this Mac's now; another Mac that had it stops writing.
 	if c.OwnerID != "" {
-		if err := writeOwner(volume, c.OwnerID, c.OwnerName); err != nil {
+		if err := writeOwner(volume, c.OwnerID, c.OwnerName, c.DriveName); err != nil {
 			return "", "", err
 		}
 	}
@@ -189,8 +191,10 @@ func listDrives(c config) ([]storedDrive, error) {
 	}
 	drives := []storedDrive{}
 	for _, name := range candidates {
-		if key, err := latestBackup(object.WithPrefix(blob, name+"/"), true); err == nil {
-			drives = append(drives, storedDrive{Volume: name, LatestBackup: key})
+		volume := object.WithPrefix(blob, name+"/")
+		if key, err := latestBackup(volume, true); err == nil {
+			owner, _ := readOwner(volume) // optional: a name to show
+			drives = append(drives, storedDrive{Volume: name, LatestBackup: key, Owner: owner})
 		}
 	}
 	return drives, nil

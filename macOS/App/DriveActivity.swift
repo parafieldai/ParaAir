@@ -14,13 +14,15 @@ struct UploadActivity: Equatable, Sendable {
     var blockedAuth = 0
     /// The file changed elsewhere; the local copy is kept and never uploads by itself.
     var conflicts = 0
+    /// Saved before another Mac took over the drive: storage refuses them (EROFS).
+    var blockedElsewhere = 0
     /// Any other failure, retried with the next attempt.
     var failedOther = 0
     var pendingBytes: Int64 = 0
 
-    init(waiting: Int = 0, blockedQuota: Int = 0, blockedAuth: Int = 0, conflicts: Int = 0, failedOther: Int = 0,
+    init(waiting: Int = 0, blockedQuota: Int = 0, blockedAuth: Int = 0, blockedElsewhere: Int = 0, conflicts: Int = 0, failedOther: Int = 0,
          pendingBytes: Int64 = 0) {
-        self.waiting = waiting; self.blockedQuota = blockedQuota; self.blockedAuth = blockedAuth
+        self.waiting = waiting; self.blockedQuota = blockedQuota; self.blockedAuth = blockedAuth; self.blockedElsewhere = blockedElsewhere
         self.conflicts = conflicts; self.failedOther = failedOther; self.pendingBytes = pendingBytes
     }
 
@@ -29,13 +31,21 @@ struct UploadActivity: Equatable, Sendable {
             if upload.state == "conflict" { conflicts += 1 }
             else if upload.lastErrno == EDQUOT { blockedQuota += 1 }
             else if upload.lastErrno == EACCES { blockedAuth += 1 }
+            else if upload.lastErrno == EROFS { blockedElsewhere += 1 }
             else if upload.lastErrno == nil { waiting += 1 }
             else { failedOther += 1 }
             pendingBytes += upload.pendingBytes
         }
     }
 
-    var total: Int { waiting + blockedQuota + blockedAuth + conflicts + failedOther }
+    var total: Int { waiting + blockedQuota + blockedAuth + blockedElsewhere + conflicts + failedOther }
+}
+
+/// What the drive's own state says beyond uploads: its index backup (drives whose index
+/// is on this Mac) and whether another Mac now owns it.
+struct DriveNotices: Equatable, Sendable {
+    var indexBackup: IndexBackupStatus?
+    var ownedElsewhere: OwnedElsewhere?
 }
 
 /// Polls the selected drive's upload journal every 30 seconds. One `Engine` is kept per
@@ -45,6 +55,7 @@ struct UploadActivity: Equatable, Sendable {
 @MainActor
 final class DriveActivityMonitor: ObservableObject {
     @Published private(set) var activity: UploadActivity?
+    @Published private(set) var notices: DriveNotices?
 
     private struct Target: Equatable { let stateRoot: URL; let profile: DriveProfile }
     /// Engine is not Sendable; each box is used by one poll at a time.
@@ -92,7 +103,7 @@ final class DriveActivityMonitor: ObservableObject {
     }
 
     func stop() {
-        target = nil; activity = nil; engines = [:]
+        target = nil; activity = nil; notices = nil; engines = [:]
         loop?.cancel(); loop = nil
     }
 
@@ -101,17 +112,20 @@ final class DriveActivityMonitor: ObservableObject {
         polling = true; defer { polling = false }
         let key = target.stateRoot.path + "\0" + target.profile.name
         let existing = engines[key].flatMap { $0.profile == target.profile ? $0 : nil }
-        let result: Result<(UploadActivity, EngineBox), Error> = await Task.detached(priority: .utility) {
+        let result: Result<(UploadActivity, DriveNotices, EngineBox), Error> = await Task.detached(priority: .utility) {
             do {
                 let box = try existing ?? EngineBox(engine: Engine.open(profile: target.profile, stateRoot: target.stateRoot),
                                                     profile: target.profile)
-                return .success((UploadActivity(try box.engine.uploads()), box))
+                let saved = try box.engine.notices()
+                return .success((UploadActivity(try box.engine.uploads()),
+                                 DriveNotices(indexBackup: saved.indexBackup, ownedElsewhere: saved.ownedElsewhere), box))
             } catch { return .failure(error) }
         }.value
         guard self.target == target else { return }
         switch result {
-        case .success(let (next, box)):
+        case .success(let (next, saved, box)):
             engines = [key: box]
+            if notices != saved { notices = saved }
             let previous = activity
             activity = next
             if previous != next {

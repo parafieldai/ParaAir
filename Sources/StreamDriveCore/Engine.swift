@@ -70,6 +70,14 @@ public struct IndexBackupPolicy: Sendable, Equatable {
     public static let immediate = IndexBackupPolicy(quietNanoseconds: 0, maxDelayNanoseconds: 0, minIntervalNanoseconds: 0, retryNanoseconds: 0)
 }
 
+/// Another Mac recovered this drive and owns it now: this Mac reads it but refuses new
+/// changes, because they could never upload.
+public struct OwnedElsewhere: Codable, Sendable, Equatable {
+    public var ownerName: String?
+    /// Wall-clock nanoseconds when this Mac learned it.
+    public var seenNanoseconds: Int64
+}
+
 /// The last index backup of a drive whose index lives only on this Mac.
 public struct IndexBackupStatus: Codable, Sendable, Equatable {
     /// Wall-clock nanoseconds of the last successful backup.
@@ -77,6 +85,11 @@ public struct IndexBackupStatus: Codable, Sendable, Equatable {
     /// Set while changes that reached storage are not in a backup yet.
     public var pendingSinceNanoseconds: Int64?
     public var lastError: String?
+    public var lastErrno: Int32?
+    public init(lastBackupNanoseconds: Int64? = nil, pendingSinceNanoseconds: Int64? = nil, lastError: String? = nil, lastErrno: Int32? = nil) {
+        self.lastBackupNanoseconds = lastBackupNanoseconds; self.pendingSinceNanoseconds = pendingSinceNanoseconds
+        self.lastError = lastError; self.lastErrno = lastErrno
+    }
 }
 
 public struct PinStatus: Codable, Sendable {
@@ -106,6 +119,8 @@ public struct DriveStatus: Codable, Sendable {
     public var objectGetRequests: Int64
     /// Nil for drives whose index is not on this Mac (ParaAir Cloud, local folders).
     public var indexBackup: IndexBackupStatus? = nil
+    /// Set once another Mac owns the drive.
+    public var ownedElsewhere: OwnedElsewhere? = nil
 }
 
 private struct Segment: Codable { var offset: Int64; var length: Int64; var blob: String }
@@ -223,6 +238,8 @@ public final class Engine {
     private var lastWrite: [String: UInt64] = [:]
     private var lastProbe: UInt64?
     private var indexBackupRunning = false
+    /// The last ownership answer and its uptime, for 10 s.
+    private var ownershipChecked: (uptime: UInt64, value: OwnedElsewhere?)?
     private let cacheLimit: Int64
     private let reserve: Int64
     private let blockSize: Int
@@ -602,6 +619,7 @@ public final class Engine {
 
     @discardableResult public func write(_ value: String, offset: Int64, data: Data) throws -> Int {
         let path = try canonicalPath(value)
+        try refuseIfOwnedElsewhere(path)
         let wrote: Int = try withWritableJournal(path) { original in
             guard offset >= 0, data.count <= 64 * 1024 * 1024, offset <= Int64.max - Int64(data.count) else {
                 throw DriveError(EINVAL, "Invalid write range (maximum 64 MiB per call)")
@@ -621,6 +639,7 @@ public final class Engine {
     }
     public func create(_ value: String, directory: Bool) throws -> FileEntry {
         let path = try canonicalPath(value)
+        try refuseIfOwnedElsewhere(path)
         if Housekeeping.isRefused(path) || (directory && Housekeeping.isLocalOnly(path)) {
             throw DriveError(EACCES, "macOS system folders are not stored on this drive")
         }
@@ -646,6 +665,7 @@ public final class Engine {
     }
     public func truncate(_ value: String, size: Int64) throws {
         let path = try canonicalPath(value)
+        try refuseIfOwnedElsewhere(path)
         try withWritableJournal(path) { original in
             guard size >= 0 else { throw DriveError(EINVAL, "Negative file size") }
             var pending = original
@@ -784,7 +804,10 @@ public final class Engine {
         if pressure { eligible.sort { $0.item.pendingLength > $1.item.pendingLength } }
         else { eligible.sort { $0.item.modified < $1.item.modified } }
         for candidate in eligible { do { try syncOne(candidate.item.path, modifiedNoLaterThan: candidate.cutoff) } catch {} }
-        return try uploads()
+        let remaining = try uploads()
+        // Storage refused uploads as read-only: learn whether another Mac took the drive.
+        if remaining.contains(where: { $0.lastErrno == EROFS }) { _ = try? ownedElsewhere(refresh: true) }
+        return remaining
     }
     /// Background passes do nothing while offline, probing at most every 15 s.
     /// BYO metadata is local, so its probe always succeeds and backoff applies instead.
@@ -926,6 +949,7 @@ public final class Engine {
     }
     public func move(_ source: String, to destination: String) throws {
         let from = try canonicalPath(source), to = try canonicalPath(destination)
+        try refuseIfOwnedElsewhere(from)
         if Housekeeping.isRefused(from) { throw DriveError(ENOENT, "No such file") }
         if Housekeeping.isRefused(to) { throw DriveError(EACCES, "macOS system folders are not stored on this drive") }
         let localFrom = Housekeeping.isLocalOnly(from), localTo = Housekeeping.isLocalOnly(to)
@@ -955,6 +979,7 @@ public final class Engine {
     }
     public func remove(_ value: String, directory: Bool) throws {
         let path = try canonicalPath(value)
+        try refuseIfOwnedElsewhere(path)
         guard path != "/" else { throw DriveError(EBUSY, "Cannot remove the drive root") }
         if Housekeeping.staysLocal(path) {
             try lock.withLock {
@@ -1132,7 +1157,8 @@ public final class Engine {
                                availableBytes: try DurableIO.freeBytes(root), pendingUploads: uploads.count,
                                conflictedUploads: uploads.filter { $0.state == "conflict" }.count,
                                pins: try db.all("pin"), offline: offline, objectReadBytes: traffic.objectReadBytes,
-                               objectGetRequests: traffic.objectGetRequests, indexBackup: try indexBackupStatus())
+                               objectGetRequests: traffic.objectGetRequests, indexBackup: try indexBackupStatus(),
+                               ownedElsewhere: try db.get("index", "owner"))
         }
     }
     private func pinPaths() throws -> [String] { let pins: [PinStatus] = try db.all("pin"); return pins.map(\.path) }
@@ -1302,7 +1328,41 @@ public final class Engine {
         guard let state: IndexBackupState = try db.get("index", "backup"), !state.notNeeded,
               state.lastBackupAt != nil || state.lastError != nil else { return nil }
         return IndexBackupStatus(lastBackupNanoseconds: state.lastBackupAt, pendingSinceNanoseconds: state.firstChangeAt,
-                                 lastError: state.lastError)
+                                 lastError: state.lastError, lastErrno: state.lastErrno)
+    }
+    /// Refuses a change once another Mac owns the drive. Housekeeping stays local, so it is
+    /// never refused.
+    private func refuseIfOwnedElsewhere(_ path: String) throws {
+        guard !Housekeeping.staysLocal(path), let owner = try ownedElsewhere(refresh: false) else { return }
+        throw DriveError(EROFS, "This drive is now used on \(owner.ownerName ?? "another Mac"). It’s read-only on this Mac.")
+    }
+    /// Whether another Mac owns this drive. After 10 s, asks storage, which answers from its
+    /// last check without the network; with `refresh`, storage reads the owner record now.
+    /// Offline or unconnected, the saved answer stands. Changes are saved for other
+    /// processes (the app, the CLI).
+    @discardableResult
+    public func ownedElsewhere(refresh: Bool = false) throws -> OwnedElsewhere? {
+        let uptime = DispatchTime.now().uptimeNanoseconds
+        if !refresh, let cached = memory.withLock({ ownershipChecked }), uptime &- cached.uptime < 10_000_000_000 { return cached.value }
+        let (saved, isOffline): (OwnedElsewhere?, Bool) = try lock.withLock(timeout: 10) { (try db.get("index", "owner"), offline) }
+        var value = saved
+        if !isOffline, let answer = try? backend.ownership(refresh: refresh) {
+            if answer.ownedElsewhere {
+                if value?.ownerName != answer.ownerName || value == nil { value = OwnedElsewhere(ownerName: answer.ownerName, seenNanoseconds: now()) }
+            } else { value = nil }
+            // Written only when it changes, so the write path rarely touches the database.
+            if value != saved {
+                try lock.withLock(timeout: 10) {
+                    if let value { try db.put("index", "owner", value) } else { try db.delete("index", "owner") }
+                }
+            }
+        }
+        memory.withLock { ownershipChecked = (uptime, value) }
+        return value
+    }
+    /// The saved notices, without storage or the cache walk `status()` does: for polling.
+    public func notices() throws -> (indexBackup: IndexBackupStatus?, ownedElsewhere: OwnedElsewhere?) {
+        try lock.withLock(timeout: 10) { (try indexBackupStatus(), try db.get("index", "owner")) }
     }
     /// Records, under the state lock, that a change reached storage since the last index
     /// backup. Best effort: the change itself already succeeded, so a failed note must not
