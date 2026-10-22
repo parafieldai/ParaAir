@@ -41,9 +41,11 @@ public struct S3Credentials: Codable, Sendable {
 public struct DriveOwner: Sendable, Equatable {
     public let id: String
     public let name: String
-    public init(id: String, name: String) { self.id = id; self.name = name }
+    /// The drive's name in Finder, recorded so another Mac can tell drives apart.
+    public var driveName: String?
+    public init(id: String, name: String, driveName: String? = nil) { self.id = id; self.name = name; self.driveName = driveName }
     /// Reads, or creates, the owner ID in a drive's state directory.
-    public static func load(directory: URL) throws -> DriveOwner {
+    public static func load(directory: URL, driveName: String? = nil) throws -> DriveOwner {
         let file = directory.appendingPathComponent("owner.id")
         // The computer name from SystemConfiguration; Host.current() may block on name lookups.
         let name = (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? "another Mac"
@@ -52,7 +54,7 @@ public struct DriveOwner: Sendable, Equatable {
                   UUID(uuidString: value) != nil else { return nil }
             return value
         }
-        if let id = stored() { return DriveOwner(id: id, name: name) }
+        if let id = stored() { return DriveOwner(id: id, name: name, driveName: driveName) }
         try DurableIO.directory(directory)
         // Created exclusively: two processes opening the drive for the first time must
         // agree on one ID, or each would see the other as another Mac.
@@ -66,12 +68,16 @@ public struct DriveOwner: Sendable, Equatable {
                 try? FileManager.default.removeItem(at: file)
                 throw DriveError(EIO, "Cannot record this Mac's owner ID")
             }
-            return DriveOwner(id: id, name: name)
+            return DriveOwner(id: id, name: name, driveName: driveName)
         }
         guard errno == EEXIST, let winner = stored() else { throw DriveError(errno == EEXIST ? EIO : errno, "Cannot read this Mac's owner ID") }
-        return DriveOwner(id: winner, name: name)
+        return DriveOwner(id: winner, name: name, driveName: driveName)
     }
-    fileprivate var configuration: [String: String] { ["ownerID": id, "ownerName": name] }
+    fileprivate var configuration: [String: String] {
+        var value = ["ownerID": id, "ownerName": name]
+        if let driveName { value["driveName"] = driveName }
+        return value
+    }
 }
 
 private extension Dictionary where Key == String, Value == Any {
@@ -206,6 +212,11 @@ public final class JuiceFSBackend: StorageBackend {
     public struct StoredDrive: Codable, Sendable, Equatable {
         public let volume: String
         public let latestBackup: String
+        /// The Mac that last owned it, with the drive's Finder name, when recorded.
+        public let owner: StoredOwner?
+        public init(volume: String, latestBackup: String, owner: StoredOwner?) {
+            self.volume = volume; self.latestBackup = latestBackup; self.owner = owner
+        }
     }
     /// What a restore loaded.
     public struct RestoredIndex: Sendable, Equatable {
@@ -218,6 +229,8 @@ public final class JuiceFSBackend: StorageBackend {
         public let id: String
         public let name: String
         public let at: Date
+        public let drive: String?
+        public init(id: String, name: String, at: Date, drive: String?) { self.id = id; self.name = name; self.at = at; self.drive = drive }
     }
     public static func driveOwner(libraryURL: URL, connection: StorageConnection, secrets: ConnectionSecrets,
                                   volume: String) throws -> StoredOwner? {
@@ -272,7 +285,8 @@ public final class JuiceFSBackend: StorageBackend {
     static func listDrives(libraryURL: URL, configuration: [String: Any]) throws -> [StoredDrive] {
         let reply = try NativeLibrary(libraryURL).send(["op": "listDrives", "config": configuration])
         let data = try JSONSerialization.data(withJSONObject: reply["drives"] ?? [Any]())
-        return try JSONDecoder().decode([StoredDrive].self, from: data)
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode([StoredDrive].self, from: data)
     }
 
     /// Explicit local-only fixture creation. Does not format any remote target.
@@ -430,6 +444,10 @@ public final class JuiceFSBackend: StorageBackend {
             throw DriveError(EIO, "The index backup returned no key")
         }
         return key
+    }
+    public func ownership(refresh: Bool) throws -> StorageOwnership? {
+        let reply = try request(["op": "ownership", "refresh": refresh])
+        return StorageOwnership(ownedElsewhere: reply["ownedElsewhere"] as? Bool ?? false, ownerName: reply["ownerName"] as? String)
     }
     public func transferMetrics() throws -> TransferMetrics? {
         let value = try metrics()

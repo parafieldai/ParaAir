@@ -95,6 +95,17 @@ public protocol StorageBackend: AnyObject {
     /// is nothing to back up. `previous` is the last backup's key, for storage that cannot
     /// list its backups to rotate them.
     func backupIndex(replacing previous: String?) throws -> String?
+    /// Whether another Mac owns this drive, as storage last saw it, or, with `refresh`, as
+    /// its record says now. Never opens a connection. Nil when storage has no owners or
+    /// isn't connected.
+    func ownership(refresh: Bool) throws -> StorageOwnership?
+}
+
+/// One Mac writes a drive at a time; a Mac that recovered the drive owns it.
+public struct StorageOwnership: Sendable, Equatable {
+    public var ownedElsewhere: Bool
+    public var ownerName: String?
+    public init(ownedElsewhere: Bool, ownerName: String? = nil) { self.ownedElsewhere = ownedElsewhere; self.ownerName = ownerName }
 }
 
 public extension StorageBackend {
@@ -109,6 +120,7 @@ public extension StorageBackend {
     func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus { .unknown }
     func capacity() throws -> VolumeCapacity? { nil }
     func backupIndex(replacing previous: String?) throws -> String? { nil }
+    func ownership(refresh: Bool) throws -> StorageOwnership? { nil }
 }
 
 public struct DriveError: Error, LocalizedError, Sendable {

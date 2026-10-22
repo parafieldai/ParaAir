@@ -11,6 +11,9 @@ private final class IndexedBackend: StorageBackend, @unchecked Sendable {
     var outcome: () throws -> String? = { "meta/dump" }
     private(set) var replaced: [String?] = []
     var duringBackup: (() -> Void)?
+    /// What storage last saw about the drive's owner.
+    var owner: StorageOwnership?
+    func ownership(refresh: Bool) throws -> StorageOwnership? { owner }
     init(_ root: URL) throws { base = try LocalDirectoryBackend(root: root) }
     var backups: Int { lock.lock(); defer { lock.unlock() }; return count }
     func backupIndex(replacing previous: String?) throws -> String? {
@@ -157,5 +160,46 @@ final class IndexBackupTests: XCTestCase {
         drive = try Engine(backend: backend, stateDirectory: work.appendingPathComponent("state"), cacheLimitBytes: 1 << 20,
                            minFreeBytes: 0, blockSize: 4096, maxJournalBytes: 1 << 20)
         XCTAssertTrue(try drive.backupIndexIfDue(policy: .immediate))
+    }
+
+    // MARK: Another Mac owns the drive
+
+    func testChangesStopOnceAnotherMacOwnsTheDrive() throws {
+        try publish("/kept.txt")
+        backend.owner = StorageOwnership(ownedElsewhere: true, ownerName: "Laptop")
+        _ = try drive.ownedElsewhere(refresh: true)
+        for (name, action) in [("create", { _ = try self.drive.create("/new.txt", directory: false) }),
+                               ("write", { _ = try self.drive.write("/kept.txt", offset: 0, data: Data("x".utf8)) }),
+                               ("mkdir", { _ = try self.drive.create("/folder", directory: true) }),
+                               ("rename", { try self.drive.move("/kept.txt", to: "/renamed.txt") }),
+                               ("remove", { try self.drive.remove("/kept.txt", directory: false) })] as [(String, () throws -> Void)] {
+            XCTAssertThrowsError(try action(), name) { XCTAssertEqual(($0 as? DriveError)?.code, EROFS, name) }
+        }
+        XCTAssertEqual(try drive.read("/kept.txt", offset: 0, length: 16), Data("content".utf8))
+        // Finder's own housekeeping still works, so browsing doesn't raise errors.
+        _ = try drive.create("/.DS_Store", directory: false)
+        XCTAssertEqual(try drive.notices().ownedElsewhere?.ownerName, "Laptop")
+        XCTAssertEqual(try drive.status().ownedElsewhere?.ownerName, "Laptop")
+    }
+
+    func testOwnershipIsSavedForOtherProcessesAndClears() throws {
+        backend.owner = StorageOwnership(ownedElsewhere: true, ownerName: "Laptop")
+        _ = try drive.ownedElsewhere(refresh: true)
+        // Another process (the app) reads the saved notice without storage.
+        let reader = try Engine(backend: try IndexedBackend(work.appendingPathComponent("remote")),
+                                stateDirectory: work.appendingPathComponent("state"), minFreeBytes: 0)
+        XCTAssertEqual(try reader.notices().ownedElsewhere?.ownerName, "Laptop")
+        // Taken back: the next check clears it.
+        backend.owner = StorageOwnership(ownedElsewhere: false)
+        XCTAssertNil(try drive.ownedElsewhere(refresh: true))
+        XCTAssertNil(try reader.notices().ownedElsewhere)
+        _ = try drive.create("/new.txt", directory: false)
+    }
+
+    func testUnconnectedStorageKeepsTheSavedAnswer() throws {
+        backend.owner = StorageOwnership(ownedElsewhere: true, ownerName: "Laptop")
+        _ = try drive.ownedElsewhere(refresh: true)
+        backend.owner = nil // not connected: no answer
+        XCTAssertEqual(try drive.ownedElsewhere(refresh: true)?.ownerName, "Laptop")
     }
 }

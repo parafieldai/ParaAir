@@ -88,6 +88,7 @@ final class MenuModel: ObservableObject {
     let activity = DriveActivityMonitor()
     let loginItem = LoginItemModel(service: SystemLoginItemService())
     @Published private(set) var uploadActivity: UploadActivity?
+    @Published private(set) var driveNotices: DriveNotices?
     private var observations = Set<AnyCancellable>()
     private var cloudObservation: AnyCancellable?
     /// Quick extension re-checks spent on the current pending continuation.
@@ -169,6 +170,7 @@ final class MenuModel: ObservableObject {
             self?.uploadActivity = value
             self?.cloudAccount.pendingUploads = value
         }.store(in: &observations)
+        activity.$notices.sink { [weak self] value in self?.driveNotices = value }.store(in: &observations)
         observeCloudAccount()
         reload()
         logLifecycle("launch")
@@ -501,16 +503,18 @@ final class MenuModel: ObservableObject {
         guard profiles.isEmpty else { return }
         let alert = NSAlert()
         alert.messageText = "Create a drive using \(connection.name)?"
-        let explanation = "Name the drive as you want it to appear in Finder. ParaAir keeps the drive’s files in a new folder inside the bucket; files already in the bucket won’t appear. The drive’s file index stays on this Mac, so keep this Mac backed up too. Storage and transfers may be charged by your provider."
+        let explanation = "Name the drive as you want it to appear in Finder. ParaAir keeps the drive’s files in a new folder inside the bucket and backs up its file index there too; files already in the bucket won’t appear. Storage and transfers may be charged by your provider. To open a drive you made on another Mac, use an existing drive instead."
         alert.informativeText = explanation
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
         field.stringValue = "ParaAir"; alert.accessoryView = field
         alert.window.initialFirstResponder = field
-        alert.addButton(withTitle: "Create Drive"); alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: "Create Drive"); alert.addButton(withTitle: "Use Existing Drive…"); alert.addButton(withTitle: "Later")
         // Keep the dialog open until the name is valid, so the reason is shown where it was typed.
         var finderName = ""
         while true {
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let response = alert.runModal()
+            if response == .alertSecondButtonReturn { recoverDrive(connection); return }
+            guard response == .alertFirstButtonReturn else { return }
             finderName = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             do {
                 try DriveProfile.validateFinderName(finderName)
@@ -544,6 +548,57 @@ final class MenuModel: ObservableObject {
                 await refreshExtensionStatus()
                 if canMount(profile) { mount(profile) }
             } catch { if root == stateRoot { self.error = error.localizedDescription } }
+        }
+    }
+    /// Opens a drive already in the connection's bucket from the newest backup of its index:
+    /// another Mac's drive, or this Mac's after its ParaAir state was lost.
+    func recoverDrive(_ connection: StorageConnection) {
+        guard !creatingDrive, !mounting, profiles.isEmpty else { return }
+        guard let library = Bundle.main.privateFrameworksURL?.appendingPathComponent("libstreamdrive.dylib") else {
+            error = "This app is missing its native storage engine"; return
+        }
+        let root = stateRoot
+        creatingDrive = true
+        Task {
+            let listed: Result<[JuiceFSBackend.StoredDrive], Error> = await Task.detached {
+                Result { try ConnectedDrive.storedDrives(connectionID: connection.id, stateRoot: root, libraryURL: library) }
+            }.value
+            creatingDrive = false
+            guard root == stateRoot, let choice = RecoverDrivePrompt.choose(listed, connection: connection) else { return }
+            await recover(choice, connection: connection, library: library, root: root, takeOver: false)
+        }
+    }
+    private func recover(_ choice: RecoverDrivePrompt.Choice, connection: StorageConnection, library: URL, root: URL, takeOver: Bool) async {
+        let name = DriveNaming.profileName(for: choice.finderName)
+        creatingDrive = true
+        do {
+            let profile = try await Task.detached {
+                let recovered = try ConnectedDrive.recover(name: name, finderName: choice.finderName, volume: choice.volume,
+                                                           connectionID: connection.id, stateRoot: root, libraryURL: library,
+                                                           takeOver: takeOver).profile
+                guard choice.finderName != recovered.name else { return recovered }
+                let store = ProfileStore(root: root)
+                var named = try store.load(recovered.name)
+                named.displayName = choice.finderName
+                try store.save(named, overwrite: true)
+                return named
+            }.value
+            creatingDrive = false
+            resumeWaitingWork(trigger: "drive-recovered")
+            guard root == stateRoot else { return }
+            reload()
+            await refreshExtensionStatus()
+            if canMount(profile) { mount(profile) }
+        } catch let failure as DriveError where failure.code == EBUSY && !takeOver {
+            creatingDrive = false
+            guard root == stateRoot, RecoverDrivePrompt.confirmTakeOver(failure.message) else {
+                resumeWaitingWork(trigger: "drive-recovered"); return
+            }
+            await recover(choice, connection: connection, library: library, root: root, takeOver: true)
+        } catch {
+            creatingDrive = false
+            resumeWaitingWork(trigger: "drive-recovered")
+            if root == stateRoot { self.error = error.localizedDescription }
         }
     }
     /// Home-window shortcut after "Later": offer the drive for the saved, verified connection.

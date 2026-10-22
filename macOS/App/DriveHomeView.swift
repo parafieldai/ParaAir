@@ -52,6 +52,8 @@ extension MenuModel {
             sidebarMessage: sidebarMessage,
             storageKind: profile?.backend == .paraairCloud ? .paraairCloud : .ownBucket,
             uploadActivity: profile == nil ? nil : uploadActivity,
+            indexBackup: profile == nil ? nil : driveNotices?.indexBackup.map { IndexBackupLine.make($0, now: Date()) },
+            ownedElsewhere: profile == nil ? nil : driveNotices?.ownedElsewhere.map { $0.ownerName ?? "another Mac" },
             cloudUsage: profile?.backend == .paraairCloud && cloudAccount.signedInAccount != nil ? cloudAccount.usage : nil,
             updateTitle: updater.pendingUpdateTitle)
     }

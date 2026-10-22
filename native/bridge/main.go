@@ -66,6 +66,7 @@ type config struct {
 	// This Mac's identity as the drive's owner (owner.go); empty disables ownership.
 	OwnerID   string `json:"ownerID,omitempty"`
 	OwnerName string `json:"ownerName,omitempty"`
+	DriveName string `json:"driveName,omitempty"`
 }
 type patch struct {
 	Offset    int64  `json:"offset"`
@@ -88,6 +89,8 @@ type request struct {
 	Patches         []patch `json:"patches,omitempty"`
 	Mode            uint16  `json:"mode,omitempty"`
 	Directory       bool    `json:"directory,omitempty"`
+	// ownership: read the owner record now instead of answering from the last check.
+	Refresh bool `json:"refresh,omitempty"`
 	// backupMeta: the previous dump's key, replaced on storage that cannot rotate.
 	PreviousBackup string `json:"previousBackup,omitempty"`
 }
@@ -123,6 +126,9 @@ type response struct {
 	Drives []storedDrive `json:"drives,omitempty"`
 	// driveOwner: the Mac that owns the drive, if any.
 	Owner *ownerRecord `json:"owner,omitempty"`
+	// ownership: whether another Mac owns this connected drive, from the last check.
+	OwnedElsewhere bool   `json:"ownedElsewhere,omitempty"`
+	OwnerName      string `json:"ownerName,omitempty"`
 }
 
 const (
@@ -203,8 +209,11 @@ type engine struct {
 	// and when that was last read.
 	ownerID      string
 	ownerName    string
+	driveName    string
 	foreign      atomic.Bool
 	ownerChecked atomic.Int64
+	// The other Mac's name, once it owns the drive.
+	foreignName atomic.Pointer[string]
 }
 
 // quietLogs silences the embedded SDK's loggers once per process (see connect).
@@ -526,7 +535,7 @@ func connect(c config) (*engine, error) {
 	}()
 	ctx := meta.NewContext(uint32(os.Getpid()), uint32(os.Getuid()), []uint32{uint32(os.Getgid())})
 	e := &engine{fs: jf, meta: m, ctx: ctx, owner: uint64(time.Now().UnixNano()), storage: counted, objectBudget: budget, unlisted: cloudflare != nil,
-		ownerID: c.OwnerID, ownerName: c.OwnerName}
+		ownerID: c.OwnerID, ownerName: c.OwnerName, driveName: c.DriveName}
 	if err := jf.MkdirAll(ctx, internalRoot, 0700, 0077); err != 0 {
 		return nil, err
 	}
@@ -543,7 +552,7 @@ func connect(c config) (*engine, error) {
 	} else {
 		return nil, errNo
 	}
-	e.claimOwner(c.OwnerName)
+	e.claimOwner(c.OwnerName, c.DriveName)
 	connected = true
 	return e, nil
 }
@@ -890,7 +899,7 @@ func dispatch(r request) response {
 		}
 	}
 	var err error
-	if r.Op != "metrics" && r.Op != "identity" && r.Op != "backupMeta" {
+	if r.Op != "metrics" && r.Op != "identity" && r.Op != "backupMeta" && r.Op != "ownership" {
 		r.Path, err = normalized(r.Path)
 		if err != nil {
 			return rejected(err)
@@ -996,12 +1005,22 @@ func dispatch(r request) response {
 		if out.VolumeIdentity == "" {
 			err = syscall.ENOTSUP
 		}
+	case "ownership":
+		// Without refresh, no network: the answer from connect or the last write's check.
+		if r.Refresh {
+			e.ownerChecked.Store(0)
+			_ = e.ensureOwner() // EROFS just means foreign; a read error keeps the last answer
+		}
+		out.OwnedElsewhere = e.foreign.Load()
+		if name := e.foreignName.Load(); out.OwnedElsewhere && name != nil {
+			out.OwnerName = *name
+		}
 	case "backupMeta":
 		// The metadata database exists only on this Mac; a dump in the bucket is what
 		// lets the drive be restored if the Mac or its state folder is lost.
 		out.BackupKey, err = vfs.StreamDriveBackup(e.meta, e.storage, time.Now())
 		if err == nil && e.ownerID != "" {
-			_ = writeOwner(e.storage, e.ownerID, e.ownerName) // the owner's heartbeat
+			_ = writeOwner(e.storage, e.ownerID, e.ownerName, e.driveName) // the owner's heartbeat
 		}
 		// Without listing there is no rotation: keep only the newest dump. The engine's
 		// state names the previous one.

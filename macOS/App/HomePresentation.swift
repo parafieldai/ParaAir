@@ -23,6 +23,10 @@ struct HomeInputs: Equatable {
     var sidebarMessage: String?
     var storageKind: StorageKind = .ownBucket
     var uploadActivity: UploadActivity?
+    /// Drives whose index is on this Mac: when it was last backed up into the bucket.
+    var indexBackup: IndexBackupLine?
+    /// Another Mac recovered the drive and owns it now: that Mac's name.
+    var ownedElsewhere: String?
     var cloudUsage: CloudUsage?
     /// An update found by a scheduled check while ParaAir wasn't in front ("ParaAir 0.1.0 alpha 3").
     var updateTitle: String?
@@ -123,6 +127,11 @@ struct HomePresentation: Equatable {
                                              detail: "You can open, download, move and delete files. New and changed files don’t upload.",
                                              tone: .attention),
                                primary: .init(action: .openInFinder, title: "Open in Finder"))
+            } else if let owner = input.ownedElsewhere {
+                result = .init(status: .init(title: "Read-only on this Mac",
+                                             detail: "\(owner) took over this drive. You can open its files here; changes are made on \(owner).",
+                                             tone: .attention),
+                               primary: .init(action: .openInFinder, title: "Open in Finder"))
             } else {
                 result = .init(status: .init(title: "Connected",
                                              detail: "Files download in pieces as apps read them.", tone: .good),
@@ -178,8 +187,15 @@ struct HomePresentation: Equatable {
         }
         if let billing = input.cloudUsage?.billing.notice, input.storageKind == .paraairCloud { result.notices.append(billing) }
         if let message = input.sidebarMessage { result.notices.append(.init(id: "sidebar", text: message, tone: .neutral)) }
+        if let owner = input.ownedElsewhere, !input.mounted {
+            result.notices.append(.init(id: "owned-elsewhere", text: "\(owner) took over this drive. It opens read-only on this Mac.", tone: .attention))
+        }
         if let activity = input.uploadActivity {
-            result.notices += uploadNotices(activity, cloud: input.storageKind == .paraairCloud, accessIssue: input.connectionIssue != nil)
+            result.notices += uploadNotices(activity, cloud: input.storageKind == .paraairCloud, accessIssue: input.connectionIssue != nil,
+                                            owner: input.ownedElsewhere)
+        }
+        if let problem = input.indexBackup?.problem {
+            result.notices.append(.init(id: "index-backup", text: problem, tone: .attention))
         }
         return result
     }
@@ -187,8 +203,11 @@ struct HomePresentation: Equatable {
     /// Problems first. Quota and sign-in wording is specific to ParaAir Cloud. Files waiting
     /// for a sign-in count as waiting when the status above already asks for one, and for
     /// your own bucket, whose access the storage status explains.
-    private static func uploadNotices(_ activity: UploadActivity, cloud: Bool, accessIssue: Bool) -> [Notice] {
+    private static func uploadNotices(_ activity: UploadActivity, cloud: Bool, accessIssue: Bool, owner: String?) -> [Notice] {
         var notices: [Notice] = []
+        if activity.blockedElsewhere > 0 {
+            notices.append(.init(id: "upload-elsewhere", text: UploadNotices.elsewhere(activity.blockedElsewhere, owner: owner), tone: .attention))
+        }
         let signIn = cloud && !accessIssue
         if signIn, activity.blockedAuth > 0 {
             notices.append(.init(id: "upload-sign-in", text: UploadNotices.signIn(activity.blockedAuth), tone: .attention))
@@ -244,8 +263,47 @@ enum UploadNotices {
         count == 1 ? "1 file changed on another device. Your copy is kept on this Mac."
             : "\(count) files changed on another device. Your copies are kept on this Mac."
     }
+    static func elsewhere(_ count: Int, owner: String?) -> String {
+        let changes = count == 1 ? "1 change" : "\(count) changes"
+        return "\(changes) made here won’t upload because \(owner ?? "another Mac") took over the drive. "
+            + (count == 1 ? "It stays on this Mac." : "They stay on this Mac.")
+    }
     static func notUploaded(_ count: Int) -> String {
         count == 1 ? "1 file on this Mac hasn’t uploaded yet." : "\(count) files on this Mac haven’t uploaded yet."
+    }
+}
+
+/// The Advanced row for a drive whose index lives on this Mac, and a notice when its
+/// backup into the bucket keeps failing.
+struct IndexBackupLine: Equatable {
+    var value: String
+    var problem: String?
+
+    static func make(_ status: IndexBackupStatus, now: Date) -> IndexBackupLine {
+        let last = status.lastBackupNanoseconds.map { Date(timeIntervalSince1970: TimeInterval($0) / 1_000_000_000) }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        var value = last.map { "Backed up " + formatter.localizedString(for: min($0, now), relativeTo: now) } ?? "Not backed up yet"
+        // Only a working backup promises the next one; a failing one has its notice.
+        if status.pendingSinceNanoseconds != nil, last != nil, status.lastError == nil { value += "; newer changes back up within an hour" }
+        // Another Mac owning the drive (EROFS) has its own status; no second notice for it.
+        let problem = status.lastError == nil || status.lastErrno == EROFS ? nil :
+            "ParaAir couldn’t back up this drive’s index to your bucket (\(reason(status))). It will try again. "
+                + (last == nil ? "Until then, this drive can’t be opened on another Mac." : "Until then, the backup there is out of date.")
+        return IndexBackupLine(value: value, problem: problem)
+    }
+
+    /// The cause in plain words: the engine's message names the native operation.
+    private static func reason(_ status: IndexBackupStatus) -> String {
+        switch status.lastErrno {
+        case EFBIG: return "the index is larger than a Cloudflare sign-in connection can store; connect with an R2 API token instead"
+        case ENETDOWN, ENETUNREACH, EHOSTUNREACH, ETIMEDOUT, ECONNRESET, ECONNREFUSED, ENOTCONN: return "no connection to your storage"
+        case EACCES, EPERM: return "your storage refused access"
+        default:
+            let message = status.lastError ?? "unknown error"
+            guard message.hasPrefix("JuiceFS "), let colon = message.range(of: ": ") else { return message }
+            return String(message[colon.upperBound...]).lowercased()
+        }
     }
 }
 

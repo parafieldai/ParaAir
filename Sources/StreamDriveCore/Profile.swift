@@ -385,7 +385,7 @@ public extension Engine {
                 let uri = try profile.credentialID.map { try KeychainSecretStore().metadataURL(for: $0) } ?? profile.metadataURL!
                 if let connectionID = profile.connectionID {
                     return try ConnectionBackend(libraryURL: library, metadataURL: uri, connectionID: connectionID,
-                                                 store: ConnectionStore(root: root), owner: try DriveOwner.load(directory: directory), bindVolume: {
+                                                 store: ConnectionStore(root: root), owner: try DriveOwner.load(directory: directory, driveName: profile.finderName), bindVolume: {
                         try ProfileStateBinding.bindVolume($0, directory: directory)
                     })
                 }
@@ -453,6 +453,8 @@ private final class LazyProfileBackend: StorageBackend {
     }
     func capacity() throws -> VolumeCapacity? { try withBackend { try $0.capacity() } }
     func backupIndex(replacing previous: String?) throws -> String? { try withBackend { try $0.backupIndex(replacing: previous) } }
+    /// Only from a connected backend: asking must never open a connection.
+    func ownership(refresh: Bool) throws -> StorageOwnership? { try lock.withLock { connected }?.ownership(refresh: refresh) }
     func close() throws {
         lock.lock(); closed = true; let backend = connected; connected = nil; lock.unlock()
         try backend?.close()

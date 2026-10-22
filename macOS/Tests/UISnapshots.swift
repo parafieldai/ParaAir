@@ -34,7 +34,7 @@ struct UISnapshots {
         }
         for (name, input) in homeScenarios
         where ["1-first-run", "3-turn-on", "5-connected", "6-connected-sign-in", "10-cloud-quota-blocked", "11-cloud-signed-out",
-               "14-cloud-past-due", "15-cloud-read-only", "16-cloud-pending-deletion"].contains(name) {
+               "14-cloud-past-due", "15-cloud-read-only", "16-cloud-pending-deletion", "17-owned-elsewhere"].contains(name) {
             let view = MenuBarPanel(input: input, details: details(for: input),
                                     connectAutomatically: .constant(true), actions: HomeActions())
             try render(view, size: nil, appearance: .aqua, to: output.appendingPathComponent("menu-\(name)-light.png"))
@@ -119,12 +119,22 @@ struct UISnapshots {
         var pendingDeletion = readOnly
         pendingDeletion.cloudUsage = CloudUsage(workspace: fixtureMe(stored: 640_000_000_000, billing: billingPendingDeletion,
                                                                      status: "read_only").workspaces.first, state: .loaded)
+        var ownedElsewhere = connected
+        ownedElsewhere.sidebarMessage = nil
+        ownedElsewhere.ownedElsewhere = "Studio Mac"
+        ownedElsewhere.uploadActivity = UploadActivity(blockedElsewhere: 2, pendingBytes: 48_000_000)
+        var backupFailing = connected
+        backupFailing.sidebarMessage = nil
+        backupFailing.indexBackup = IndexBackupLine(value: "Backed up 3 hours ago", problem: IndexBackupLine.make(
+            IndexBackupStatus(lastBackupNanoseconds: 1, pendingSinceNanoseconds: 2, lastError: "JuiceFS backupMeta failed: Network is down",
+                              lastErrno: ENETDOWN), now: Date()).problem)
         return [("1-first-run", firstRun), ("2-storage-ready", ready), ("3-turn-on", turnOn),
                 ("4-checking", checking), ("5-connected", connected), ("6-connected-sign-in", mountedIssue),
                 ("7-sign-in-needed", issue), ("8-connecting", connecting),
                 ("9-cloud-ready", cloudReady), ("10-cloud-quota-blocked", quotaBlocked), ("11-cloud-signed-out", cloudSignedOut),
                 ("12-other-folder", otherFolder), ("13-cloud-plan-active", planActive), ("14-cloud-past-due", pastDue),
-                ("15-cloud-read-only", readOnly), ("16-cloud-pending-deletion", pendingDeletion)]
+                ("15-cloud-read-only", readOnly), ("16-cloud-pending-deletion", pendingDeletion),
+                ("17-owned-elsewhere", ownedElsewhere), ("18-index-backup-failing", backupFailing)]
     }()
 
     // MARK: ParaAir Cloud fixtures (no network, no Keychain)
@@ -822,6 +832,33 @@ struct UISnapshots {
         var failures: [String] = []
         func expect(_ condition: Bool, _ message: String) { if !condition { failures.append(message) } }
         let scenarios = Dictionary(uniqueKeysWithValues: homeScenarios)
+        let elsewhere = HomePresentation.make(scenarios["17-owned-elsewhere"]!)
+        expect(elsewhere.status.title == "Read-only on this Mac" && elsewhere.status.tone == .attention
+               && elsewhere.status.detail.contains("Studio Mac") && elsewhere.primary.action == .openInFinder,
+               "a drive another Mac took over reads as read-only and names that Mac")
+        expect(elsewhere.notices.contains { $0.id == "upload-elsewhere" && $0.text.contains("2 changes") && $0.text.contains("Studio Mac") },
+               "changes made before the takeover are explained, not counted as waiting")
+        expect(!elsewhere.notices.contains { $0.id == "upload-waiting" }, "refused changes aren't 'waiting to upload'")
+        let failing = HomePresentation.make(scenarios["18-index-backup-failing"]!)
+        expect(failing.notices.contains { $0.id == "index-backup" && $0.text.contains("out of date") && $0.text.contains("no connection to your storage")
+                                          && !$0.text.contains("JuiceFS") }, "a failing index backup is shown in plain words")
+        expect(IndexBackupLine.make(IndexBackupStatus(lastBackupNanoseconds: 1, lastError: "JuiceFS backupMeta failed: Read-only file system",
+                                                      lastErrno: EROFS), now: Date()).problem == nil,
+               "a drive another Mac owns gets no backup notice; its status explains")
+        expect(IndexBackupLine.make(IndexBackupStatus(lastError: "JuiceFS backupMeta failed: Bad address", lastErrno: EFAULT), now: Date())
+                .problem?.contains("(bad address)") == true, "unknown errors drop the native operation name")
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let recent = IndexBackupLine.make(IndexBackupStatus(lastBackupNanoseconds: Int64((now.timeIntervalSince1970 - 720) * 1e9)), now: now)
+        expect(recent.value == "Backed up 12 minutes ago" && recent.problem == nil, "index backup line: \(recent.value)")
+        let never = IndexBackupLine.make(IndexBackupStatus(lastError: "offline"), now: now)
+        expect(never.value == "Not backed up yet" && never.problem?.contains("can’t be opened on another Mac") == true,
+               "a drive never backed up says so")
+        let stored = JuiceFSBackend.StoredDrive(volume: "streamdrive-smoke-3fa9", latestBackup: "meta/dump-2033-05-18-033320.json.gz",
+                                                owner: .init(id: "a", name: "Studio Mac", at: now.addingTimeInterval(-7200), drive: "Client Footage"))
+        expect(RecoverDrivePrompt.title(stored, now: now) == "Client Footage · Studio Mac, 2 hours ago",
+               "drive list title: \(RecoverDrivePrompt.title(stored, now: now))")
+        let anonymous = JuiceFSBackend.StoredDrive(volume: "streamdrive-smoke-3fa9", latestBackup: "meta/dump-2033-05-18-033320.json.gz", owner: nil)
+        expect(RecoverDrivePrompt.title(anonymous, now: now) == "streamdrive-smoke-3fa9", "a drive without an owner record shows its folder")
         let first = HomePresentation.make(scenarios["1-first-run"]!)
         expect(first.primary.action == .addStorage, "first run offers Add Storage")
         expect(first.steps.first?.state == .current, "first run starts at step 1")
@@ -998,6 +1035,38 @@ struct UISnapshots {
                        size: CGSize(width: 620, height: 900), appearance: appearance,
                        to: output.appendingPathComponent("home-advanced-updates-\(suffix(appearance)).png"))
         }
+        // "Use Existing Drive…": the picker and the takeover confirmation, as NSAlert lays them out.
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let picker = RecoverDrivePrompt.pickAlert([
+            .init(volume: "streamdrive-smoke-3fa9", latestBackup: "meta/dump-2033-05-18-033320.json.gz",
+                  owner: .init(id: "a", name: "Studio Mac", at: now.addingTimeInterval(-7200), drive: "Client Footage")),
+            .init(volume: "streamdrive-smoke-81c0", latestBackup: "meta/dump-2033-05-11-090000.json.gz", owner: nil)],
+            connectionName: "Cloudflare R2 · studio-footage", now: now)
+        try renderAlert(picker.alert, to: output.appendingPathComponent("recover-pick-light.png"))
+        try renderAlert(RecoverDrivePrompt.takeOverAlert("Studio Mac used this drive 2 hours ago. Quit ParaAir there first, or take the drive over: "
+            + "Studio Mac then stops changing it, and changes made there since the last backup stay on that Mac."),
+                        to: output.appendingPathComponent("recover-take-over-light.png"))
+        // Advanced on a drive whose index is on this Mac: when it was last backed up into the bucket.
+        var indexed = input; indexed.indexBackup = IndexBackupLine(value: "Backed up 12 minutes ago", problem: nil)
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(DriveHomeContent(input: indexed, details: versioned, connectAutomatically: .constant(true), actions: updates,
+                                        loginItem: LoginItemModel(service: FixtureLoginItemService(.enabled), rememberChoice: {}),
+                                        checkUpdatesAutomatically: .constant(true), startsWithAdvancedOpen: true),
+                       size: CGSize(width: 620, height: 940), appearance: appearance,
+                       to: output.appendingPathComponent("home-advanced-index-backup-\(suffix(appearance)).png"))
+        }
+    }
+
+    /// An alert's own window content, laid out as runModal would show it.
+    @MainActor
+    static func renderAlert(_ alert: NSAlert, to url: URL) throws {
+        alert.window.appearance = NSAppearance(named: .aqua)
+        alert.layout()
+        guard let view = alert.window.contentView else { return }
+        view.layoutSubtreeIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        try bitmap.representation(using: .png, properties: [:])?.write(to: url)
     }
 
     /// The prominent button sits beside native push buttons, so it must match their height.

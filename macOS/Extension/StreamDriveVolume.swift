@@ -73,6 +73,10 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     /// the callback harness shortens both.
     var indexCheckNanoseconds: UInt64 = 30_000_000_000
     var indexBackupPolicy = IndexBackupPolicy.standard
+    /// Uptime of the last ownership recheck; uploadQueue only.
+    private var ownerCheckedAt: UInt64 = 0
+    /// How often an idle drive rechecks whether another Mac took it over.
+    var ownerCheckNanoseconds: UInt64 = 300_000_000_000
     private var nodes: [String: DriveItem] = [:]
     private var nextID: UInt64 = 3
     private var generation: UInt64 = 1
@@ -303,6 +307,7 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
                     }
                     self?.refreshCapacityIfDue(opened)
                     if !readOnly { self?.backupIndexIfDue(opened) }
+                    self?.recheckOwnerIfDue(opened)
                 }
                 self.locked { self.uploader = timer }
                 timer.resume()
@@ -351,6 +356,14 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
             do { if try opened.backupIndexIfDue(policy: policy) { Self.indexLog.notice("Index backed up") } }
             catch { Self.indexLog.error("Index backup failed errno=\((error as? DriveError)?.code ?? EIO)") }
         }
+    }
+    /// Runs on uploadQueue: every 5 minutes reads the drive's owner record, so a takeover by
+    /// another Mac shows in ParaAir (read-only on this Mac) before anyone tries to save.
+    private func recheckOwnerIfDue(_ opened: Engine) {
+        let uptime = DispatchTime.now().uptimeNanoseconds
+        guard uptime &- ownerCheckedAt >= ownerCheckNanoseconds else { return }
+        ownerCheckedAt = uptime
+        indexQueue.async { _ = try? opened.ownedElsewhere(refresh: true) }
     }
     /// Runs on uploadQueue. Logs only when a count changes, without paths.
     private func logUploads(_ records: [UploadRecord]?) {
