@@ -124,6 +124,9 @@ final class MenuModel: ObservableObject {
     @Published var sidebarMessage: String?
     /// Presentation requests shared by the home window, menu bar panel and Storage Settings.
     @Published var appearanceOpen = false
+    /// The sheet listing conflicts and refused changes, and the file whose decision is running.
+    @Published var reviewOpen = false
+    @Published var resolvingPath: String?
     @Published var pendingReconnectID: String?
     /// A verified saved connection that has no drive yet (read from public connection records only).
     @Published private(set) var readyConnection: StorageConnection?

@@ -31,6 +31,15 @@ enum CLICommand: Equatable {
     case restore(profile: String, nodeID: Int64, to: String?)
     case storedDrives(connection: String, library: String?)
     case recover(profile: String, connection: String, volume: String, backup: String?, takeOver: Bool, library: String?)
+    case conflicts(profile: String)
+    case resolve(profile: String, path: String, choice: CLIResolution)
+}
+
+/// How `resolve` settles a change that needs a decision.
+enum CLIResolution: Equatable {
+    case keepMine(name: String)
+    case keepTheirs
+    case export(to: String, replace: Bool)
 }
 
 struct CLIUsageError: Error, LocalizedError, Equatable {
@@ -163,6 +172,26 @@ enum CLIParser {
             }
             command = .recover(profile: profile, connection: connection, volume: volume, backup: options.values["backup"],
                                takeOver: options.switches.contains("take-over"), library: options.values["library"])
+        case "conflicts":
+            let options = try parseOptions(commandArguments)
+            commandArguments = options.positionals
+            let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
+            try noExtraArguments(commandArguments, command: name)
+            command = .conflicts(profile: profile)
+        case "resolve":
+            let options = try parseOptions(commandArguments, valueNames: ["keep-mine-as", "export-to"], switchNames: ["keep-theirs", "replace"])
+            commandArguments = options.positionals
+            let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
+            let usageText = "Usage: paraair resolve PROFILE PATH (--keep-mine-as NAME | --keep-theirs | --export-to FILE [--replace])"
+            guard commandArguments.count == 1 else { throw usage(usageText) }
+            let chosen = [options.values["keep-mine-as"] != nil, options.switches.contains("keep-theirs"), options.values["export-to"] != nil]
+            guard chosen.filter({ $0 }).count == 1 else { throw usage(usageText) }
+            guard !options.switches.contains("replace") || options.values["export-to"] != nil else { throw usage("--replace applies only to --export-to") }
+            let choice: CLIResolution
+            if let name = options.values["keep-mine-as"] { choice = .keepMine(name: name) }
+            else if let file = options.values["export-to"] { choice = .export(to: file, replace: options.switches.contains("replace")) }
+            else { choice = .keepTheirs }
+            command = .resolve(profile: profile, path: commandArguments[0], choice: choice)
         case "uploads":
             let options = try parseOptions(commandArguments, switchNames: ["retry"])
             commandArguments = options.positionals

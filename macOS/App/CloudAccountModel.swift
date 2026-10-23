@@ -756,7 +756,7 @@ final class CloudAccountModel: ObservableObject {
 
     nonisolated static func liveUploader(_ dependencies: EngineOpenDependencies) -> Uploader {
         { root, profile in
-            UploadActivity(try Engine.open(profile: profile, stateRoot: root, dependencies: dependencies).flushUploads())
+            UploadActivity(try Engine.open(profile: profile, stateRoot: root, dependencies: dependencies).flushUploads(), cloud: true)
         }
     }
 

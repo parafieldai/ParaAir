@@ -278,6 +278,47 @@ final class CLIApplicationTests: XCTestCase {
         XCTAssertEqual(entries.first?.size, 5)
     }
 
+    func testConflictsListAndResolveFromTheCommandLine() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = root.appendingPathComponent("files", isDirectory: true)
+        try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+        try Data("original".utf8).write(to: data.appendingPathComponent("a.txt"))
+        try Data("original".utf8).write(to: data.appendingPathComponent("b.txt"))
+        let state = root.appendingPathComponent("state")
+        let profile = DriveProfile(name: "fixture", backend: .local, localRoot: data.path, minFreeBytes: 0)
+        try ProfileStore(root: state).save(profile)
+        do {
+            // Edits made here while another device replaced both files.
+            let engine = try Engine.open(profile: profile, stateRoot: state)
+            for name in ["a.txt", "b.txt"] {
+                try engine.truncate("/" + name, size: 0)
+                _ = try engine.write("/" + name, offset: 0, data: Data("mine".utf8))
+                try Data("theirs!".utf8).write(to: data.appendingPathComponent(name))
+                XCTAssertThrowsError(try engine.fsync("/" + name))
+            }
+        }
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": state.path])
+        let listed = app.run(["conflicts", "fixture"])
+        XCTAssertEqual(listed.exitCode, 0, listed.stderr)
+        XCTAssertTrue(listed.stdout.contains("changed-elsewhere\t4\t") && listed.stdout.contains("/a.txt") && listed.stdout.contains("/b.txt"), listed.stdout)
+        let status = app.run(["status", "fixture"])
+        XCTAssertTrue(status.stdout.contains("conflicts: 2"), status.stdout)
+        let kept = app.run(["resolve", "fixture", "/a.txt", "--keep-mine-as", "a mine.txt", "--json"])
+        XCTAssertEqual(kept.exitCode, 0, kept.stderr)
+        let value = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(kept.stdout.utf8)) as? [String: Any])
+        XCTAssertEqual(value["resolution"] as? String, "keep-mine")
+        XCTAssertEqual(value["uploaded"] as? Bool, true)
+        XCTAssertEqual(try String(contentsOf: data.appendingPathComponent("a mine.txt"), encoding: .utf8), "mine")
+        let exported = root.appendingPathComponent("b export.txt")
+        XCTAssertEqual(app.run(["resolve", "fixture", "/b.txt", "--export-to", exported.path]).exitCode, 0)
+        XCTAssertEqual(try String(contentsOf: exported, encoding: .utf8), "mine")
+        XCTAssertEqual(app.run(["conflicts", "fixture"]).stdout, "No changes wait for a decision.\n")
+        let missing = app.run(["resolve", "fixture", "/b.txt", "--keep-theirs"])
+        XCTAssertEqual(missing.exitCode, 1)
+        XCTAssertTrue(missing.stderr.contains("no change waiting"), missing.stderr)
+    }
+
     func testStatusIsAvailableWithoutRemoteCredentialsOrLibrary() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

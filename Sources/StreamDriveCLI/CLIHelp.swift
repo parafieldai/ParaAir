@@ -65,7 +65,21 @@ enum CLIHelp {
             return """
             Usage: paraair uploads PROFILE [--retry] [--json]
             Inspect pending writes and conflicts. --retry publishes eligible journaled writes.
-            Conflicts remain retained for manual resolution; exit 3 means records remain after retry.
+            Conflicts stay on this Mac until resolved (see conflicts); exit 3 means records remain after retry.
+            """ + "\n"
+        case "conflicts", "resolve":
+            return """
+            Usage: paraair conflicts PROFILE [--json]
+                   paraair resolve PROFILE PATH --keep-mine-as NAME [--json]
+                   paraair resolve PROFILE PATH --keep-theirs [--json]
+                   paraair resolve PROFILE PATH --export-to FILE [--replace] [--json]
+            conflicts lists changes that never upload by themselves: files that changed elsewhere
+            after this Mac's copy was made, and changes storage refuses (another Mac took over the
+            drive, or a read-only ParaAir Cloud plan).
+            --keep-mine-as saves this Mac's copy as a new file NAME in the same folder, which uploads;
+            the original shows the version in storage. --export-to writes this Mac's copy to FILE on
+            this Mac (outside the drive) and removes it from the drive, for drives that refuse new
+            files. --keep-theirs deletes this Mac's copy.
             """ + "\n"
         default:
             return """
@@ -84,6 +98,9 @@ enum CLIHelp {
               pin PROFILE [/path]                 Explicitly download for offline reads
               unpin PROFILE [/path]               Make clean blocks eligible for eviction
               uploads PROFILE [--retry]           Inspect or retry durable pending uploads
+              conflicts PROFILE                   List changes that wait for a decision
+              resolve PROFILE PATH (--keep-mine-as NAME | --keep-theirs | --export-to FILE)
+                                                  Settle one of them
               trash PROFILE                       List deleted ParaAir Cloud files that can be restored
               restore PROFILE NODE_ID [--to PATH] Restore a deleted ParaAir Cloud file
               stored-drives --connection ID       List drives backed up in a connection's bucket

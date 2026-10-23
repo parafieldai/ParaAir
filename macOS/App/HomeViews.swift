@@ -72,7 +72,7 @@ struct DriveHomeContent: View {
                 }
                 if !presentation.notices.isEmpty {
                     Section {
-                        ForEach(presentation.notices) { NoticeRow(notice: $0) }
+                        ForEach(presentation.notices) { NoticeRow(notice: $0, perform: actions.perform) }
                     }
                 }
                 if !presentation.steps.isEmpty {
@@ -142,7 +142,7 @@ struct MenuBarPanel: View {
                 UpdateReadyRow(title: update, install: install, compact: true)
             }
             if let notice = presentation.notices.first(where: { $0.tone == .problem || $0.tone == .attention }) {
-                NoticeRow(notice: notice).lineLimit(4)
+                NoticeRow(notice: notice, perform: actions.perform).lineLimit(4)
             }
             ActionRow(presentation: presentation, actions: actions, large: false)
             Divider()
@@ -293,15 +293,23 @@ struct UpdateReadyRow: View {
 
 struct NoticeRow: View {
     let notice: HomePresentation.Notice
+    /// Runs the notice's action; without it the button is hidden.
+    var perform: ((HomePresentation.Action) -> Void)?
 
     var body: some View {
-        Label {
-            Text(notice.text)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        } icon: {
-            Image(systemName: notice.tone == .neutral ? "info.circle" : StatusLabel.symbol(notice.tone))
-                .foregroundStyle(StatusLabel.color(notice.tone))
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Label {
+                Text(notice.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            } icon: {
+                Image(systemName: notice.tone == .neutral ? "info.circle" : StatusLabel.symbol(notice.tone))
+                    .foregroundStyle(StatusLabel.color(notice.tone))
+            }
+            if let action = notice.action, let title = notice.actionTitle, let perform {
+                Spacer(minLength: 0)
+                Button(title) { perform(action) }.controlSize(.small)
+            }
         }
         .font(.callout)
     }

@@ -10,6 +10,21 @@ public struct UploadRecord: Codable, Sendable {
     public var state: String
     public var lastError: String?
     public var lastErrno: Int32?
+    /// Failed upload attempts since the file's pending change began; reset only when it publishes.
+    public var failures = 0
+    /// Wall-clock nanoseconds of the first failure in the current run of failures.
+    public var failingSinceNanoseconds: Int64?
+    /// Wall-clock nanoseconds of the oldest change waiting in this file, and of the latest.
+    public var pendingSinceNanoseconds: Int64?
+    public var modifiedNanoseconds: Int64?
+    public init(transactionID: String, path: String, logicalSize: Int64, pendingBytes: Int64, state: String, lastError: String?,
+                lastErrno: Int32?, failures: Int = 0, failingSinceNanoseconds: Int64? = nil, pendingSinceNanoseconds: Int64? = nil,
+                modifiedNanoseconds: Int64? = nil) {
+        self.transactionID = transactionID; self.path = path; self.logicalSize = logicalSize; self.pendingBytes = pendingBytes
+        self.state = state; self.lastError = lastError; self.lastErrno = lastErrno; self.failures = failures
+        self.failingSinceNanoseconds = failingSinceNanoseconds; self.pendingSinceNanoseconds = pendingSinceNanoseconds
+        self.modifiedNanoseconds = modifiedNanoseconds
+    }
 }
 
 /// Sequential prefetch window; `maxBlocks == 0` disables readahead.
@@ -121,6 +136,8 @@ public struct DriveStatus: Codable, Sendable {
     public var indexBackup: IndexBackupStatus? = nil
     /// Set once another Mac owns the drive.
     public var ownedElsewhere: OwnedElsewhere? = nil
+    /// Files whose uploads keep failing (UploadFailurePolicy.standard).
+    public var failingUploads: UploadFailureSummary? = nil
 }
 
 private struct Segment: Codable { var offset: Int64; var length: Int64; var blob: String }
@@ -147,6 +164,10 @@ private struct Journal: Codable {
     var failures: Int? = nil
     /// Wall-clock nanoseconds before which background flushes skip this file.
     var nextAttemptAt: Int64? = nil
+    /// Wall-clock nanoseconds of the first change, and of the first failure in the current
+    /// run of failed uploads. Nil in journals written before they were recorded.
+    var createdAt: Int64? = nil
+    var failingSince: Int64? = nil
     var pendingLength: Int64 { segments.reduce(0) { $0 + $1.length } }
     var entry: FileEntry {
         FileEntry(id: id, path: path, kind: .file, size: size, modifiedNanoseconds: modified,
@@ -657,7 +678,7 @@ public final class Engine {
             let timestamp = now()
             let pending = Journal(transactionID: UUID().uuidString, path: path, base: nil, size: 0,
                                   baseVisibleSize: 0, modified: timestamp, id: UInt64.random(in: (1 << 62)..<UInt64.max),
-                                  mode: 0o644, segments: [], accessed: timestamp, mayHaveApplied: false)
+                                  mode: 0o644, segments: [], accessed: timestamp, mayHaveApplied: false, createdAt: timestamp)
             try db.transaction { try db.put("journal", path, pending); try invalidatePins(under: path) }
             touched(path)
             return pending.entry
@@ -696,9 +717,10 @@ public final class Engine {
                     let stored: Metadata? = try db.get("metadata", path)
                     guard let base = stored?.entry ?? fetched else { return .metadataMissing }
                     guard base.kind == .file else { throw DriveError(EISDIR, "Cannot modify a directory") }
+                    let timestamp = now()
                     return .done(try body(Journal(transactionID: UUID().uuidString, path: path, base: base, size: base.size,
-                                                  baseVisibleSize: base.size, modified: now(), id: base.id, mode: base.mode, segments: [],
-                                                  mayHaveApplied: false)))
+                                                  baseVisibleSize: base.size, modified: timestamp, id: base.id, mode: base.mode, segments: [],
+                                                  mayHaveApplied: false, createdAt: timestamp)))
                 }
             } catch is JournalFull {
                 // Publishing other files can make room. No state lock is held here.
@@ -730,7 +752,7 @@ public final class Engine {
             let pathLock = try uploadLock(for: path)
             try pathLock.withLock {
                 guard let item: Journal = try lock.withLock({ try db.get("journal", path) }) else { return }
-                if item.state == "conflict" { throw DriveError(ESTALE, "Remote file changed; pending local data is retained") }
+                if item.state == "conflict" { throw DriveError(ESTALE, Self.conflictMessage) }
                 guard item.sealed else { return }
                 let status: CommitStatus
                 do {
@@ -834,7 +856,7 @@ public final class Engine {
         var prior = true
         guard var pending: Journal = try lock.withLock({
             guard var item: Journal = try db.get("journal", path) else { return nil }
-            if item.state == "conflict" { throw DriveError(ESTALE, "Remote file changed; pending local data is retained") }
+            if item.state == "conflict" { throw DriveError(ESTALE, Self.conflictMessage) }
             if !item.sealed && item.modified > cutoff { return nil }
             prior = item.mayHaveApplied ?? true
             item.sealed = true; item.mayHaveApplied = true
@@ -881,9 +903,10 @@ public final class Engine {
                 // applied: keep this identity so a replay hits its receipt.
                 pending.mayHaveApplied = true
             }
-            let failures = (pending.failures ?? 0) + 1
+            let failures = (pending.failures ?? 0) + 1, clock = now()
             pending.failures = failures
-            pending.nextAttemptAt = now() + min(900_000_000_000, Int64(2_000_000_000) << Int64(min(failures - 1, 9)))
+            if pending.failingSince == nil { pending.failingSince = clock }
+            pending.nextAttemptAt = clock + min(900_000_000_000, Int64(2_000_000_000) << Int64(min(failures - 1, 9)))
             pending.lastErrno = code
             pending.lastError = "Remote commit failed (errno \(code)); local data is retained"
             if isOfflineError(error) { offline = true }
@@ -935,7 +958,9 @@ public final class Engine {
             return pending.filter { !Housekeeping.staysLocal($0.path) }.map { item in
                 UploadRecord(transactionID: item.transactionID, path: item.path, logicalSize: item.size,
                              pendingBytes: item.segments.reduce(0) { $0 + DurableIO.allocatedBytes(journal.appendingPathComponent($1.blob)) },
-                             state: item.state, lastError: item.lastError, lastErrno: item.lastErrno)
+                             state: item.state, lastError: item.lastError, lastErrno: item.lastErrno, failures: item.failures ?? 0,
+                             failingSinceNanoseconds: item.failingSince, pendingSinceNanoseconds: item.createdAt ?? item.modified,
+                             modifiedNanoseconds: item.modified)
             }
         }
     }
@@ -1158,7 +1183,8 @@ public final class Engine {
                                conflictedUploads: uploads.filter { $0.state == "conflict" }.count,
                                pins: try db.all("pin"), offline: offline, objectReadBytes: traffic.objectReadBytes,
                                objectGetRequests: traffic.objectGetRequests, indexBackup: try indexBackupStatus(),
-                               ownedElsewhere: try db.get("index", "owner"))
+                               ownedElsewhere: try db.get("index", "owner"),
+                               failingUploads: UploadFailureSummary.make(uploads, now: now()))
         }
     }
     private func pinPaths() throws -> [String] { let pins: [PinStatus] = try db.all("pin"); return pins.map(\.path) }
@@ -1231,6 +1257,246 @@ public final class Engine {
         var total = (try? db.get("metrics", "traffic", as: TransferMetrics.self)) ?? TransferMetrics()
         total.objectReadBytes += delta.objectReadBytes; total.objectGetRequests += delta.objectGetRequests
         try? db.put("metrics", "traffic", total)
+    }
+
+    // MARK: Changes that need a decision
+
+    static let conflictMessage = "This file changed elsewhere. Your copy is kept on this Mac until you choose which to keep."
+    /// The file system type ParaAir volumes report (FSShortName in the extension's Info.plist).
+    static let fileSystemName = "streamdrive"
+
+    /// Pending changes that never upload by themselves: conflicts, and changes storage
+    /// refuses from this Mac (EROFS). Each waits for keepMine, exportChange or keepTheirs.
+    public func changesNeedingDecision() throws -> [UploadRecord] { try uploads().filter(\.needsDecision) }
+
+    /// A name for this Mac's copy of `path` that nothing in its folder uses yet:
+    /// "Report (conflict 2026-10-23).docx", then "Report (conflict 2026-10-23 2).docx".
+    public func suggestedCopyName(for value: String, date: Date = Date()) throws -> String {
+        let path = try canonicalPath(value), folder = parent(path)
+        let taken = Set(try list(folder).map(\.name))
+        return Self.copyName((path as NSString).lastPathComponent, date: date) { taken.contains($0) }
+    }
+    /// The same naming without a listing; `taken` says which names are in use.
+    public static func copyName(_ name: String, date: Date, taken: (String) -> Bool) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
+        let stem = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
+        var attempt = 1
+        while true {
+            let label = "conflict " + formatter.string(from: date) + (attempt > 1 ? " \(attempt)" : "")
+            let candidate = "\(stem) (\(label))" + (suffix.isEmpty ? "" : "." + suffix)
+            if !taken(candidate) { return candidate }
+            attempt += 1
+        }
+    }
+
+    /// Keeps this Mac's copy of a conflicted file as a new file named `name` in the same
+    /// folder, which uploads like any new file; `path` then shows the version in storage.
+    /// Parts of the copy still shared with the version it was based on are read first, from
+    /// the cache or storage. When storage no longer has that version (ESTALE), nothing changes.
+    @discardableResult
+    public func keepMine(_ value: String, as name: String) throws -> FileEntry {
+        let path = try canonicalPath(value)
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0"), name.utf8.count <= 255 else {
+            throw DriveError(EINVAL, "Choose a name without slashes, up to 255 bytes")
+        }
+        let target = try canonicalPath((parent(path) == "/" ? "" : parent(path)) + "/" + name)
+        guard target != path, !Housekeeping.staysLocal(target) else { throw DriveError(EINVAL, "Choose another name for your copy") }
+        try refuseIfOwnedElsewhere(target)
+        do { _ = try stat(target); throw DriveError(EEXIST, "Something named “\(name)” is already in this folder") }
+        catch let error as DriveError where error.code == ENOENT {}
+        do { guard try stat(parent(target)).kind == .directory else { throw DriveError(ENOTDIR, "The file’s folder is gone") } }
+        catch let error as DriveError where error.code == ENOENT {
+            throw DriveError(ENOENT, "The file’s folder no longer exists in storage. Export your copy instead.")
+        }
+        return try withDecision(path) { item in
+            guard item.state == "conflict" else {
+                throw DriveError(EROFS, "This drive doesn’t accept new files from this Mac. Export your copy instead.")
+            }
+            try fillFromBase(path, item)
+            return try lock.withLock {
+                guard let current: Journal = try db.get("journal", path), unchanged(current, since: item) else {
+                    throw DriveError(EBUSY, "The file changed meanwhile, and its newer change is kept. Try again.")
+                }
+                guard (try db.get("journal", target) as Journal?) == nil else { throw DriveError(EEXIST, "Something named “\(name)” is already in this folder") }
+                // A new file from now on: no base, a fresh identity and no history of failures.
+                var copy = current
+                copy.path = target; copy.base = nil; copy.baseVisibleSize = 0
+                copy.transactionID = UUID().uuidString; copy.id = UInt64.random(in: (1 << 62)..<UInt64.max)
+                copy.sealed = false; copy.state = "pending"; copy.mayHaveApplied = false
+                copy.lastError = nil; copy.lastErrno = nil; copy.failures = nil; copy.failingSince = nil; copy.nextAttemptAt = nil
+                namespaceEpoch &+= 1
+                try db.transaction {
+                    try db.delete("journal", path); try db.put("journal", target, copy)
+                    try db.delete("metadata", path); try invalidateListings()
+                    try invalidatePins(under: path); try invalidatePins(under: target)
+                }
+                return copy.entry
+            }
+        }
+    }
+
+    /// Writes this Mac's copy of a file that needs a decision to `destination`, outside the
+    /// drive, then drops it from the drive as keepTheirs does. For drives that refuse new
+    /// files from this Mac, and copies whose folder is gone. An existing `destination` is
+    /// replaced only with `replacing`.
+    public func exportChange(_ value: String, to destination: URL, replacing: Bool = false) throws {
+        let path = try canonicalPath(value)
+        guard destination.isFileURL else { throw DriveError(EINVAL, "Choose a file on this Mac") }
+        // Exporting into a ParaAir drive would write back through the drive's own extension.
+        var volume = statfs()
+        if statfs(destination.deletingLastPathComponent().path, &volume) == 0,
+           withUnsafeBytes(of: volume.f_fstypename, { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }) == Self.fileSystemName {
+            throw DriveError(EINVAL, "Choose a folder outside your ParaAir drives")
+        }
+        try withDecision(path) { item in
+            let folder = destination.deletingLastPathComponent()
+            let staged = folder.appendingPathComponent(".paraair-export-" + UUID().uuidString)
+            let fd = Darwin.open(staged.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644)
+            guard fd >= 0 else { throw DriveError(errno, "Can’t write to that folder") }
+            var published = false
+            defer { if !published { _ = Darwin.unlink(staged.path) } }
+            do {
+                defer { Darwin.close(fd) }
+                var offset: Int64 = 0
+                while offset < item.size {
+                    let bytes = try readForDecision(path, offset: offset, length: Int(min(item.size - offset, 8 << 20)))
+                    guard !bytes.isEmpty else { throw DriveError(EIO, "Your copy is shorter than expected") }
+                    try bytes.withUnsafeBytes { raw in
+                        var written = 0
+                        while written < raw.count {
+                            let count = Darwin.pwrite(fd, raw.baseAddress!.advanced(by: written), raw.count - written, off_t(offset) + off_t(written))
+                            if count < 0 { if errno == EINTR { continue }; throw DriveError(errno, "Couldn’t write your copy") }
+                            guard count > 0 else { throw DriveError(EIO, "Couldn’t write your copy") }
+                            written += count
+                        }
+                    }
+                    offset += Int64(bytes.count)
+                }
+                guard Darwin.fsync(fd) == 0, fcntl(fd, F_FULLFSYNC) == 0 else { throw DriveError(errno, "Couldn’t save your copy") }
+            }
+            let modified = TimeInterval(item.modified) / 1_000_000_000
+            try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: modified)], ofItemAtPath: staged.path)
+            var moved = replacing ? Darwin.rename(staged.path, destination.path)
+                : renamex_np(staged.path, destination.path, UInt32(RENAME_EXCL))
+            if moved != 0, !replacing, errno == ENOTSUP || errno == EINVAL {
+                // Volumes without exclusive rename: check, then rename.
+                var existing = Darwin.stat()
+                if lstat(destination.path, &existing) == 0 { errno = EEXIST } else { moved = Darwin.rename(staged.path, destination.path) }
+            }
+            guard moved == 0 else {
+                throw errno == EEXIST ? DriveError(EEXIST, "A file with that name is already there") : DriveError(errno, "Couldn’t save your copy")
+            }
+            published = true
+            try DurableIO.syncDirectory(folder)
+            do { try discard(path, item) }
+            catch let error as DriveError where error.code == EBUSY {
+                throw DriveError(EBUSY, "Your copy is saved at \(destination.path), but the file changed meanwhile, so its newer change "
+                                 + "stays on the drive. Review it again to decide about that change.")
+            }
+        }
+    }
+
+    /// Drops this Mac's copy of a file that needs a decision, so the version in storage
+    /// shows (or nothing, if storage has none). Any other pending change still uploads.
+    public func keepTheirs(_ value: String) throws {
+        let path = try canonicalPath(value)
+        try withDecision(path) { try discard(path, $0) }
+    }
+
+    /// Runs `body` with `path`'s journal while holding its upload lock, so no upload or
+    /// settling runs meanwhile. Only changes that need a decision qualify.
+    private func withDecision<T>(_ path: String, _ body: (Journal) throws -> T) throws -> T {
+        assert(!lock.isHeldByCurrentThread, "Decisions read storage and must not run under the drive state lock")
+        return try legacyUploadLock.withShared {
+            let pathLock = try uploadLock(for: path)
+            return try pathLock.withLock {
+                guard let item: Journal = try lock.withLock({ try db.get("journal", path) }), !Housekeeping.staysLocal(path),
+                      item.state == "conflict" || item.lastErrno == EROFS else {
+                    throw DriveError(ENOENT, "This file has no change waiting for a decision")
+                }
+                let result = try body(item)
+                published(path, lock: pathLock, sealedAt: DispatchTime.now().uptimeNanoseconds)
+                return result
+            }
+        }
+    }
+    /// Whether `current` is still the change `item` was read as. A refused change whose
+    /// identity rotated stays writable, and a write keeps its identity but moves its
+    /// modification time, so both are compared.
+    private func unchanged(_ current: Journal?, since item: Journal) -> Bool {
+        guard let current else { return false }
+        return current.transactionID == item.transactionID && current.modified == item.modified && current.size == item.size
+    }
+    /// Under the path's upload lock: deletes the journal `item` names, unless it moved on.
+    private func discard(_ path: String, _ item: Journal) throws {
+        try lock.withLock {
+            guard let current: Journal = try db.get("journal", path), unchanged(current, since: item) else {
+                throw DriveError(EBUSY, "The file changed meanwhile, and its newer change is kept. Try again.")
+            }
+            namespaceEpoch &+= 1
+            try db.transaction {
+                try db.delete("journal", path); try db.delete("metadata", path)
+                try invalidateListings(); try invalidatePins(under: path)
+            }
+            try recoverOrphans()
+        }
+    }
+    /// The local view of a range, which may need the version the change was based on.
+    /// Storage that no longer has that version answers ESTALE.
+    private func readForDecision(_ path: String, offset: Int64, length: Int) throws -> Data {
+        do { return try read(path, offset: offset, length: length) }
+        catch let error as DriveError where error.code == ESTALE {
+            throw DriveError(ESTALE, "Part of your copy is still the earlier version of the file, and storage no longer has it. "
+                             + "Only the version in storage can be kept.")
+        }
+    }
+    /// Copies into the journal every byte the change still takes from its base, so it no
+    /// longer needs the base. The copies hold what reads already show, so a crash midway
+    /// leaves the same file. Called with the path's upload lock held.
+    private func fillFromBase(_ path: String, _ item: Journal) throws {
+        var uncovered: [Range<Int64>] = item.baseVisibleSize > 0 ? [0..<item.baseVisibleSize] : []
+        for segment in item.segments {
+            let covered = segment.offset..<(segment.offset + segment.length)
+            uncovered = uncovered.flatMap { range -> [Range<Int64>] in
+                guard range.overlaps(covered) else { return [range] }
+                return [range.lowerBound..<max(range.lowerBound, covered.lowerBound), min(range.upperBound, covered.upperBound)..<range.upperBound]
+                    .filter { !$0.isEmpty }
+            }
+        }
+        // The whole copy must fit in the pending-write journal; say so before copying anything.
+        let needed = uncovered.reduce(Int64(0)) { $0 + ($1.upperBound - $1.lowerBound) }
+        do { try lock.withLock { try ensureJournalSpace(needed) } }
+        catch let error as DriveError where error.code == ENOSPC {
+            throw DriveError(ENOSPC, "Your copy is too large to keep on the drive from this Mac: it would need "
+                             + "\(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) more of this Mac’s space for waiting changes. "
+                             + "Export your copy instead.")
+        }
+        for range in uncovered {
+            var offset = range.lowerBound
+            while offset < range.upperBound {
+                let bytes = try readForDecision(path, offset: offset, length: Int(min(range.upperBound - offset, 8 << 20)))
+                guard !bytes.isEmpty else { throw DriveError(EIO, "Your copy is shorter than expected") }
+                // Written and flushed before taking the state lock, which every drive operation waits on.
+                let blob = UUID().uuidString + ".data", url = journal.appendingPathComponent(blob)
+                try lock.withLock { try ensureJournalSpace(Int64(bytes.count)) }
+                try DurableIO.write(bytes, to: url)
+                do {
+                    try lock.withLock {
+                        guard var current: Journal = try db.get("journal", path), unchanged(current, since: item) else {
+                            throw DriveError(EBUSY, "The file changed meanwhile, and its newer change is kept. Try again.")
+                        }
+                        // Beneath the local writes, which never overlap these ranges anyway.
+                        current.segments.insert(Segment(offset: offset, length: Int64(bytes.count), blob: blob), at: 0)
+                        try db.put("journal", path, current)
+                    }
+                } catch {
+                    _ = Darwin.unlink(url.path)
+                    throw error
+                }
+                offset += Int64(bytes.count)
+            }
+        }
     }
 
     // MARK: Sequential readahead (cloud tuning only)
@@ -1353,7 +1619,15 @@ public final class Engine {
             // Written only when it changes, so the write path rarely touches the database.
             if value != saved {
                 try lock.withLock(timeout: 10) {
-                    if let value { try db.put("index", "owner", value) } else { try db.delete("index", "owner") }
+                    if let value { try db.put("index", "owner", value) } else {
+                        try db.delete("index", "owner")
+                        // This Mac owns the drive again: changes storage refused upload on the next pass.
+                        let refused: [Journal] = try db.all("journal")
+                        for var item in refused where item.lastErrno == EROFS && item.state != "conflict" {
+                            item.lastErrno = nil; item.lastError = nil; item.nextAttemptAt = nil
+                            try db.put("journal", item.path, item)
+                        }
+                    }
                 }
             }
         }
