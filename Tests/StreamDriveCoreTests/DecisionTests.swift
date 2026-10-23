@@ -8,6 +8,9 @@ private final class RefusingBackend: StorageBackend, @unchecked Sendable {
     private let lock = NSLock()
     private var refusal: DriveError?
     private var currentOwner: StorageOwnership?
+    private var readHook: (() -> Void)?
+    /// Runs once, during the next read from storage.
+    var onRead: (() -> Void)? { get { lock.withLock { readHook } } set { lock.withLock { readHook = newValue } } }
     /// Thrown by every commit until cleared.
     var commitError: DriveError? { get { lock.withLock { refusal } } set { lock.withLock { refusal = newValue } } }
     var owner: StorageOwnership? { get { lock.withLock { currentOwner } } set { lock.withLock { currentOwner = newValue } } }
@@ -15,7 +18,10 @@ private final class RefusingBackend: StorageBackend, @unchecked Sendable {
     func ownership(refresh: Bool) throws -> StorageOwnership? { owner }
     func stat(_ p: String) throws -> FileEntry { try base.stat(p) }
     func list(_ p: String) throws -> [FileEntry] { try base.list(p) }
-    func read(_ p: String, offset: Int64, length: Int) throws -> Data { try base.read(p, offset: offset, length: length) }
+    func read(_ p: String, offset: Int64, length: Int) throws -> Data {
+        if let hook = lock.withLock({ () -> (() -> Void)? in defer { readHook = nil }; return readHook }) { hook() }
+        return try base.read(p, offset: offset, length: length)
+    }
     func commit(_ c: FileCommit) throws -> FileEntry {
         if let error = commitError { throw error }
         return try base.commit(c)
@@ -248,6 +254,24 @@ final class DecisionTests: XCTestCase {
         XCTAssertTrue(try drive.uploads().isEmpty)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: exports.path), ["report.txt"], "no staged file is left behind")
         XCTAssertEqual(try text("/report.txt"), "original")
+    }
+
+    /// A change a read-only plan refuses stays writable. One written while it is exported
+    /// is never discarded with the export.
+    func testAChangeWrittenDuringAnExportStaysOnTheDrive() throws {
+        try seed("live.bin", "abcdefghij")
+        _ = try drive.stat("/live.bin") // none of its blocks cached, so the export reads storage
+        _ = try drive.write("/live.bin", offset: 2, data: Data("XY".utf8))
+        backend.commitError = DriveError(EROFS, "Read-only plan", disposition: .attemptNotDispatched)
+        _ = try drive.flushUploads()
+        backend.onRead = { [unowned self] in _ = try? self.drive.write("/live.bin", offset: 0, data: Data("Z".utf8)) }
+        expectError(EBUSY, try drive.exportChange("/live.bin", to: work.appendingPathComponent("live.bin")))
+        XCTAssertEqual(try drive.changesNeedingDecision().count, 1)
+        XCTAssertEqual(try text("/live.bin"), "ZbXYefghij", "the newer write is still on the drive")
+        // Asked again, with nothing written meanwhile, the export goes through.
+        try drive.exportChange("/live.bin", to: work.appendingPathComponent("live again.bin"))
+        XCTAssertEqual(try Data(contentsOf: work.appendingPathComponent("live again.bin")), Data("ZbXYefghij".utf8))
+        XCTAssertTrue(try drive.uploads().isEmpty)
     }
 
     func testConflictsExportToo() throws {

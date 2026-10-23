@@ -1313,8 +1313,8 @@ public final class Engine {
             }
             try fillFromBase(path, item)
             return try lock.withLock {
-                guard let current: Journal = try db.get("journal", path), current.transactionID == item.transactionID else {
-                    throw DriveError(EBUSY, "The file changed; try again")
+                guard let current: Journal = try db.get("journal", path), unchanged(current, since: item) else {
+                    throw DriveError(EBUSY, "The file changed meanwhile, and its newer change is kept. Try again.")
                 }
                 guard (try db.get("journal", target) as Journal?) == nil else { throw DriveError(EEXIST, "Something named “\(name)” is already in this folder") }
                 // A new file from now on: no base, a fresh identity and no history of failures.
@@ -1368,8 +1368,13 @@ public final class Engine {
             }
             let modified = TimeInterval(item.modified) / 1_000_000_000
             try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: modified)], ofItemAtPath: staged.path)
-            let moved = replacing ? Darwin.rename(staged.path, destination.path)
+            var moved = replacing ? Darwin.rename(staged.path, destination.path)
                 : renamex_np(staged.path, destination.path, UInt32(RENAME_EXCL))
+            if moved != 0, !replacing, errno == ENOTSUP || errno == EINVAL {
+                // Volumes without exclusive rename: check, then rename.
+                var existing = Darwin.stat()
+                if lstat(destination.path, &existing) == 0 { errno = EEXIST } else { moved = Darwin.rename(staged.path, destination.path) }
+            }
             guard moved == 0 else {
                 throw errno == EEXIST ? DriveError(EEXIST, "A file with that name is already there") : DriveError(errno, "Couldn’t save your copy")
             }
@@ -1403,11 +1408,18 @@ public final class Engine {
             }
         }
     }
+    /// Whether `current` is still the change `item` was read as. A refused change whose
+    /// identity rotated stays writable, and a write keeps its identity but moves its
+    /// modification time, so both are compared.
+    private func unchanged(_ current: Journal?, since item: Journal) -> Bool {
+        guard let current else { return false }
+        return current.transactionID == item.transactionID && current.modified == item.modified && current.size == item.size
+    }
     /// Under the path's upload lock: deletes the journal `item` names, unless it moved on.
     private func discard(_ path: String, _ item: Journal) throws {
         try lock.withLock {
-            guard let current: Journal = try db.get("journal", path), current.transactionID == item.transactionID else {
-                throw DriveError(EBUSY, "The file changed; try again")
+            guard let current: Journal = try db.get("journal", path), unchanged(current, since: item) else {
+                throw DriveError(EBUSY, "The file changed meanwhile, and its newer change is kept. Try again.")
             }
             namespaceEpoch &+= 1
             try db.transaction {
@@ -1445,8 +1457,8 @@ public final class Engine {
                 let bytes = try readForDecision(path, offset: offset, length: Int(min(range.upperBound - offset, 8 << 20)))
                 guard !bytes.isEmpty else { throw DriveError(EIO, "Your copy is shorter than expected") }
                 try lock.withLock {
-                    guard var current: Journal = try db.get("journal", path), current.transactionID == item.transactionID else {
-                        throw DriveError(EBUSY, "The file changed; try again")
+                    guard var current: Journal = try db.get("journal", path), unchanged(current, since: item) else {
+                        throw DriveError(EBUSY, "The file changed meanwhile, and its newer change is kept. Try again.")
                     }
                     try ensureJournalSpace(Int64(bytes.count))
                     let blob = UUID().uuidString + ".data"
