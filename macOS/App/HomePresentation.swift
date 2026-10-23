@@ -30,6 +30,8 @@ struct HomeInputs: Equatable {
     var cloudUsage: CloudUsage?
     /// An update found by a scheduled check while ParaAir wasn't in front ("ParaAir 0.1.0 alpha 3").
     var updateTitle: String?
+    /// For ages such as how long failing uploads have waited.
+    var now = Date()
 
     var hasDrive: Bool { driveName != nil }
 }
@@ -60,6 +62,8 @@ struct HomePresentation: Equatable {
     enum Tone: Equatable { case good, working, attention, problem, neutral }
     enum Action: Equatable {
         case addStorage, createDrive, signInAgain, openSystemSettings, connectDrive, openInFinder
+        /// Opens the list of conflicts and refused changes.
+        case reviewChanges
     }
     enum StepState: Equatable { case done, current, upcoming }
 
@@ -84,6 +88,9 @@ struct HomePresentation: Equatable {
         var id: String
         var text: String
         var tone: Tone
+        /// A button beside the text.
+        var action: Action? = nil
+        var actionTitle: String? = nil
     }
 
     var status: Status
@@ -192,7 +199,7 @@ struct HomePresentation: Equatable {
         }
         if let activity = input.uploadActivity {
             result.notices += uploadNotices(activity, cloud: input.storageKind == .paraairCloud, accessIssue: input.connectionIssue != nil,
-                                            owner: input.ownedElsewhere)
+                                            owner: input.ownedElsewhere, now: input.now)
         }
         if let problem = input.indexBackup?.problem {
             result.notices.append(.init(id: "index-backup", text: problem, tone: .attention))
@@ -203,10 +210,18 @@ struct HomePresentation: Equatable {
     /// Problems first. Quota and sign-in wording is specific to ParaAir Cloud. Files waiting
     /// for a sign-in count as waiting when the status above already asks for one, and for
     /// your own bucket, whose access the storage status explains.
-    private static func uploadNotices(_ activity: UploadActivity, cloud: Bool, accessIssue: Bool, owner: String?) -> [Notice] {
+    private static func uploadNotices(_ activity: UploadActivity, cloud: Bool, accessIssue: Bool, owner: String?, now: Date) -> [Notice] {
         var notices: [Notice] = []
+        // Conflicts and refused changes never upload by themselves; the review sheet resolves them.
+        let review: (action: Action?, title: String?) = activity.decisions.isEmpty ? (nil, nil) : (.reviewChanges, "Review…")
         if activity.blockedElsewhere > 0 {
-            notices.append(.init(id: "upload-elsewhere", text: UploadNotices.elsewhere(activity.blockedElsewhere, owner: owner), tone: .attention))
+            let text = cloud ? UploadNotices.readOnlyPlan(activity.blockedElsewhere) : UploadNotices.elsewhere(activity.blockedElsewhere, owner: owner)
+            notices.append(.init(id: "upload-elsewhere", text: text, tone: .attention, action: review.action, actionTitle: review.title))
+        }
+        // Refused access is already the status when storage access is interrupted; those files just wait.
+        let failingShown = activity.failure.map { !(accessIssue && ($0.errno == EACCES || $0.errno == EPERM)) } ?? false
+        if failingShown, let failure = activity.failure, activity.failing > 0 {
+            notices.append(.init(id: "upload-failing", text: UploadNotices.failing(failure, cloud: cloud, now: now), tone: .attention))
         }
         let signIn = cloud && !accessIssue
         if signIn, activity.blockedAuth > 0 {
@@ -216,9 +231,11 @@ struct HomePresentation: Equatable {
             notices.append(.init(id: "upload-quota", text: UploadNotices.quota(activity.blockedQuota), tone: .attention))
         }
         if activity.conflicts > 0 {
-            notices.append(.init(id: "upload-conflicts", text: UploadNotices.conflicts(activity.conflicts), tone: .attention))
+            notices.append(.init(id: "upload-conflicts", text: UploadNotices.conflicts(activity.conflicts), tone: .attention,
+                                 action: review.action, actionTitle: review.title))
         }
         let waiting = activity.waiting + activity.failedOther + (cloud ? 0 : activity.blockedQuota) + (signIn ? 0 : activity.blockedAuth)
+            + (failingShown ? 0 : activity.failing)
         if waiting > 0 { notices.append(.init(id: "upload-waiting", text: UploadNotices.waiting(waiting), tone: .neutral)) }
         return notices
     }
@@ -267,6 +284,25 @@ enum UploadNotices {
         let changes = count == 1 ? "1 change" : "\(count) changes"
         return "\(changes) made here won’t upload because \(owner ?? "another Mac") took over the drive. "
             + (count == 1 ? "It stays on this Mac." : "They stay on this Mac.")
+    }
+    static func readOnlyPlan(_ count: Int) -> String {
+        let changes = count == 1 ? "1 change" : "\(count) changes"
+        return "\(changes) made here won’t upload while your ParaAir Cloud plan is read-only. "
+            + (count == 1 ? "It stays on this Mac." : "They stay on this Mac.")
+    }
+    /// Uploads that keep failing. `now` adds how long the oldest change has waited.
+    static func failing(_ failure: UploadFailureSummary, cloud: Bool, now: Date?) -> String {
+        let text = "Couldn’t upload \(files(failure.count)): \(UploadFailureReason.text(failure.errno, cloud: cloud))."
+        if let now {
+            let oldest = Date(timeIntervalSince1970: TimeInterval(failure.oldestChangeNanoseconds) / 1_000_000_000)
+            let formatter = DateComponentsFormatter()
+            formatter.unitsStyle = .full; formatter.maximumUnitCount = 1
+            formatter.allowedUnits = [.day, .hour, .minute]
+            if let age = formatter.string(from: max(60, now.timeIntervalSince(oldest))) {
+                return text + (failure.count == 1 ? " It has waited \(age)" : " The oldest has waited \(age)") + "; ParaAir keeps trying."
+            }
+        }
+        return text + " ParaAir keeps trying; your changes stay on this Mac."
     }
     static func notUploaded(_ count: Int) -> String {
         count == 1 ? "1 file on this Mac hasn’t uploaded yet." : "\(count) files on this Mac haven’t uploaded yet."

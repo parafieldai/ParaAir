@@ -34,12 +34,14 @@ struct UISnapshots {
         }
         for (name, input) in homeScenarios
         where ["1-first-run", "3-turn-on", "5-connected", "6-connected-sign-in", "10-cloud-quota-blocked", "11-cloud-signed-out",
-               "14-cloud-past-due", "15-cloud-read-only", "16-cloud-pending-deletion", "17-owned-elsewhere"].contains(name) {
+               "14-cloud-past-due", "15-cloud-read-only", "16-cloud-pending-deletion", "17-owned-elsewhere",
+               "19-uploads-failing", "20-conflicts"].contains(name) {
             let view = MenuBarPanel(input: input, details: details(for: input),
                                     connectAutomatically: .constant(true), actions: HomeActions())
             try render(view, size: nil, appearance: .aqua, to: output.appendingPathComponent("menu-\(name)-light.png"))
         }
         try renderLoginItem(output: output)
+        try renderReview(output: output)
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("paraair-ui-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -122,20 +124,44 @@ struct UISnapshots {
         var ownedElsewhere = connected
         ownedElsewhere.sidebarMessage = nil
         ownedElsewhere.ownedElsewhere = "Studio Mac"
-        ownedElsewhere.uploadActivity = UploadActivity(blockedElsewhere: 2, pendingBytes: 48_000_000)
+        ownedElsewhere.uploadActivity = UploadActivity(blockedElsewhere: 2, decisions: [
+            PendingDecision(path: "/Edits/cut-04.mov", kind: .refused(cloud: false), size: 40_000_000, modified: nil),
+            PendingDecision(path: "/Edits/notes.txt", kind: .refused(cloud: false), size: 8_000_000, modified: nil)], pendingBytes: 48_000_000)
         var backupFailing = connected
         backupFailing.sidebarMessage = nil
         backupFailing.indexBackup = IndexBackupLine(value: "Backed up 3 hours ago", problem: IndexBackupLine.make(
             IndexBackupStatus(lastBackupNanoseconds: 1, pendingSinceNanoseconds: 2, lastError: "JuiceFS backupMeta failed: Network is down",
                               lastErrno: ENETDOWN), now: Date()).problem)
+        var uploadsFailing = connected
+        uploadsFailing.sidebarMessage = nil
+        uploadsFailing.now = fixtureNow
+        uploadsFailing.uploadActivity = UploadActivity(waiting: 1, failure: UploadFailureSummary(
+            count: 3, errno: EACCES, oldestChangeNanoseconds: Int64((fixtureNow.timeIntervalSince1970 - 7_500) * 1e9)), pendingBytes: 310_000_000)
+        var conflicts = connected
+        conflicts.sidebarMessage = nil
+        conflicts.uploadActivity = UploadActivity(conflicts: 2, decisions: fixtureDecisions.filter { $0.kind == .conflict }, pendingBytes: 1_200_000_000)
+        var refusedByPlan = readOnly
+        refusedByPlan.uploadActivity = UploadActivity(blockedElsewhere: 1, decisions: [
+            PendingDecision(path: "/Edits/cut-04.mov", kind: .refused(cloud: true), size: 2_100_000_000, modified: fixtureNow)])
         return [("1-first-run", firstRun), ("2-storage-ready", ready), ("3-turn-on", turnOn),
                 ("4-checking", checking), ("5-connected", connected), ("6-connected-sign-in", mountedIssue),
                 ("7-sign-in-needed", issue), ("8-connecting", connecting),
                 ("9-cloud-ready", cloudReady), ("10-cloud-quota-blocked", quotaBlocked), ("11-cloud-signed-out", cloudSignedOut),
                 ("12-other-folder", otherFolder), ("13-cloud-plan-active", planActive), ("14-cloud-past-due", pastDue),
                 ("15-cloud-read-only", readOnly), ("16-cloud-pending-deletion", pendingDeletion),
-                ("17-owned-elsewhere", ownedElsewhere), ("18-index-backup-failing", backupFailing)]
+                ("17-owned-elsewhere", ownedElsewhere), ("18-index-backup-failing", backupFailing),
+                ("19-uploads-failing", uploadsFailing), ("20-conflicts", conflicts), ("21-cloud-read-only-changes", refusedByPlan)]
     }()
+
+    static let fixtureNow = Date(timeIntervalSince1970: 2_000_000_000)
+    /// Two conflicts and a change refused after another Mac took over.
+    static let fixtureDecisions: [PendingDecision] = [
+        PendingDecision(path: "/Projects/Client A/edit-v3.prproj", kind: .conflict, size: 48_200_000,
+                        modified: fixtureNow.addingTimeInterval(-3_600)),
+        PendingDecision(path: "/notes.txt", kind: .conflict, size: 2_400, modified: fixtureNow.addingTimeInterval(-86_400 * 2)),
+        PendingDecision(path: "/Projects/Client A/Exports/final master with a very long name for layout.mov", kind: .refused(cloud: false),
+                        size: 3_400_000_000, modified: fixtureNow.addingTimeInterval(-600)),
+    ]
 
     // MARK: ParaAir Cloud fixtures (no network, no Keychain)
 
@@ -859,6 +885,27 @@ struct UISnapshots {
                "drive list title: \(RecoverDrivePrompt.title(stored, now: now))")
         let anonymous = JuiceFSBackend.StoredDrive(volume: "streamdrive-smoke-3fa9", latestBackup: "meta/dump-2033-05-18-033320.json.gz", owner: nil)
         expect(RecoverDrivePrompt.title(anonymous, now: now) == "streamdrive-smoke-3fa9", "a drive without an owner record shows its folder")
+        let failingUploads = HomePresentation.make(scenarios["19-uploads-failing"]!)
+        let failingNotice = failingUploads.notices.first { $0.id == "upload-failing" }
+        expect(failingNotice?.tone == .attention && failingNotice?.text.hasPrefix("Couldn’t upload 3 files: your storage refused access") == true
+               && failingNotice?.text.contains("waited 2 hours") == true && failingNotice?.action == nil,
+               "failing uploads name the cause and the oldest change's wait: \(failingNotice?.text ?? "none")")
+        expect(failingUploads.notices.contains { $0.id == "upload-waiting" && $0.text == "1 file is waiting to upload." },
+               "failing files aren't also counted as waiting")
+        var failingWithAccessIssue = scenarios["19-uploads-failing"]!
+        failingWithAccessIssue.connectionIssue = "Reconnect your saved storage connection in Storage settings."
+        let explained = HomePresentation.make(failingWithAccessIssue)
+        expect(!explained.notices.contains { $0.id == "upload-failing" }
+               && explained.notices.contains { $0.id == "upload-waiting" && $0.text == "4 files are waiting to upload." },
+               "refused access the status already explains isn't repeated as a failure")
+        let conflicted = HomePresentation.make(scenarios["20-conflicts"]!)
+        expect(conflicted.notices.contains { $0.id == "upload-conflicts" && $0.action == .reviewChanges && $0.actionTitle == "Review…" },
+               "conflicts offer the review sheet")
+        let refusedByPlan = HomePresentation.make(scenarios["21-cloud-read-only-changes"]!)
+        expect(refusedByPlan.notices.contains { $0.id == "upload-elsewhere" && $0.text.contains("plan is read-only") && !$0.text.contains("took over")
+                                                && $0.action == .reviewChanges },
+               "changes a read-only plan refuses name the plan, not another Mac")
+        failures += checkUploadActivity()
         let first = HomePresentation.make(scenarios["1-first-run"]!)
         expect(first.primary.action == .addStorage, "first run offers Add Storage")
         expect(first.steps.first?.state == .current, "first run starts at step 1")
@@ -1055,6 +1102,53 @@ struct UISnapshots {
                        size: CGSize(width: 620, height: 940), appearance: appearance,
                        to: output.appendingPathComponent("home-advanced-index-backup-\(suffix(appearance)).png"))
         }
+    }
+
+    /// How upload records become notices: failing only past the policy, Cloud's own notices
+    /// kept apart, and conflicts and refusals listed for review.
+    static func checkUploadActivity() -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: Bool, _ message: String) { if !condition { failures.append(message) } }
+        let now = fixtureNow, clock = Int64(now.timeIntervalSince1970 * 1e9)
+        func record(_ path: String, _ code: Int32?, failures: Int = 0, state: String = "pending") -> UploadRecord {
+            UploadRecord(transactionID: UUID().uuidString, path: path, logicalSize: 10, pendingBytes: 4096, state: state, lastError: nil,
+                         lastErrno: code, failures: failures, failingSinceNanoseconds: code == nil ? nil : clock - 60_000_000_000,
+                         pendingSinceNanoseconds: clock - 120_000_000_000, modifiedNanoseconds: clock - 30_000_000_000)
+        }
+        let records = [record("/a", nil), record("/b", EIO, failures: 1), record("/c", EIO, failures: 6), record("/d", EDQUOT, failures: 6),
+                       record("/e", EACCES, failures: 6), record("/f", EROFS, failures: 2), record("/g/h", ESTALE, failures: 1, state: "conflict")]
+        let cloud = UploadActivity(records, cloud: true, now: now)
+        expect(cloud.waiting == 1 && cloud.failedOther == 1 && cloud.failing == 1 && cloud.blockedQuota == 1 && cloud.blockedAuth == 1
+               && cloud.blockedElsewhere == 1 && cloud.conflicts == 1 && cloud.total == 7,
+               "cloud classification: \(cloud)")
+        expect(cloud.failure == UploadFailureSummary(count: 1, errno: EIO, oldestChangeNanoseconds: clock - 120_000_000_000),
+               "Cloud's full plan and sign-in keep their own notices")
+        expect(cloud.decisions.map(\.path) == ["/f", "/g/h"] && cloud.decisions.first?.kind == .refused(cloud: true)
+               && cloud.decisions.last?.kind == .conflict && cloud.decisions.last?.folder == "g" && cloud.decisions.last?.name == "h",
+               "decisions: \(cloud.decisions)")
+        let own = UploadActivity(records, cloud: false, now: now)
+        expect(own.failing == 3 && own.blockedQuota == 0 && own.blockedAuth == 0 && own.failure?.count == 3,
+               "your own bucket's full or refused storage counts as failing: \(own)")
+        return failures
+    }
+
+    /// The review sheet and its prompts.
+    @MainActor
+    static func renderReview(output: URL) throws {
+        let actions = ReviewActions()
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(ChangesReviewView(decisions: fixtureDecisions, ownerName: "Studio Mac", now: fixtureNow, actions: actions),
+                       size: nil, appearance: appearance, to: output.appendingPathComponent("review-changes-\(suffix(appearance)).png"))
+        }
+        try render(ChangesReviewView(decisions: fixtureDecisions, ownerName: "Studio Mac", busyPath: fixtureDecisions[0].path,
+                                     now: fixtureNow, actions: actions),
+                   size: nil, appearance: .aqua, to: output.appendingPathComponent("review-changes-busy-light.png"))
+        try render(ChangesReviewView(decisions: [], now: fixtureNow, actions: actions),
+                   size: nil, appearance: .aqua, to: output.appendingPathComponent("review-changes-done-light.png"))
+        try renderAlert(ReviewPrompts.copyNameAlert(fixtureDecisions[0], suggested: "edit-v3 (conflict 2033-05-18).prproj").alert,
+                        to: output.appendingPathComponent("review-save-copy-light.png"))
+        try renderAlert(ReviewPrompts.discardAlert(fixtureDecisions[0]), to: output.appendingPathComponent("review-discard-light.png"))
+        try renderAlert(ReviewPrompts.discardAlert(fixtureDecisions[2]), to: output.appendingPathComponent("review-discard-refused-light.png"))
     }
 
     /// An alert's own window content, laid out as runModal would show it.

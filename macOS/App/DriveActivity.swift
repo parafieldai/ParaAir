@@ -14,31 +14,75 @@ struct UploadActivity: Equatable, Sendable {
     var blockedAuth = 0
     /// The file changed elsewhere; the local copy is kept and never uploads by itself.
     var conflicts = 0
-    /// Saved before another Mac took over the drive: storage refuses them (EROFS).
+    /// Refused by storage (EROFS): another Mac took over the drive, or the ParaAir Cloud plan is read-only.
     var blockedElsewhere = 0
     /// Any other failure, retried with the next attempt.
     var failedOther = 0
+    /// Files whose uploads keep failing (UploadFailurePolicy); counted here and nowhere else.
+    var failing = 0
+    var failure: UploadFailureSummary?
+    /// Conflicts and refused changes, which wait for a decision in the review sheet.
+    var decisions: [PendingDecision] = []
     var pendingBytes: Int64 = 0
 
     init(waiting: Int = 0, blockedQuota: Int = 0, blockedAuth: Int = 0, blockedElsewhere: Int = 0, conflicts: Int = 0, failedOther: Int = 0,
-         pendingBytes: Int64 = 0) {
+         failure: UploadFailureSummary? = nil, decisions: [PendingDecision] = [], pendingBytes: Int64 = 0) {
         self.waiting = waiting; self.blockedQuota = blockedQuota; self.blockedAuth = blockedAuth; self.blockedElsewhere = blockedElsewhere
-        self.conflicts = conflicts; self.failedOther = failedOther; self.pendingBytes = pendingBytes
+        self.conflicts = conflicts; self.failedOther = failedOther; self.failing = failure?.count ?? 0; self.failure = failure
+        self.decisions = decisions; self.pendingBytes = pendingBytes
     }
 
-    init(_ uploads: [UploadRecord]) {
+    /// `cloud`: ParaAir Cloud's full plan and sign-in have notices of their own, so files
+    /// blocked by those never count as failing.
+    init(_ uploads: [UploadRecord], cloud: Bool, now: Date = Date(), policy: UploadFailurePolicy = .standard) {
+        let clock = Int64(now.timeIntervalSince1970 * 1_000_000_000)
+        let ownNotice: (UploadRecord) -> Bool = { cloud && ($0.lastErrno == EDQUOT || $0.lastErrno == EACCES) }
+        failure = UploadFailureSummary.make(uploads, now: clock, policy: policy, excluding: ownNotice)
         for upload in uploads {
             if upload.state == "conflict" { conflicts += 1 }
+            else if upload.lastErrno == EROFS { blockedElsewhere += 1 }
+            else if !ownNotice(upload), upload.isFailing(now: clock, policy: policy) { failing += 1 }
             else if upload.lastErrno == EDQUOT { blockedQuota += 1 }
             else if upload.lastErrno == EACCES { blockedAuth += 1 }
-            else if upload.lastErrno == EROFS { blockedElsewhere += 1 }
             else if upload.lastErrno == nil { waiting += 1 }
             else { failedOther += 1 }
+            if upload.needsDecision { decisions.append(PendingDecision(upload, cloud: cloud)) }
             pendingBytes += upload.pendingBytes
         }
+        decisions.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
-    var total: Int { waiting + blockedQuota + blockedAuth + blockedElsewhere + conflicts + failedOther }
+    var total: Int { waiting + blockedQuota + blockedAuth + blockedElsewhere + conflicts + failedOther + failing }
+}
+
+/// One change that can't upload by itself, as the review sheet lists it.
+struct PendingDecision: Equatable, Sendable, Identifiable {
+    enum Kind: Equatable, Sendable {
+        /// The file changed elsewhere since this Mac's copy was made.
+        case conflict
+        /// Storage refuses changes from this Mac: another Mac took over the drive, or (`cloud`) the plan is read-only.
+        case refused(cloud: Bool)
+    }
+    var path: String
+    var kind: Kind
+    var size: Int64
+    /// When the change was last made on this Mac.
+    var modified: Date?
+    var id: String { path }
+    var name: String { (path as NSString).lastPathComponent }
+    /// The folder, from the drive's root; nil at the root.
+    var folder: String? {
+        let folder = (path as NSString).deletingLastPathComponent
+        return folder == "/" || folder.isEmpty ? nil : String(folder.dropFirst())
+    }
+
+    init(path: String, kind: Kind, size: Int64, modified: Date?) {
+        self.path = path; self.kind = kind; self.size = size; self.modified = modified
+    }
+    init(_ upload: UploadRecord, cloud: Bool) {
+        self.init(path: upload.path, kind: upload.state == "conflict" ? .conflict : .refused(cloud: cloud), size: upload.logicalSize,
+                  modified: upload.modifiedNanoseconds.map { Date(timeIntervalSince1970: TimeInterval($0) / 1_000_000_000) })
+    }
 }
 
 /// What the drive's own state says beyond uploads: its index backup (drives whose index
@@ -117,7 +161,7 @@ final class DriveActivityMonitor: ObservableObject {
                 let box = try existing ?? EngineBox(engine: Engine.open(profile: target.profile, stateRoot: target.stateRoot),
                                                     profile: target.profile)
                 let saved = try box.engine.notices()
-                return .success((UploadActivity(try box.engine.uploads()),
+                return .success((UploadActivity(try box.engine.uploads(), cloud: target.profile.backend == .paraairCloud),
                                  DriveNotices(indexBackup: saved.indexBackup, ownedElsewhere: saved.ownedElsewhere), box))
             } catch { return .failure(error) }
         }.value
@@ -129,7 +173,7 @@ final class DriveActivityMonitor: ObservableObject {
             let previous = activity
             activity = next
             if previous != next {
-                log.notice("activity waiting=\(next.waiting) quota=\(next.blockedQuota) auth=\(next.blockedAuth) conflicts=\(next.conflicts) other=\(next.failedOther) bytes=\(next.pendingBytes)")
+                log.notice("activity waiting=\(next.waiting) quota=\(next.blockedQuota) auth=\(next.blockedAuth) conflicts=\(next.conflicts) refused=\(next.blockedElsewhere) other=\(next.failedOther) failing=\(next.failing) errno=\(next.failure?.errno ?? 0) bytes=\(next.pendingBytes)")
             }
             if let previous { announceTransitions(from: previous, to: next, cloud: target.profile.backend == .paraairCloud) }
         case .failure(let error):
@@ -146,6 +190,8 @@ final class DriveActivityMonitor: ObservableObject {
         if cloud, previous.blockedQuota == 0, next.blockedQuota > 0 { messages.append(UploadNotices.quota(next.blockedQuota)) }
         if cloud, previous.blockedAuth == 0, next.blockedAuth > 0 { messages.append(UploadNotices.signIn(next.blockedAuth)) }
         if previous.conflicts == 0, next.conflicts > 0 { messages.append(UploadNotices.conflicts(next.conflicts)) }
+        // Once per run of failures: a notification when files start failing, none while they keep failing.
+        if previous.failing == 0, let failure = next.failure { messages.append(UploadNotices.failing(failure, cloud: cloud, now: nil)) }
         guard notify, !messages.isEmpty, Self.canPostNotifications else { return }
         let center = UNUserNotificationCenter.current()
         let post = {

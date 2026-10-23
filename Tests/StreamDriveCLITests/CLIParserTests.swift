@@ -95,4 +95,20 @@ final class CLIParserTests: XCTestCase {
         XCTAssertThrowsError(try CLIParser.parse(["stored-drives"]))
         XCTAssertThrowsError(try CLIParser.parse(["stored-drives", "extra", "--connection", "abc"]))
     }
+
+    func testParsesConflictsAndResolve() throws {
+        XCTAssertEqual(try CLIParser.parse(["conflicts", "Studio"]).command, .conflicts(profile: "Studio"))
+        XCTAssertEqual(try CLIParser.parse(["resolve", "Studio", "/a b.txt", "--keep-mine-as", "a b (mine).txt"]).command,
+                       .resolve(profile: "Studio", path: "/a b.txt", choice: .keepMine(name: "a b (mine).txt")))
+        XCTAssertEqual(try CLIParser.parse(["resolve", "Studio", "/a.txt", "--keep-theirs"]).command,
+                       .resolve(profile: "Studio", path: "/a.txt", choice: .keepTheirs))
+        XCTAssertEqual(try CLIParser.parse(["resolve", "Studio", "/a.txt", "--export-to", "~/a.txt", "--replace"]).command,
+                       .resolve(profile: "Studio", path: "/a.txt", choice: .export(to: "~/a.txt", replace: true)))
+        for invalid in [["conflicts"], ["conflicts", "Studio", "extra"], ["resolve", "Studio", "/a.txt"],
+                        ["resolve", "Studio", "--keep-theirs"], ["resolve", "Studio", "/a.txt", "/b.txt", "--keep-theirs"],
+                        ["resolve", "Studio", "/a.txt", "--keep-theirs", "--keep-mine-as", "b.txt"],
+                        ["resolve", "Studio", "/a.txt", "--keep-theirs", "--replace"]] {
+            XCTAssertThrowsError(try CLIParser.parse(invalid), invalid.joined(separator: " "))
+        }
+    }
 }

@@ -171,6 +171,35 @@ final class CLIApplication {
             var response = try render(records, invocation: invocation, text: text)
             if retry, !records.isEmpty { response.exitCode = 3 }
             return response
+        case .conflicts(let name):
+            let profile = try store.load(name), records = try open(profile, root: stateRoot).changesNeedingDecision()
+            let text = records.map { record in
+                let reason = record.state == "conflict" ? "changed-elsewhere" : "refused"
+                return "\(reason)\t\(record.logicalSize)\t\(record.modifiedNanoseconds.map(isoDate) ?? "-")\t\(displayName(record.path))"
+            }.joined(separator: "\n")
+            return try render(records, invocation: invocation, text: text.isEmpty ? "No changes wait for a decision.\n" : text + "\n")
+        case .resolve(let name, let path, let choice):
+            let profile = try store.load(name), engine = try open(profile, root: stateRoot)
+            let canonical = try canonicalPath(path)
+            var result = ResolveResult(profile: name, path: canonical, resolution: "keep-theirs")
+            let message: String
+            switch choice {
+            case .keepMine(let copy):
+                let entry = try engine.keepMine(canonical, as: copy)
+                // Upload now when storage answers; otherwise it waits like any new file.
+                let uploaded = (try? engine.fsync(entry.path)) != nil
+                result.resolution = "keep-mine"; result.copyPath = entry.path; result.uploaded = uploaded
+                message = "Saved your copy as \(displayName(entry.path))" + (uploaded ? " and uploaded it" : "; it uploads with the next pass") + ".\n"
+            case .keepTheirs:
+                try engine.keepTheirs(canonical)
+                message = "Discarded this Mac's copy of \(displayName(canonical)).\n"
+            case .export(let file, let replace):
+                let destination = URL(fileURLWithPath: absolutePath(file))
+                try engine.exportChange(canonical, to: destination, replacing: replace)
+                result.resolution = "export"; result.exportedTo = destination.path
+                message = "Exported this Mac's copy to \(displayName(destination.path)) and removed it from the drive.\n"
+            }
+            return try render(result, invocation: invocation, text: message)
         case .mount(let name, let override):
             var profile = try store.load(name)
             guard !mounted(profile) else { throw DriveError(EBUSY, "This profile is already mounted; unmount it before choosing another mount point") }
@@ -245,8 +274,18 @@ final class CLIApplication {
         "Cache: \(humanBytes(value.drive.cacheBytes)) / \(humanBytes(value.drive.cacheLimitBytes)); pins: \(humanBytes(value.drive.pinnedBytes)); pending writes: \(humanBytes(value.drive.pendingWriteBytes)).\n" +
         "App state: \(humanBytes(value.drive.stateBytes)); total local allocation: \(humanBytes(value.drive.totalAllocatedBytes)); available: \(humanBytes(value.drive.availableBytes)).\n" +
         "Uploads: \(value.drive.pendingUploads); conflicts: \(value.drive.conflictedUploads). Network connectivity was not probed.\n" +
+        failingText(value.drive.failingUploads, cloud: value.backend == DriveBackendKind.paraairCloud.rawValue) +
         indexBackupText(value.drive.indexBackup) +
         (value.drive.ownedElsewhere.map { "Now used on \(displayName($0.ownerName ?? "another Mac")); read-only on this Mac.\n" } ?? "")
+    }
+    private func failingText(_ value: UploadFailureSummary?, cloud: Bool) -> String {
+        guard let value else { return "" }
+        let files = value.count == 1 ? "1 file" : "\(value.count) files"
+        return "Couldn’t upload \(files): \(UploadFailureReason.text(value.errno, cloud: cloud)). "
+            + "Oldest change: \(isoDate(value.oldestChangeNanoseconds)). ParaAir keeps retrying.\n"
+    }
+    private func isoDate(_ nanoseconds: Int64) -> String {
+        ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: TimeInterval(nanoseconds) / 1_000_000_000))
     }
     /// Drives whose index lives on this Mac back it up into their own storage.
     private func indexBackupText(_ value: IndexBackupStatus?) -> String {
@@ -352,5 +391,9 @@ private struct ProfileStatus: Encodable { var profile: String; var backend: Stri
 private struct CacheResult: Encodable { var profile: String; var evictedBytes: Int64; var drive: DriveStatus }
 private struct PinResult: Encodable { var profile: String; var path: String; var pinned: Bool; var drive: DriveStatus }
 private struct RevealResult: Encodable { var profile: String; var path: String; var localPath: String }
+private struct ResolveResult: Encodable {
+    var profile: String; var path: String; var resolution: String
+    var copyPath: String?; var uploaded: Bool?; var exportedTo: String?
+}
 private struct DoctorCheck: Encodable { var name: String; var state: String; var detail: String }
 private struct DoctorResult: Encodable { var stateDirectory: String; var profiles: [String]; var checks: [DoctorCheck] }

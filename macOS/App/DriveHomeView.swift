@@ -19,6 +19,11 @@ struct DriveHomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             model.resumeAfterSettings()
         }
+        .sheet(isPresented: $model.reviewOpen) {
+            ChangesReviewView(decisions: model.uploadActivity?.decisions ?? [],
+                              ownerName: model.driveNotices?.ownedElsewhere.map { $0.ownerName ?? "another Mac" },
+                              busyPath: model.resolvingPath, actions: model.reviewActions())
+        }
         .sheet(isPresented: $model.appearanceOpen) {
             if let profile = model.profiles.first {
                 DriveAppearanceView(profile: profile, stateRoot: model.stateRoot) { updated in
@@ -84,6 +89,9 @@ extension MenuModel {
                 case .openSystemSettings: self.openExtensionSettings()
                 case .connectDrive: if let profile { self.continueSetup(profile) }
                 case .openInFinder: if let profile { self.reveal(profile) }
+                case .reviewChanges:
+                    show("connections")
+                    self.reviewOpen = true
                 }
             },
             checkAgain: { [weak self] in if let profile { self?.continueSetup(profile) } },
