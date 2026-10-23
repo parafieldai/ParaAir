@@ -110,7 +110,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
     /// False: billing is set up without what checkout needs (keys, prices, notice settings): 503 `billing_unavailable`.
     var billingConfigured = true
     /// The service's `DISCLOSURE_VERSION`; a checkout naming another is 409 `disclosure_outdated`.
-    var disclosureVersion = "A-draft-2026-10-09"
+    var disclosureVersion = "A-draft-2026-10-23"
     /// Prices the offer lists instead of the catalog's (the server's catalog after a price change).
     var priceOverrides: [String: Int] = [:]
     /// An earlier checkout of the workspace was paid but its subscription has not arrived: a new checkout is 409 `busy`.
@@ -917,9 +917,9 @@ final class FakeParaAirCloud: @unchecked Sendable {
                            : "We will email you 25 to 30 days before each yearly renewal.")
         }
         bullets.append(team
-            ? "The owner, or an admin with billing access, can cancel any time online in the ParaAir app (Settings > Account > Subscription) or at \(accountURL). "
+            ? "The owner, or an admin with billing access, can cancel any time online in the ParaAir app (Storage Settings > Manage Plan) or at \(accountURL). "
                 + "Cancel before your renewal date to avoid the next charge."
-            : "Cancel any time online: in the ParaAir app (Settings > Account > Subscription) or at \(accountURL). Cancel before your renewal date "
+            : "Cancel any time online: in the ParaAir app (Storage Settings > Manage Plan) or at \(accountURL). Cancel before your renewal date "
                 + "to avoid the next charge. You keep access until the end of the \(period) you paid for.")
         bullets.append("Full refund if you ask within 14 days of this first payment\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
         bullets.append("We will email you at least 14 days before any price change, and you can cancel first.")

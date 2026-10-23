@@ -68,20 +68,20 @@ Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted an
 
 ```json
 {"workspaceId":"ws_…","plan":"team","interval":"year","seats":3,"extraStorageTb":0,
- "disclosureVersion":"A-draft-2026-10-09","consent":{"autoRenew":true,"terms":true}}
+ "disclosureVersion":"A-draft-2026-10-23","consent":{"autoRenew":true,"terms":true}}
 ```
 
 - `plan` is `personal` or `team` and must equal the workspace's `kind`; `interval` is `month` or `year`.
 - `seats`: Team only, 1 to 1000, at least the workspace's current member count; default the member count. Personal accepts only `1` or no value.
 - `extraStorageTb`: 0 to 100 added 1 TB blocks, default 0.
-- `disclosureVersion` and `consent` (added 2026-10-13): the version of the disclosure text the app showed (`disclosureVersion` of `GET /v1/billing/offer`) and the two unticked boxes the buyer ticked (subscription policy 7.1: automatic renewal, and the Terms and the policy). Send both or neither: with both, `consent.autoRenew` and `consent.terms` must be `true` and the version must be the server's current one; the server stores them with the checkout record, with the time and the `X-ParaAir-Client` version. Older apps send neither and keep working; their checkout records no app consent.
+- `disclosureVersion` and `consent` (added 2026-10-13): the version of the disclosure text the app showed (`disclosureVersion` of `GET /v1/billing/offer`) and the two unticked boxes the buyer ticked (subscription policy 7.1: automatic renewal, and the Terms and the policy). Both are required (since 2026-10-23): `consent.autoRenew` and `consent.terms` must be `true` and the version must be the server's current one; the server stores them with the checkout record, with the time and the `X-ParaAir-Client` version, and the confirmation email cites that record. No released app sent checkout without them.
 - Each workspace keeps one processor customer, so every checkout and the portal use the same one. A new checkout makes the workspace's earlier unpaid checkouts unpayable (Stripe expires the session, Paddle cancels the transaction); a subscription paid for one of them anyway is cancelled and refunded in full.
 - 200 `{"url":"https://…"}`: open it in the browser. Stripe returns its hosted checkout; Paddle returns the service's payment link page (`<issuer>/billing/pay?_ptxn=txn_…`). The plan changes only when the processor's webhook arrives; refresh `GET /v1/me` afterwards. A subscription whose plan, interval, seats or storage differ from what this request asked for is not applied: it is cancelled and refunded.
 - The browser comes back to `<issuer>/billing/success` or `<issuer>/billing/cancel` (plain pages that say to return to ParaAir).
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | bad plan, interval, seats or storage; plan does not match the workspace kind; seats below the member count; `disclosureVersion` without `consent` (or the reverse), or a box not ticked |
+| 400 | `invalid_request` | bad plan, interval, seats or storage; plan does not match the workspace kind; seats below the member count; `disclosureVersion` or `consent` missing, or a box not ticked |
 | 403 | `forbidden` | the caller is not the workspace owner |
 | 403 | `suspended` | the workspace is suspended |
 | 404 | `workspace_not_found` | not a member of that workspace (existence never leaks) |
@@ -97,7 +97,7 @@ Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted an
 Access token. Added 2026-10-13. What the server sells and how, so the plan sheet shows exactly what checkout records and charges. Optional query: `plan`, `interval`, `seats`, `extraStorageTb` (the same rules as checkout; `seats` defaults to 1).
 
 ```json
-{"provider":"paddle","merchantOfRecord":{"name":"Paddle","reseller":true},"disclosureVersion":"A-draft-2026-10-09","currency":"USD",
+{"provider":"paddle","merchantOfRecord":{"name":"Paddle","reseller":true},"disclosureVersion":"A-draft-2026-10-23","currency":"USD",
  "prices":[{"item":"personal_month","kind":"plan","plan":"personal","interval":"month","unitAmountCents":1000,"perMember":false},
            {"item":"team_year","kind":"plan","plan":"team","interval":"year","unitAmountCents":16000,"perMember":true},
            {"item":"storage_month","kind":"storage","plan":null,"interval":"month","unitAmountCents":1000,"perMember":false}],

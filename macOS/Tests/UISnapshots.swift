@@ -1322,7 +1322,7 @@ final class BillingRecorder: @unchecked Sendable {
 /// (cloud/src/billing/disclosure.ts, refund Option A) for the snapshot day. `requests` records the selections asked for.
 final class OfferBox: @unchecked Sendable {
     let provider: ParaAirCloudBilling.Provider
-    let version = "A-draft-2026-10-09"
+    let version = "A-draft-2026-10-23"
     private let prices: [String: Int]
     private let failure: DriveError?
     private let lock = NSLock()
@@ -1395,9 +1395,9 @@ final class OfferBox: @unchecked Sendable {
                            : "We will email you 25 to 30 days before each yearly renewal.")
         }
         bullets.append(team
-            ? "The owner, or an admin with billing access, can cancel any time online in the ParaAir app (Settings > Account > Subscription) or at \(account). "
+            ? "The owner, or an admin with billing access, can cancel any time online in the ParaAir app (Storage Settings > Manage Plan) or at \(account). "
                 + "Cancel before your renewal date to avoid the next charge."
-            : "Cancel any time online: in the ParaAir app (Settings > Account > Subscription) or at \(account). Cancel before your renewal date "
+            : "Cancel any time online: in the ParaAir app (Storage Settings > Manage Plan) or at \(account). Cancel before your renewal date "
                 + "to avoid the next charge. You keep access until the end of the \(period) you paid for.")
         bullets.append("Full refund if you ask within 14 days of this first payment\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
         bullets.append("We will email you at least 14 days before any price change, and you can cancel first.")
