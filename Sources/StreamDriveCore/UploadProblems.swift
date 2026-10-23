@@ -21,9 +21,11 @@ public extension UploadRecord {
     var needsDecision: Bool { state == "conflict" || lastErrno == EROFS }
 
     /// Uploads of this file keep failing. ParaAir keeps retrying; the change stays on this Mac.
+    /// Network errors count only by duration: retries come fast, so a short drop would
+    /// otherwise reach `minFailures` in about half a minute.
     func isFailing(now: Int64, policy: UploadFailurePolicy = .standard) -> Bool {
-        guard !needsDecision, lastErrno != nil else { return false }
-        if failures >= policy.minFailures { return true }
+        guard !needsDecision, let code = lastErrno else { return false }
+        if failures >= policy.minFailures, !UploadFailureReason.unreachable.contains(code) { return true }
         guard let since = failingSinceNanoseconds, now >= since else { return false }
         return now - since >= policy.minDurationNanoseconds
     }
@@ -57,9 +59,12 @@ public struct UploadFailureSummary: Codable, Sendable, Equatable {
 /// Why uploads fail, in plain words, from the errno storage reported. Lowercase, so it
 /// follows "Couldn’t upload 3 files:".
 public enum UploadFailureReason {
+    /// Errors that mean storage couldn't be reached, rather than that it refused the upload.
+    public static let unreachable: Set<Int32> = [ENETDOWN, ENETUNREACH, EHOSTUNREACH, ETIMEDOUT, ECONNRESET, ECONNREFUSED, ENOTCONN]
+
     public static func text(_ code: Int32, cloud: Bool) -> String {
         switch code {
-        case ENETDOWN, ENETUNREACH, EHOSTUNREACH, ETIMEDOUT, ECONNRESET, ECONNREFUSED, ENOTCONN:
+        case _ where unreachable.contains(code):
             return cloud ? "ParaAir Cloud can’t be reached" : "your storage can’t be reached"
         case EACCES, EPERM:
             return cloud ? "ParaAir Cloud needs you to sign in again" : "your storage refused access; its key may have been revoked"

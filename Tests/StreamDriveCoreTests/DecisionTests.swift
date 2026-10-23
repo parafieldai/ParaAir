@@ -116,13 +116,15 @@ final class DecisionTests: XCTestCase {
         }
         let uploads = [record("/a", EIO, since: 300), record("/b", ENETDOWN, since: 100), record("/c", ENETDOWN, since: 200),
                        record("/d", nil, since: 50), record("/e", EROFS, since: 10), record("/f", ESTALE, since: 20, state: "conflict")]
-        let summary = UploadFailureSummary.make(uploads, now: 1_000)
-        XCTAssertEqual(summary, UploadFailureSummary(count: 3, errno: ENETDOWN, oldestChangeNanoseconds: 100),
-                       "Waiting files and changes that need a decision aren't failures")
-        XCTAssertEqual(UploadFailureSummary.make(uploads, now: 1_000, excluding: { $0.lastErrno == ENETDOWN })?.errno, EIO)
+        // Network errors count only once they have lasted the policy's duration.
+        XCTAssertEqual(UploadFailureSummary.make(uploads, now: 1_000), UploadFailureSummary(count: 1, errno: EIO, oldestChangeNanoseconds: 300),
+                       "Waiting files, changes that need a decision and short network drops aren't failures")
+        let later = 1_000_000_000_000 as Int64
+        XCTAssertEqual(UploadFailureSummary.make(uploads, now: later), UploadFailureSummary(count: 3, errno: ENETDOWN, oldestChangeNanoseconds: 100))
+        XCTAssertEqual(UploadFailureSummary.make(uploads, now: later, excluding: { $0.lastErrno == ENETDOWN })?.errno, EIO)
         XCTAssertNil(UploadFailureSummary.make([record("/d", nil, since: 50)], now: 1_000))
         // A tie goes to the lower errno, so the cause doesn't flicker between polls.
-        XCTAssertEqual(UploadFailureSummary.make([record("/a", EIO, since: 1), record("/b", ETIMEDOUT, since: 1)], now: 9)?.errno, EIO)
+        XCTAssertEqual(UploadFailureSummary.make([record("/a", EIO, since: 1), record("/b", EACCES, since: 1)], now: 9)?.errno, EIO)
     }
 
     func testReasonsAreInPlainWords() {
@@ -136,6 +138,41 @@ final class DecisionTests: XCTestCase {
     }
 
     // MARK: Changes that need a decision
+
+    /// Once this Mac owns the drive again, refused changes go back to uploading by themselves.
+    func testRefusedChangesUploadAgainOnceTheDriveIsBack() throws {
+        _ = try drive.create("/refused.txt", directory: false)
+        _ = try drive.write("/refused.txt", offset: 0, data: Data("mine".utf8))
+        backend.owner = StorageOwnership(ownedElsewhere: true, ownerName: "Laptop")
+        _ = try drive.ownedElsewhere(refresh: true)
+        backend.commitError = DriveError(EROFS, "Read-only", disposition: .attemptNotDispatched)
+        _ = try drive.flushUploads()
+        XCTAssertEqual(try drive.changesNeedingDecision().map(\.path), ["/refused.txt"])
+        backend.commitError = nil
+        backend.owner = StorageOwnership(ownedElsewhere: false)
+        XCTAssertNil(try drive.ownedElsewhere(refresh: true))
+        XCTAssertTrue(try drive.changesNeedingDecision().isEmpty)
+        _ = try drive.flushUploads()
+        XCTAssertEqual(try remoteText("refused.txt"), "mine")
+    }
+
+    /// A copy that can't fit in the pending-write journal is refused before anything is copied.
+    func testKeepMineSaysWhenTheCopyIsTooLarge() throws {
+        try seed("big.bin", String(repeating: "a", count: 2 << 20))
+        try conflict("/big.bin", local: "B", at: 0, remoteText: "theirs")
+        XCTAssertThrowsError(try drive.keepMine("/big.bin", as: "big mine.bin")) { error in
+            XCTAssertEqual((error as? DriveError)?.code, ENOSPC)
+            XCTAssertTrue(((error as? DriveError)?.message ?? "").contains("Export your copy instead"))
+        }
+        XCTAssertEqual(try drive.uploads().first { $0.path == "/big.bin" }?.state, "conflict", "nothing changed")
+    }
+
+    func testExportRefusesAParaAirVolume() throws {
+        XCTAssertEqual(Engine.fileSystemName, "streamdrive")
+        let plist = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("macOS/Extension/Info.plist")
+        XCTAssertTrue(try String(contentsOf: plist, encoding: .utf8).contains("<key>FSShortName</key><string>\(Engine.fileSystemName)</string>"))
+    }
 
     func testConflictsAndRefusedChangesNeedADecisionAndAreNotFailures() throws {
         try seed("shared.txt", "original")

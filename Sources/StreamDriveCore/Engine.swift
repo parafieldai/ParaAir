@@ -10,7 +10,7 @@ public struct UploadRecord: Codable, Sendable {
     public var state: String
     public var lastError: String?
     public var lastErrno: Int32?
-    /// Failed upload attempts since the file last changed identity or published.
+    /// Failed upload attempts since the file's pending change began; reset only when it publishes.
     public var failures = 0
     /// Wall-clock nanoseconds of the first failure in the current run of failures.
     public var failingSinceNanoseconds: Int64?
@@ -1262,6 +1262,8 @@ public final class Engine {
     // MARK: Changes that need a decision
 
     static let conflictMessage = "This file changed elsewhere. Your copy is kept on this Mac until you choose which to keep."
+    /// The file system type ParaAir volumes report (FSShortName in the extension's Info.plist).
+    static let fileSystemName = "streamdrive"
 
     /// Pending changes that never upload by themselves: conflicts, and changes storage
     /// refuses from this Mac (EROFS). Each waits for keepMine, exportChange or keepTheirs.
@@ -1341,6 +1343,12 @@ public final class Engine {
     public func exportChange(_ value: String, to destination: URL, replacing: Bool = false) throws {
         let path = try canonicalPath(value)
         guard destination.isFileURL else { throw DriveError(EINVAL, "Choose a file on this Mac") }
+        // Exporting into a ParaAir drive would write back through the drive's own extension.
+        var volume = statfs()
+        if statfs(destination.deletingLastPathComponent().path, &volume) == 0,
+           withUnsafeBytes(of: volume.f_fstypename, { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }) == Self.fileSystemName {
+            throw DriveError(EINVAL, "Choose a folder outside your ParaAir drives")
+        }
         try withDecision(path) { item in
             let folder = destination.deletingLastPathComponent()
             let staged = folder.appendingPathComponent(".paraair-export-" + UUID().uuidString)
@@ -1353,6 +1361,7 @@ public final class Engine {
                 var offset: Int64 = 0
                 while offset < item.size {
                     let bytes = try readForDecision(path, offset: offset, length: Int(min(item.size - offset, 8 << 20)))
+                    guard !bytes.isEmpty else { throw DriveError(EIO, "Your copy is shorter than expected") }
                     try bytes.withUnsafeBytes { raw in
                         var written = 0
                         while written < raw.count {
@@ -1380,7 +1389,11 @@ public final class Engine {
             }
             published = true
             try DurableIO.syncDirectory(folder)
-            try discard(path, item)
+            do { try discard(path, item) }
+            catch let error as DriveError where error.code == EBUSY {
+                throw DriveError(EBUSY, "Your copy is saved at \(destination.path), but the file changed meanwhile, so its newer change "
+                                 + "stays on the drive. Review it again to decide about that change.")
+            }
         }
     }
 
@@ -1451,21 +1464,35 @@ public final class Engine {
                     .filter { !$0.isEmpty }
             }
         }
+        // The whole copy must fit in the pending-write journal; say so before copying anything.
+        let needed = uncovered.reduce(Int64(0)) { $0 + ($1.upperBound - $1.lowerBound) }
+        do { try lock.withLock { try ensureJournalSpace(needed) } }
+        catch let error as DriveError where error.code == ENOSPC {
+            throw DriveError(ENOSPC, "Your copy is too large to keep on the drive from this Mac: it would need "
+                             + "\(ByteCountFormatter.string(fromByteCount: needed, countStyle: .file)) more of this Mac’s space for waiting changes. "
+                             + "Export your copy instead.")
+        }
         for range in uncovered {
             var offset = range.lowerBound
             while offset < range.upperBound {
                 let bytes = try readForDecision(path, offset: offset, length: Int(min(range.upperBound - offset, 8 << 20)))
                 guard !bytes.isEmpty else { throw DriveError(EIO, "Your copy is shorter than expected") }
-                try lock.withLock {
-                    guard var current: Journal = try db.get("journal", path), unchanged(current, since: item) else {
-                        throw DriveError(EBUSY, "The file changed meanwhile, and its newer change is kept. Try again.")
+                // Written and flushed before taking the state lock, which every drive operation waits on.
+                let blob = UUID().uuidString + ".data", url = journal.appendingPathComponent(blob)
+                try lock.withLock { try ensureJournalSpace(Int64(bytes.count)) }
+                try DurableIO.write(bytes, to: url)
+                do {
+                    try lock.withLock {
+                        guard var current: Journal = try db.get("journal", path), unchanged(current, since: item) else {
+                            throw DriveError(EBUSY, "The file changed meanwhile, and its newer change is kept. Try again.")
+                        }
+                        // Beneath the local writes, which never overlap these ranges anyway.
+                        current.segments.insert(Segment(offset: offset, length: Int64(bytes.count), blob: blob), at: 0)
+                        try db.put("journal", path, current)
                     }
-                    try ensureJournalSpace(Int64(bytes.count))
-                    let blob = UUID().uuidString + ".data"
-                    try DurableIO.write(bytes, to: journal.appendingPathComponent(blob))
-                    // Beneath the local writes, which never overlap these ranges anyway.
-                    current.segments.insert(Segment(offset: offset, length: Int64(bytes.count), blob: blob), at: 0)
-                    try db.put("journal", path, current)
+                } catch {
+                    _ = Darwin.unlink(url.path)
+                    throw error
                 }
                 offset += Int64(bytes.count)
             }
@@ -1592,7 +1619,15 @@ public final class Engine {
             // Written only when it changes, so the write path rarely touches the database.
             if value != saved {
                 try lock.withLock(timeout: 10) {
-                    if let value { try db.put("index", "owner", value) } else { try db.delete("index", "owner") }
+                    if let value { try db.put("index", "owner", value) } else {
+                        try db.delete("index", "owner")
+                        // This Mac owns the drive again: changes storage refused upload on the next pass.
+                        let refused: [Journal] = try db.all("journal")
+                        for var item in refused where item.lastErrno == EROFS && item.state != "conflict" {
+                            item.lastErrno = nil; item.lastError = nil; item.nextAttemptAt = nil
+                            try db.put("journal", item.path, item)
+                        }
+                    }
                 }
             }
         }
