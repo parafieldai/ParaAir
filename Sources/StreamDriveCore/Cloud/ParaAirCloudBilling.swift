@@ -151,13 +151,16 @@ public struct ParaAirCloudBillingOffer: Equatable, Sendable {
         public var consent: String
         /// The free trial before the first charge (added 2026-10-27); nil without one. Checkout sends it back.
         public var trialDays: Int?
+        /// The short screen's lines before the processor's page (added 2026-10-27): price and renewal, how to cancel, the
+        /// refund, and with a trial what a failed first payment does. Empty from a service before them.
+        public var summary: [String] = []
         /// When the first charge falls: now without a trial, the trial's end with one. Nil from a service before trials.
         public var firstChargeAt: Date?
         public init(plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int, extraStorageTb: Int, amountCents: Int,
-                    currency: String, terms: [String], consent: String, trialDays: Int? = nil, firstChargeAt: Date? = nil) {
+                    currency: String, terms: [String], consent: String, trialDays: Int? = nil, firstChargeAt: Date? = nil, summary: [String] = []) {
             self.plan = plan; self.interval = interval; self.seats = seats; self.extraStorageTb = extraStorageTb
             self.amountCents = amountCents; self.currency = currency; self.terms = terms; self.consent = consent
-            self.trialDays = trialDays; self.firstChargeAt = firstChargeAt
+            self.trialDays = trialDays; self.firstChargeAt = firstChargeAt; self.summary = summary
         }
     }
 
@@ -230,7 +233,7 @@ extension ParaAirCloudBillingOffer: Decodable {
         struct Quote: Decodable {
             var plan: ParaAirCloudBilling.Plan; var interval: ParaAirCloudBilling.Interval; var seats: Int; var extraStorageTb: Int
             var amountCents: Int; var currency: String; var terms: [String]; var consent: String
-            var trialDays: Int?; var firstChargeAt: Date?
+            var trialDays: Int?; var firstChargeAt: Date?; var summary: [String]?
         }
         var provider: ParaAirCloudBilling.Provider
         var merchantOfRecord: Merchant
@@ -263,9 +266,11 @@ extension ParaAirCloudBillingOffer: Decodable {
                   q.plan == .team || q.seats == 1, q.amountCents >= 0, q.amountCents <= Self.maxUnitAmountCents * 1_100,
                   q.currency == wire.currency, (3...60).contains(q.terms.count), q.terms.allSatisfy({ Self.isDisplayable($0) }),
                   Self.isDisplayable(q.consent, max: 4000),
-                  q.trialDays.map({ (1...ParaAirCloudBilling.maxTrialDays).contains($0) }) ?? true else { throw corrupt("Invalid quote") }
+                  q.trialDays.map({ (1...ParaAirCloudBilling.maxTrialDays).contains($0) }) ?? true,
+                  (q.summary ?? []).count <= 8, (q.summary ?? []).allSatisfy({ Self.isDisplayable($0) }) else { throw corrupt("Invalid quote") }
             quote = Quote(plan: q.plan, interval: q.interval, seats: q.seats, extraStorageTb: q.extraStorageTb, amountCents: q.amountCents,
-                          currency: q.currency, terms: q.terms, consent: q.consent, trialDays: q.trialDays, firstChargeAt: q.firstChargeAt)
+                          currency: q.currency, terms: q.terms, consent: q.consent, trialDays: q.trialDays, firstChargeAt: q.firstChargeAt,
+                          summary: q.summary ?? [])
         }
         self.init(provider: wire.provider, merchant: Merchant(name: wire.merchantOfRecord.name, reseller: wire.merchantOfRecord.reseller),
                   disclosureVersion: wire.disclosureVersion, currency: wire.currency, prices: prices, quote: quote)
@@ -307,18 +312,24 @@ public struct ParaAirCloudOfferRequest: Equatable, Sendable {
     }
 }
 
-/// The checkout box and its two consent boxes, from the service's quote (Appendix A; policy 6.1 and 7.1). The text is
-/// shown as the service sends it, so the consent record's `disclosureVersion` names what the buyer read.
+/// The checkout screen's text from the service's quote (Appendix A; policy 6.1 and 7.1): the short summary it leads
+/// with, the full box behind "Show full terms", and the consent sentences beside one unticked box (operator decision
+/// 2026-10-27). The text is shown as the service sends it, so the consent record's `disclosureVersion` names what the
+/// buyer read.
 public struct ParaAirCloudCheckoutTerms: Equatable, Sendable {
+    /// What the screen leads with; empty from a service before summaries, which shows the full box instead.
+    public var summary: [String]
     public var heading: String
     public var priceLine: String
     public var bullets: [String]
+    /// Both consent sentences, as the one box shows them. Links are Markdown `[label](url)`.
+    public var consent: String
     /// The first box: automatic renewal at the stated price until cancelled (policy 7.1).
     public var renewalConsent: String
     /// The second box: the Terms and the policy. Links are Markdown `[label](url)`.
     public var documentsConsent: String
 
-    /// Nil when the quote cannot be shown as a box above two consent boxes; the plan sheet then offers no checkout.
+    /// Nil when the quote's text is not the shape the service sends; the plan sheet then offers no checkout.
     public init?(_ quote: ParaAirCloudBillingOffer.Quote) {
         guard quote.terms.count >= 3 else { return nil }
         var bullets: [String] = []
@@ -330,8 +341,8 @@ public struct ParaAirCloudCheckoutTerms: Equatable, Sendable {
         guard quote.consent.hasPrefix("I agree"), let split = quote.consent.range(of: ". I agree") else { return nil }
         let renewal = String(quote.consent[..<split.lowerBound]) + "."
         let documents = String(quote.consent[quote.consent.index(after: split.lowerBound)...]).trimmingCharacters(in: .whitespaces)
-        heading = quote.terms[0]; priceLine = quote.terms[1]; self.bullets = bullets
-        renewalConsent = renewal; documentsConsent = documents
+        summary = quote.summary; heading = quote.terms[0]; priceLine = quote.terms[1]; self.bullets = bullets
+        consent = quote.consent; renewalConsent = renewal; documentsConsent = documents
     }
 }
 

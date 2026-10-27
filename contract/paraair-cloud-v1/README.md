@@ -75,7 +75,7 @@ Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted an
 
 ```json
 {"workspaceId":"ws_…","plan":"personal","interval":"month","extraStorageTb":0,
- "disclosureVersion":"A-draft-2026-10-27","consent":{"autoRenew":true,"terms":true},"trialDays":7}
+ "disclosureVersion":"A-draft-2026-10-27b","consent":{"autoRenew":true,"terms":true},"trialDays":7}
 ```
 
 - `plan` is `personal` or `team` and must equal the workspace's `kind`; `interval` is `month` or `year`.
@@ -105,12 +105,13 @@ Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted an
 Access token. Added 2026-10-13. What the server sells and how, so the plan sheet shows exactly what checkout records and charges. Optional query: `plan`, `interval`, `seats`, `extraStorageTb` (the same rules as checkout; `seats` defaults to 1), and `workspaceId` (added 2026-10-27: a workspace the caller belongs to, so the quote includes the free trial its checkout starts; 404 `workspace_not_found` otherwise). Without `workspaceId` the quote assumes a workspace that has never had a subscription.
 
 ```json
-{"provider":"stripe","merchantOfRecord":{"name":"Link","reseller":true},"disclosureVersion":"A-draft-2026-10-27","currency":"USD",
+{"provider":"stripe","merchantOfRecord":{"name":"Link","reseller":true},"disclosureVersion":"A-draft-2026-10-27b","currency":"USD",
  "prices":[{"item":"personal_month","kind":"plan","plan":"personal","interval":"month","unitAmountCents":1000,"perMember":false},
            {"item":"team_year","kind":"plan","plan":"team","interval":"year","unitAmountCents":16000,"perMember":true},
            {"item":"storage_month","kind":"storage","plan":null,"interval":"month","unitAmountCents":1000,"perMember":false}],
  "quote":{"plan":"personal","interval":"month","seats":1,"extraStorageTb":0,"amountCents":1000,"currency":"USD",
           "trialDays":7,"firstChargeAt":"2026-11-03T14:02:11.000Z",
+          "summary":["Free for 7 days, then $10.00 per month plus tax, renewing automatically every month until you cancel.","…"],
           "terms":["ParaAir Cloud Personal, billed monthly","$10.00 per month plus tax after a 7-day free trial. Renews automatically every month until you cancel.",
                    "- Today you pay nothing. Your free trial ends on November 3, 2026.","- …"],
           "consent":"I agree that my ParaAir Cloud Personal plan renews automatically after the 7-day free trial at … I agree to the Terms of Service and the …"}}
@@ -123,7 +124,7 @@ Access token. Added 2026-10-13. What the server sells and how, so the plan sheet
 | `disclosureVersion` | the current disclosure version; send it back as checkout's `disclosureVersion` |
 | `currency` | the catalog currency (prices are before tax; the processor may charge local currency, shown at its checkout) |
 | `prices` | the catalog items this server sells (those in its price map): `unitAmountCents` per unit per interval, `perMember` for Team |
-| `quote` | with `plan` and `interval`: the amount of the first charge before tax, `trialDays` (the free trial before it, null for none) and `firstChargeAt` (when it falls: now, or when the trial ends), and the disclosure (Appendix A): `terms` (a heading, the price line, then bullets prefixed `- `) and the `consent` sentences, exactly what the checkout records under `disclosureVersion`; null without them or when that plan is not sold. Links in `consent` are Markdown `[label](url)` |
+| `quote` | with `plan` and `interval`: the amount of the first charge before tax, `trialDays` (the free trial before it, null for none) and `firstChargeAt` (when it falls: now, or when the trial ends), and the disclosure (Appendix A): `summary` (added 2026-10-27: three or four sentences the app's checkout screen leads with, namely the price and automatic renewal, how to cancel, the refund, and with a trial what a failed first payment does), `terms` (a heading, the price line, then bullets prefixed `- `; the app shows them behind "Show full terms") and the `consent` sentences (one box in the app covers both), exactly what the checkout records under `disclosureVersion`; null without them or when that plan is not sold. Links in `consent` are Markdown `[label](url)` |
 
 Errors: 401 `unauthorized`; 404 `not_found` when billing is off; 400 `invalid_request` for bad query values; 503 `billing_unavailable` as for checkout.
 

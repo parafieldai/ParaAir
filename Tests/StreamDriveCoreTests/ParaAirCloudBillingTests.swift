@@ -396,7 +396,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
 
     func testOfferDecodesTheContractExample() throws {
         let example = Data("""
-        {"provider":"paddle","merchantOfRecord":{"name":"Paddle","reseller":true},"disclosureVersion":"A-draft-2026-10-27","currency":"USD",
+        {"provider":"paddle","merchantOfRecord":{"name":"Paddle","reseller":true},"disclosureVersion":"A-draft-2026-10-27b","currency":"USD",
          "prices":[{"item":"personal_month","kind":"plan","plan":"personal","interval":"month","unitAmountCents":1000,"perMember":false},
                    {"item":"team_year","kind":"plan","plan":"team","interval":"year","unitAmountCents":16000,"perMember":true},
                    {"item":"storage_month","kind":"storage","plan":null,"interval":"month","unitAmountCents":1000,"perMember":false},
@@ -408,7 +408,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
         let offer = try ParaAirCloudJSON.decode(ParaAirCloudBillingOffer.self, from: example)
         XCTAssertEqual(offer.provider, .paddle)
         XCTAssertEqual(offer.merchant, .init(name: "Paddle", reseller: true))
-        XCTAssertEqual(offer.disclosureVersion, "A-draft-2026-10-27")
+        XCTAssertEqual(offer.disclosureVersion, "A-draft-2026-10-27b")
         XCTAssertEqual(offer.prices.map(\.item), ["personal_month", "team_year", "storage_month"], "an unknown kind of item is skipped")
         XCTAssertEqual(offer.unitAmountCents(.personal, .month), 1_000)
         XCTAssertNil(offer.unitAmountCents(.personal, .year), "only what the price map sells")
@@ -511,6 +511,11 @@ final class ParaAirCloudBillingTests: XCTestCase {
         XCTAssertTrue(terms.bullets[0].hasPrefix("Today you pay nothing. Your free trial ends on "))
         XCTAssertTrue(terms.bullets[1].hasPrefix("Then Link, our reseller, charges $10.00 plus tax on "))
         XCTAssertTrue(terms.renewalConsent.hasPrefix("I agree that my ParaAir Cloud Personal plan renews automatically after the 7-day free trial at $10.00"))
+        // The short screen leads with the summary; the one box shows both consent sentences.
+        XCTAssertEqual(terms.summary.first, "Free for 7 days, then $10.00 per month plus tax, renewing automatically every month until you cancel.")
+        XCTAssertEqual(terms.summary.count, 4)
+        XCTAssertTrue(terms.summary[1].hasPrefix("Cancel online before ") && terms.summary[1].contains(" UTC to pay nothing: in ParaAir (Storage Settings > Manage Plan) or at "))
+        XCTAssertEqual(terms.consent, terms.renewalConsent + " " + terms.documentsConsent)
         let consent = ParaAirCloudCheckoutConsent(disclosureVersion: offer.disclosureVersion, autoRenew: true, terms: true)
         expectBillingError(ESTALE, "The plan terms changed. Read them again and agree to continue") {
             _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month, consent: consent))
@@ -543,7 +548,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
         _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .year, consent: consent))
         let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: try XCTUnwrap(fake.requests("POST /v1/billing/checkout").last).body) as? [String: Any])
         XCTAssertEqual(Set(body.keys), ["workspaceId", "plan", "interval", "extraStorageTb", "disclosureVersion", "consent"])
-        XCTAssertEqual(body["disclosureVersion"] as? String, "A-draft-2026-10-27")
+        XCTAssertEqual(body["disclosureVersion"] as? String, "A-draft-2026-10-27b")
         XCTAssertEqual(body["consent"] as? [String: Bool], ["autoRenew": true, "terms": true])
         XCTAssertEqual(fake.checkouts.last?["disclosureVersion"] as? String, offer.disclosureVersion, "the service recorded the version shown")
 
@@ -583,7 +588,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
     func testMalformedOffersAreRefused() throws {
         fake.billingProvider = "paddle"
         let valid: [String: Any] = [
-            "provider": "paddle", "merchantOfRecord": ["name": "Paddle", "reseller": true], "disclosureVersion": "A-draft-2026-10-27",
+            "provider": "paddle", "merchantOfRecord": ["name": "Paddle", "reseller": true], "disclosureVersion": "A-draft-2026-10-27b",
             "currency": "USD", "prices": [["item": "personal_month", "kind": "plan", "plan": "personal", "interval": "month",
                                            "unitAmountCents": 1000, "perMember": false]],
             "quote": ["plan": "personal", "interval": "month", "seats": 1, "extraStorageTb": 0, "amountCents": 1000, "currency": "USD",
