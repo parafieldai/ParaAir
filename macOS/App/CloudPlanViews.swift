@@ -76,8 +76,9 @@ struct CloudPlanSheet: View {
         if case .loaded(let offer) = model.offer { return offer }
         return nil
     }
+    /// With the target workspace, so the quote includes the free trial its first checkout starts with.
     private var selection: ParaAirCloudOfferRequest {
-        ParaAirCloudOfferRequest(plan: plan, interval: interval, seats: plan == .team ? seats : 1)
+        ParaAirCloudOfferRequest(plan: plan, interval: interval, seats: plan == .team ? seats : 1, workspaceID: target?.id)
     }
 
     var body: some View {
@@ -124,18 +125,23 @@ struct CloudPlanSheet: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// "Sold by Paddle, our reseller." or "Sold by Parafield Inc.", from the offer (policy 2.2).
+    /// "Sold by Link, our reseller." or "Sold by Parafield Inc.", from the offer (policy 2.2).
     static func seller(_ offer: ParaAirCloudBillingOffer) -> String {
         let text = "Sold by \(offer.merchant.name)\(offer.merchant.reseller ? ", our reseller" : "")"
         return text.hasSuffix(".") ? text : text + "."
     }
+
+    /// "Starts with a 7-day free trial." for a workspace whose first checkout starts one (`/v1/me` billing.trialDays).
+    static func trialLine(_ days: Int?) -> String? { days.map { "Starts with a \($0)-day free trial." } }
 
     // MARK: Choose
 
     @ViewBuilder private var choose: some View {
         if let offer = loadedOffer {
             header("Choose a ParaAir Cloud plan",
-                   "Prices in \(offer.currency == "USD" ? "US dollars" : offer.currency), before tax. \(Self.seller(offer))")
+                   [Self.trialLine(target?.billing?.trialDays),
+                    "Prices in \(offer.currency == "USD" ? "US dollars" : offer.currency), before tax. \(Self.seller(offer))"]
+                .compactMap { $0 }.joined(separator: " "))
             if offer.sells(.personal) || offer.sells(.team) {
                 cards(offer)
             } else {
@@ -226,9 +232,12 @@ struct CloudPlanSheet: View {
             if case .loaded(let quote) = model.quote, quote.selection == selection { return quote }
             return nil
         }()
+        let trial = shown?.offer.quote?.trialDays
+        // With a trial the first charge waits for its end; the box below says the same in the service's words.
+        let firstCharge = trial == nil ? nil : shown?.offer.quote?.firstChargeAt.map { "First charge on \(CloudBillingPresentation.format($0))." }
         let detail = [plan == .team ? "For \(workspace.name)." : "For your personal workspace.",
-                      (shown?.offer ?? loadedOffer).map(Self.seller)].compactMap { $0 }.joined(separator: " ")
-        header("Review and agree", detail)
+                      (shown?.offer ?? loadedOffer).map(Self.seller), firstCharge].compactMap { $0 }.joined(separator: " ")
+        header(trial.map { "Start your \($0)-day free trial" } ?? "Review and agree", detail)
         if let shown {
             terms(shown.terms)
         } else if case .failed(let failed, let message) = model.quote, failed == selection {
@@ -249,12 +258,13 @@ struct CloudPlanSheet: View {
             }
             Button("Cancel", role: .cancel) { model.closePlans() }
                 .keyboardShortcut(.cancelAction)
-            Button("Agree and Continue to Payment") {
+            Button(trial == nil ? "Agree and Continue to Payment" : "Start Free Trial") {
                 guard let shown else { return }
                 model.startCheckout(ParaAirCloudCheckoutRequest(
                     workspaceID: workspace.id, plan: plan, interval: interval, seats: selection.seats,
                     consent: ParaAirCloudCheckoutConsent(disclosureVersion: shown.offer.disclosureVersion, autoRenew: agreesToRenewal,
-                                                         terms: agreesToTerms)))
+                                                         terms: agreesToTerms),
+                    trialDays: shown.offer.quote?.trialDays ?? 0))
             }
             .buttonStyle(.glideProminent)
             .keyboardShortcut(.defaultAction)
@@ -309,7 +319,8 @@ struct CloudPlanSheet: View {
         let billing = workspace?.billing
         let paid = billing?.status == .active || billing?.status == .pastDue
         if let billing, paid {
-            header("Your \(billing.plan.map { $0 == .team ? "Team " : "Personal " } ?? "")plan is active", nil)
+            header(billing.inTrial ? "Your free trial has started"
+                   : "Your \(billing.plan.map { $0 == .team ? "Team " : "Personal " } ?? "")plan is active", nil)
             // The plan size leads, as on the plan cards; it comes from /v1/me, so it is what the service now grants.
             VStack(alignment: .leading, spacing: 4) {
                 if let limit = workspace?.plan?.storageLimitBytes, limit > 0 {
@@ -318,8 +329,11 @@ struct CloudPlanSheet: View {
                         Text("of storage").font(.callout).foregroundStyle(Glide.quiet)
                     }
                 }
-                let period = billing.interval == .year ? "Billed yearly." : billing.interval == .month ? "Billed monthly." : nil
-                Text([period, billing.currentPeriodEnd.map { "Renews \(CloudBillingPresentation.format($0))." }].compactMap { $0 }.joined(separator: " "))
+                let period = billing.interval == .year ? "Billed yearly" : billing.interval == .month ? "Billed monthly" : nil
+                let lines = billing.inTrial
+                    ? [billing.trialEndsAt.map { "Free trial until \(CloudBillingPresentation.format($0))." }, period.map { $0 + " after that." }]
+                    : [period.map { $0 + "." }, billing.currentPeriodEnd.map { "Renews \(CloudBillingPresentation.format($0))." }]
+                Text(lines.compactMap { $0 }.joined(separator: " "))
                     .foregroundStyle(Glide.quiet)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -331,11 +345,14 @@ struct CloudPlanSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             header("Finish in your browser", nil)
-            Text("Complete the payment on the page that opened. ParaAir updates your plan when the payment goes through.")
+            Text((model.pendingCheckout?.trialDays ?? 0) > 0
+                 ? "Add your payment method on the page that opened. Nothing is charged until your free trial ends. ParaAir shows the trial as soon as it starts."
+                 : "Complete the payment on the page that opened. ParaAir updates your plan when the payment goes through.")
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
-                Text("Waiting for the payment to go through…").foregroundStyle(Glide.quiet)
+                Text((model.pendingCheckout?.trialDays ?? 0) > 0 ? "Waiting for your trial to start…" : "Waiting for the payment to go through…")
+                    .foregroundStyle(Glide.quiet)
             }
             .accessibilityElement(children: .combine)
         }

@@ -24,6 +24,7 @@ struct CloudBillingPresentation: Equatable {
     var controls: [Control] = []
 
     static let choosePlan = Control(action: .choosePlan, title: "Choose a Plan…")
+    static let startTrial = "Start Free Trial…"
     static let managePlan = Control(action: .managePlan, title: "Manage Plan…")
     /// While a payment page is open: the sheet shows it again (or starts over), never a second checkout.
     static let finishPayment = Control(action: .choosePlan, title: "Finish Payment…")
@@ -51,6 +52,13 @@ struct CloudBillingPresentation: Equatable {
         return result
     }
 
+    /// A self-serve workspace nothing has paid for yet: no subscription and no storage (contract README "Billing",
+    /// added 2026-10-27). Uploads fail until its free trial or a plan starts.
+    static func isUnpaid(_ workspace: ParaAirCloudMe.Workspace?) -> Bool {
+        guard let workspace, let billing = workspace.billing, let plan = workspace.plan else { return false }
+        return billing.status == .none && plan.storageLimitBytes == 0
+    }
+
     private static func presentation(_ workspace: ParaAirCloudMe.Workspace, _ billing: ParaAirCloudBilling,
                                      planChoiceAvailable: Bool) -> CloudBillingPresentation {
         let owner = workspace.role == "owner"
@@ -60,16 +68,38 @@ struct CloudBillingPresentation: Equatable {
         switch billing.status {
         case .none:
             result.summary = nil
-            if planChoiceAvailable { result.controls = [choosePlan] }
+            // The workspace's first checkout starts a free trial: the button says so.
+            let title = billing.trialDays == nil ? choosePlan.title : startTrial
+            if isUnpaid(workspace) {
+                // "No storage yet" is the headline (Storage Settings) or the drive status (home, menu bar); this says what to do.
+                let trial = billing.trialDays.map { "Start your \($0)-day free trial to store files in ParaAir Cloud. Nothing is charged before it ends." }
+                result.notice = .init(id: "billing", text: owner
+                    ? trial ?? "Choose a plan to store files in ParaAir Cloud."
+                    : "This workspace has no storage yet. Ask the workspace owner to choose a plan.", tone: .attention)
+                if planChoiceAvailable, owner { result.controls = [Control(action: .choosePlan, title: title, prominent: true)] }
+            } else if planChoiceAvailable {
+                result.controls = [Control(action: .choosePlan, title: title)]
+            }
         case .active where billing.cancelAtPeriodEnd:
             let end = day(billing.readOnlyAt ?? billing.currentPeriodEnd)
             result.date = end.map { Row(label: "Ends", value: $0) }
             let after = day(billing.deletionAt).map { "Files then stay read-only until \($0) and are deleted after that." }
                 ?? "Files then stay read-only for 30 days and are deleted after that."
             let ends = end.map { " and ends on \($0)" } ?? ""
-            result.notice = .init(id: "billing", text: owner
-                ? "Your plan is cancelled\(ends). \(after) To keep it, resume the plan in Manage Plan."
-                : "This workspace’s plan is cancelled\(ends). \(after)", tone: .attention)
+            if billing.inTrial {
+                // Cancelled during the free trial: it ends then, and nothing is ever charged.
+                result.notice = .init(id: "billing", text: owner
+                    ? "Your free trial is cancelled\(ends), and you won’t be charged. \(after) To keep the plan, resume it in Manage Plan."
+                    : "This workspace’s free trial is cancelled\(ends). \(after)", tone: .attention)
+            } else {
+                result.notice = .init(id: "billing", text: owner
+                    ? "Your plan is cancelled\(ends). \(after) To keep it, resume the plan in Manage Plan."
+                    : "This workspace’s plan is cancelled\(ends). \(after)", tone: .attention)
+            }
+            if portal { result.controls = [managePlan] }
+        case .active where billing.inTrial:
+            // The first charge falls when the trial ends; the summary says how it is billed after that.
+            result.date = day(billing.trialEndsAt).map { Row(label: "Free trial ends", value: $0) }
             if portal { result.controls = [managePlan] }
         case .active:
             result.date = day(billing.currentPeriodEnd).map { Row(label: "Renews", value: $0) }
@@ -124,7 +154,8 @@ struct CloudBillingPresentation: Equatable {
         guard let plan = billing.plan, let interval = billing.interval else { return nil }
         var parts = [plan == .team ? "Team" : "Personal"]
         if plan == .team, let seats = billing.seats, seats > 0 { parts.append(seats == 1 ? "1 seat" : "\(seats) seats") }
-        parts.append(interval == .year ? "billed yearly" : "billed monthly")
+        // In a trial that renews, billing starts when it ends; a cancelled trial is never billed, so it says nothing more.
+        parts.append((interval == .year ? "billed yearly" : "billed monthly") + (billing.inTrial && !billing.cancelAtPeriodEnd ? " after the trial" : ""))
         if billing.extraStorageTb > 0 { parts.append("\(billing.extraStorageTb) TB added storage") }
         return parts.joined(separator: ", ")
     }

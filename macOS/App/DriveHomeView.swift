@@ -92,6 +92,9 @@ extension MenuModel {
                 case .reviewChanges:
                     show("connections")
                     self.reviewOpen = true
+                case .choosePlan:
+                    show("storage-settings")
+                    self.cloudAccount.perform(.choosePlan)
                 }
             },
             checkAgain: { [weak self] in if let profile { self?.continueSetup(profile) } },

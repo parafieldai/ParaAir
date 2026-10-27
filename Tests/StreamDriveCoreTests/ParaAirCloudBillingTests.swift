@@ -369,9 +369,34 @@ final class ParaAirCloudBillingTests: XCTestCase {
     // MARK: Offer, terms and consent
 
     /// contract/paraair-cloud-v1/README.md, "GET /v1/billing/offer".
+    /// Free trials (added 2026-10-27): the billing object and the quote carry them; a service from before omits them.
+    func testFreeTrialFieldsDecode() throws {
+        let trialing = """
+        {"provider":"stripe","status":"active","plan":"personal","interval":"month","seats":1,"extraStorageTb":0,
+         "currentPeriodEnd":"2026-11-03T00:00:00.000Z","cancelAtPeriodEnd":false,"graceEndsAt":null,"readOnlyAt":null,"deletionAt":null,
+         "checkoutAvailable":false,"portalAvailable":true,"trialDays":null,"trialEndsAt":"2026-11-03T00:00:00.000Z"}
+        """
+        let billing = try XCTUnwrap(try ParaAirCloudJSON.decode(ParaAirCloudMe.Workspace.self, from: Self.workspaceJSON(billing: trialing)).billing)
+        XCTAssertEqual(billing.trialEndsAt, ParaAirCloudJSON.parseDate("2026-11-03T00:00:00.000Z"))
+        XCTAssertTrue(billing.inTrial)
+        let offered = """
+        {"provider":"stripe","status":"none","plan":null,"interval":null,"seats":null,"extraStorageTb":0,"currentPeriodEnd":null,
+         "cancelAtPeriodEnd":false,"graceEndsAt":null,"readOnlyAt":null,"deletionAt":null,"checkoutAvailable":true,"portalAvailable":false,
+         "trialDays":7,"trialEndsAt":null}
+        """
+        let unpaid = try XCTUnwrap(try ParaAirCloudJSON.decode(ParaAirCloudMe.Workspace.self, from: Self.workspaceJSON(billing: offered)).billing)
+        XCTAssertEqual(unpaid.trialDays, 7)
+        XCTAssertFalse(unpaid.inTrial)
+        // A trial the app would never show is a malformed billing object, which decodes as none (billing UI fails closed).
+        for days in ["0", "-1", "366"] {
+            let bad = offered.replacingOccurrences(of: #""trialDays":7"#, with: #""trialDays":"# + days)
+            XCTAssertNil(try ParaAirCloudJSON.decode(ParaAirCloudMe.Workspace.self, from: Self.workspaceJSON(billing: bad)).billing, days)
+        }
+    }
+
     func testOfferDecodesTheContractExample() throws {
         let example = Data("""
-        {"provider":"paddle","merchantOfRecord":{"name":"Paddle","reseller":true},"disclosureVersion":"A-draft-2026-10-23","currency":"USD",
+        {"provider":"paddle","merchantOfRecord":{"name":"Paddle","reseller":true},"disclosureVersion":"A-draft-2026-10-27","currency":"USD",
          "prices":[{"item":"personal_month","kind":"plan","plan":"personal","interval":"month","unitAmountCents":1000,"perMember":false},
                    {"item":"team_year","kind":"plan","plan":"team","interval":"year","unitAmountCents":16000,"perMember":true},
                    {"item":"storage_month","kind":"storage","plan":null,"interval":"month","unitAmountCents":1000,"perMember":false},
@@ -383,7 +408,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
         let offer = try ParaAirCloudJSON.decode(ParaAirCloudBillingOffer.self, from: example)
         XCTAssertEqual(offer.provider, .paddle)
         XCTAssertEqual(offer.merchant, .init(name: "Paddle", reseller: true))
-        XCTAssertEqual(offer.disclosureVersion, "A-draft-2026-10-23")
+        XCTAssertEqual(offer.disclosureVersion, "A-draft-2026-10-27")
         XCTAssertEqual(offer.prices.map(\.item), ["personal_month", "team_year", "storage_month"], "an unknown kind of item is skipped")
         XCTAssertEqual(offer.unitAmountCents(.personal, .month), 1_000)
         XCTAssertNil(offer.unitAmountCents(.personal, .year), "only what the price map sells")
@@ -469,6 +494,46 @@ final class ParaAirCloudBillingTests: XCTestCase {
         XCTAssertEqual(fake.requests("GET /v1/billing/offer").count, before)
     }
 
+    /// Free trials (operator decisions 2026-10-27): the quote for a workspace says which trial its checkout starts, the
+    /// checkout sends it back, a checkout that leaves it out is refused as changed terms, and a user gets one trial.
+    func testFreeTrialComesFromTheQuoteAndCheckoutSendsItBack() throws {
+        fake.billingProvider = "stripe"; fake.stripeManaged = true; fake.trialDays = 7
+        XCTAssertEqual(try api().me().workspaces.first?.billing?.trialDays, 7)
+        let selection = ParaAirCloudOfferRequest(plan: .personal, interval: .month, workspaceID: account.workspaceID)
+        let offer = try api().billingOffer(selection)
+        XCTAssertEqual(fake.requests("GET /v1/billing/offer").last?.query["workspaceId"], account.workspaceID)
+        XCTAssertEqual(offer.merchant, .init(name: "Link", reseller: true))
+        let quote = try XCTUnwrap(offer.quote)
+        XCTAssertEqual(quote.trialDays, 7)
+        XCTAssertEqual(try XCTUnwrap(quote.firstChargeAt).timeIntervalSinceNow, 7 * 86_400, accuracy: 300)
+        let terms = try XCTUnwrap(ParaAirCloudCheckoutTerms(quote))
+        XCTAssertTrue(terms.priceLine.hasSuffix("per month plus tax after a 7-day free trial. Renews automatically every month until you cancel."))
+        XCTAssertTrue(terms.bullets[0].hasPrefix("Today you pay nothing. Your free trial ends on "))
+        XCTAssertTrue(terms.bullets[1].hasPrefix("Then Link, our reseller, charges $10.00 plus tax on "))
+        XCTAssertTrue(terms.renewalConsent.hasPrefix("I agree that my ParaAir Cloud Personal plan renews automatically after the 7-day free trial at $10.00"))
+        let consent = ParaAirCloudCheckoutConsent(disclosureVersion: offer.disclosureVersion, autoRenew: true, terms: true)
+        expectBillingError(ESTALE, "The plan terms changed. Read them again and agree to continue") {
+            _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month, consent: consent))
+        }
+        _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month, consent: consent,
+                                                                  trialDays: 7))
+        let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: try XCTUnwrap(fake.requests("POST /v1/billing/checkout").last).body) as? [String: Any])
+        XCTAssertEqual(body["trialDays"] as? Int, 7)
+        // The same user's team gets no second trial.
+        let team = fake.createTeamWorkspace(owner: account)
+        let teamOffer = try api().billingOffer(ParaAirCloudOfferRequest(plan: .team, interval: .month, workspaceID: team))
+        XCTAssertNil(teamOffer.quote?.trialDays)
+        XCTAssertTrue(teamOffer.quote.map { ParaAirCloudCheckoutTerms($0)?.bullets.first?.hasPrefix("You are buying") ?? false } ?? false)
+        // Invalid workspace ids and trial lengths never leave the Mac.
+        let before = fake.requests("GET /v1/billing/offer").count
+        expectDriveError(EINVAL) { _ = try api().billingOffer(ParaAirCloudOfferRequest(plan: .personal, interval: .month, workspaceID: "ws_nope")) }
+        XCTAssertEqual(fake.requests("GET /v1/billing/offer").count, before)
+        expectDriveError(EINVAL) {
+            _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month,
+                                                                      consent: consent, trialDays: 366))
+        }
+    }
+
     /// Review 2026-10-13 (app): checkout sends the version of the text the buyer read and both ticked boxes, and the
     /// service refuses a version it no longer shows.
     func testCheckoutRecordsTheDisclosureVersionAndConsent() throws {
@@ -478,7 +543,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
         _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .year, consent: consent))
         let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: try XCTUnwrap(fake.requests("POST /v1/billing/checkout").last).body) as? [String: Any])
         XCTAssertEqual(Set(body.keys), ["workspaceId", "plan", "interval", "extraStorageTb", "disclosureVersion", "consent"])
-        XCTAssertEqual(body["disclosureVersion"] as? String, "A-draft-2026-10-23")
+        XCTAssertEqual(body["disclosureVersion"] as? String, "A-draft-2026-10-27")
         XCTAssertEqual(body["consent"] as? [String: Bool], ["autoRenew": true, "terms": true])
         XCTAssertEqual(fake.checkouts.last?["disclosureVersion"] as? String, offer.disclosureVersion, "the service recorded the version shown")
 
@@ -518,7 +583,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
     func testMalformedOffersAreRefused() throws {
         fake.billingProvider = "paddle"
         let valid: [String: Any] = [
-            "provider": "paddle", "merchantOfRecord": ["name": "Paddle", "reseller": true], "disclosureVersion": "A-draft-2026-10-23",
+            "provider": "paddle", "merchantOfRecord": ["name": "Paddle", "reseller": true], "disclosureVersion": "A-draft-2026-10-27",
             "currency": "USD", "prices": [["item": "personal_month", "kind": "plan", "plan": "personal", "interval": "month",
                                            "unitAmountCents": 1000, "perMember": false]],
             "quote": ["plan": "personal", "interval": "month", "seats": 1, "extraStorageTb": 0, "amountCents": 1000, "currency": "USD",

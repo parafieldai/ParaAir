@@ -35,7 +35,7 @@ struct UISnapshots {
         for (name, input) in homeScenarios
         where ["1-first-run", "3-turn-on", "5-connected", "6-connected-sign-in", "10-cloud-quota-blocked", "11-cloud-signed-out",
                "14-cloud-past-due", "15-cloud-read-only", "16-cloud-pending-deletion", "17-owned-elsewhere",
-               "19-uploads-failing", "20-conflicts"].contains(name) {
+               "19-uploads-failing", "20-conflicts", "22-cloud-no-storage"].contains(name) {
             let view = MenuBarPanel(input: input, details: details(for: input),
                                     connectAutomatically: .constant(true), actions: HomeActions())
             try render(view, size: nil, appearance: .aqua, to: output.appendingPathComponent("menu-\(name)-light.png"))
@@ -140,6 +140,13 @@ struct UISnapshots {
         var conflicts = connected
         conflicts.sidebarMessage = nil
         conflicts.uploadActivity = UploadActivity(conflicts: 2, decisions: fixtureDecisions.filter { $0.kind == .conflict }, pendingBytes: 1_200_000_000)
+        var noStorage = cloudReady
+        noStorage.uploadActivity = nil
+        noStorage.cloudUsage = CloudUsage(workspace: fixtureMe(stored: 0, retained: 0, transfer: 0, billing: billingUnpaid, unpaid: true).workspaces.first,
+                                          state: .loaded, planChoiceAvailable: true)
+        var trial = cloudReady
+        trial.uploadActivity = nil
+        trial.cloudUsage = CloudUsage(workspace: fixtureMe(stored: 18_000_000_000, billing: billingTrial).workspaces.first, state: .loaded)
         var refusedByPlan = readOnly
         refusedByPlan.uploadActivity = UploadActivity(blockedElsewhere: 1, decisions: [
             PendingDecision(path: "/Edits/cut-04.mov", kind: .refused(cloud: true), size: 2_100_000_000, modified: fixtureNow)])
@@ -150,7 +157,8 @@ struct UISnapshots {
                 ("12-other-folder", otherFolder), ("13-cloud-plan-active", planActive), ("14-cloud-past-due", pastDue),
                 ("15-cloud-read-only", readOnly), ("16-cloud-pending-deletion", pendingDeletion),
                 ("17-owned-elsewhere", ownedElsewhere), ("18-index-backup-failing", backupFailing),
-                ("19-uploads-failing", uploadsFailing), ("20-conflicts", conflicts), ("21-cloud-read-only-changes", refusedByPlan)]
+                ("19-uploads-failing", uploadsFailing), ("20-conflicts", conflicts), ("21-cloud-read-only-changes", refusedByPlan),
+                ("22-cloud-no-storage", noStorage), ("23-cloud-trial", trial)]
     }()
 
     static let fixtureNow = Date(timeIntervalSince1970: 2_000_000_000)
@@ -173,7 +181,7 @@ struct UISnapshots {
     /// The drive's workspace first; `extra` workspaces follow it (for the plan sheet's Personal and Team choice).
     static func fixtureMe(stored: Int64, retained: Int64 = 3_100_000_000, transfer: Int64 = 48_300_000_000,
                           throttled: Bool = false, billing: ParaAirCloudBilling? = nil, kind: String = "personal", role: String = "owner",
-                          seats: Int = 1, status: String = "active", manageUrl: URL? = nil,
+                          seats: Int = 1, status: String = "active", manageUrl: URL? = nil, unpaid: Bool = false,
                           extra: [ParaAirCloudMe.Workspace] = []) -> ParaAirCloudMe {
         let now = Date(timeIntervalSince1970: 1_791_547_200)
         let usage = fixtureUsage(stored: stored, retained: retained, transfer: transfer, throttled: throttled)
@@ -181,7 +189,7 @@ struct UISnapshots {
                               session: .init(id: "grt_fixture", clientId: "paraair-macos", createdAt: now,
                                              expiresAt: now.addingTimeInterval(30 * 86_400)),
                               workspaces: [.init(id: fixtureWorkspaceID, name: kind == "team" ? "Studio" : "Personal", kind: kind, role: role,
-                                                 status: status, plan: fixturePlan(seats: seats, manageUrl: manageUrl), usage: usage,
+                                                 status: status, plan: unpaid ? fixtureUnpaidPlan : fixturePlan(seats: seats, manageUrl: manageUrl), usage: usage,
                                                  billing: billing)] + extra)
     }
 
@@ -190,6 +198,10 @@ struct UISnapshots {
                             transferAllowanceBytes: 3_000_000_000_000 * Int64(seats), retentionDays: seats > 1 ? 90 : 30,
                             retentionCapBytes: 150_000_000_000 * Int64(seats), seats: seats, manageUrl: manageUrl)
     }
+
+    /// A self-serve workspace before its free trial: the Personal plan's name and no storage.
+    static let fixtureUnpaidPlan = ParaAirCloudMe.Plan(id: "personal", name: "Personal", storageLimitBytes: 0, transferAllowanceBytes: 0,
+                                                       retentionDays: 30, retentionCapBytes: 0, seats: 1, manageUrl: nil)
 
     static func fixtureUsage(stored: Int64, retained: Int64 = 3_100_000_000, transfer: Int64 = 48_300_000_000,
                              throttled: Bool = false) -> ParaAirCloudMe.Usage {
@@ -209,6 +221,14 @@ struct UISnapshots {
 
     static func day(_ value: String) -> Date { ISO8601DateFormatter().date(from: value + "T00:00:00Z")! }
     static let billingBeta = ParaAirCloudBilling(provider: .paddle, status: .none, checkoutAvailable: true)
+    /// Stripe Managed Payments with free trials (operator decisions 2026-10-27): a new account, its trial, the trial cancelled.
+    static let billingUnpaid = ParaAirCloudBilling(provider: .stripe, status: .none, checkoutAvailable: true, trialDays: 7)
+    static let billingTrial = ParaAirCloudBilling(provider: .stripe, status: .active, plan: .personal, interval: .month, seats: 1,
+                                                  currentPeriodEnd: day("2026-10-19"), portalAvailable: true, trialEndsAt: day("2026-10-19"))
+    static let billingTrialCancelled = ParaAirCloudBilling(provider: .stripe, status: .active, plan: .personal, interval: .month, seats: 1,
+                                                           currentPeriodEnd: day("2026-10-19"), cancelAtPeriodEnd: true,
+                                                           readOnlyAt: day("2026-10-19"), deletionAt: day("2026-11-18"), portalAvailable: true,
+                                                           trialEndsAt: day("2026-10-19"))
     static let billingActive = ParaAirCloudBilling(provider: .paddle, status: .active, plan: .personal, interval: .year, seats: 1,
                                                    currentPeriodEnd: day("2027-10-12"), portalAvailable: true)
     static let billingCancelled = ParaAirCloudBilling(provider: .paddle, status: .active, plan: .personal, interval: .month, seats: 1,
@@ -422,6 +442,9 @@ struct UISnapshots {
             ("pending-deletion", fixtureMe(stored: 640_000_000_000, billing: billingPendingDeletion, status: "read_only")),
             ("deleting", fixtureMe(stored: 640_000_000_000, billing: billingDeleting, status: "read_only")),
             ("deleted", fixtureMe(stored: 0, retained: 0, transfer: 0, billing: billingDeleted, status: "read_only")),
+            ("unpaid", fixtureMe(stored: 0, retained: 0, transfer: 0, billing: billingUnpaid, unpaid: true)),
+            ("trial", fixtureMe(stored: 18_000_000_000, billing: billingTrial)),
+            ("trial-cancelled", fixtureMe(stored: 18_000_000_000, billing: billingTrialCancelled)),
         ]
         for (name, me) in storage {
             let cloud = try model("storage-\(name)", SummaryBox(me), recorder: BillingRecorder())
@@ -450,7 +473,7 @@ struct UISnapshots {
         settle { if case .loaded = buyer.quote { return true } else { return false } }
         try render(CloudPlanSheet(model: buyer, step: .review), size: nil, appearance: .aqua,
                    to: output.appendingPathComponent("plan-review-personal-light.png"))
-        let teamYear = ParaAirCloudOfferRequest(plan: .team, interval: .year, seats: 3)
+        let teamYear = ParaAirCloudOfferRequest(plan: .team, interval: .year, seats: 3, workspaceID: "ws_01J9ZX5Q4WJ3M8K2V7N6R1T0YD")
         buyer.loadQuote(teamYear)
         settle { if case .loaded = buyer.quote { return true } else { return false } }
         try render(CloudPlanSheet(model: buyer, step: .review, plan: .team, interval: .year, seats: 3, agreed: true),
@@ -478,6 +501,45 @@ struct UISnapshots {
         try render(CloudPlanSheet(model: buyer), size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-paid-light.png"))
         buyer.closePlans()
         expect(!buyer.planSheetPresented && buyer.checkout == .idle, "Done closes the sheet")
+
+        // A new account's free trial with Stripe Managed Payments (operator decisions 2026-10-27): the sheet says so and names
+        // Link as the seller, the quote is asked for the workspace, and checkout sends the trial the quote showed.
+        let trialSummary = SummaryBox(fixtureMe(stored: 0, retained: 0, transfer: 0, billing: billingUnpaid, unpaid: true))
+        let trialRecorder = BillingRecorder()
+        let trialOffer = OfferBox(provider: .stripe, managed: true, trialDays: 7)
+        let trialBuyer = try model("trial", trialSummary, recorder: trialRecorder, offer: trialOffer)
+        expect(trialBuyer.billing.controls == [.init(action: .choosePlan, title: CloudBillingPresentation.startTrial, prominent: true)],
+               "a workspace with no storage offers Start Free Trial…")
+        trialBuyer.perform(.choosePlan)
+        settle { offerLoaded(trialBuyer) }
+        try render(CloudPlanSheet(model: trialBuyer), size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-choose-trial-light.png"))
+        let trialPersonal = ParaAirCloudCheckoutRequest(workspaceID: fixtureWorkspaceID, plan: .personal, interval: .month, trialDays: 7)
+        trialBuyer.loadQuote(trialPersonal.selection)
+        settle { if case .loaded = trialBuyer.quote { return true } else { return false } }
+        if case .loaded(let quote) = trialBuyer.quote {
+            expect(quote.offer.quote?.trialDays == 7 && quote.terms.bullets.first == "Today you pay nothing. Your free trial ends on October 19, 2026.",
+                   "the quote includes the trial")
+        } else {
+            failures.append("the trial terms load")
+        }
+        expect(trialOffer.requests.last??.workspaceID == fixtureWorkspaceID, "the quote is asked for the workspace being bought for")
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(CloudPlanSheet(model: trialBuyer, step: .review, agreed: appearance == .darkAqua), size: nil, appearance: appearance,
+                       to: output.appendingPathComponent("plan-review-trial-\(suffix(appearance)).png"))
+        }
+        // A checkout without the trial the terms showed never starts.
+        var withoutTrial = trialPersonal
+        withoutTrial.trialDays = 0
+        withoutTrial.consent = ParaAirCloudCheckoutConsent(disclosureVersion: trialOffer.version, autoRenew: true, terms: true)
+        trialBuyer.startCheckout(withoutTrial)
+        expect(trialRecorder.requests.isEmpty, "a checkout must carry the trial the terms showed")
+        agree(trialBuyer, trialPersonal)
+        expect(trialRecorder.requests.map(\.trialDays) == [7] && trialBuyer.pendingCheckout?.trialDays == 7, "checkout sends the trial")
+        try render(CloudPlanSheet(model: trialBuyer), size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-waiting-trial-light.png"))
+        trialSummary.me = fixtureMe(stored: 0, retained: 0, transfer: 0, billing: billingTrial)
+        settle { trialBuyer.reloadSummary(); return trialBuyer.workspace?.billing?.inTrial == true }
+        try render(CloudPlanSheet(model: trialBuyer), size: nil, appearance: .aqua, to: output.appendingPathComponent("plan-paid-trial-light.png"))
+        trialBuyer.closePlans()
 
         // Only Personal on sale: Team explains why it can't be chosen.
         let paidTeam = ParaAirCloudBilling(provider: .stripe, status: .active, plan: .team, interval: .year, seats: 3,
@@ -744,8 +806,36 @@ struct UISnapshots {
         expect(make(billingDeleting).controls.isEmpty && make(billingDeleting).notice?.tone == .problem, "deleting offers nothing")
         expect(make(billingDeleted).controls == [CloudBillingPresentation.choosePlan], "a deleted workspace can choose a plan again")
 
+        // Free trials (operator decisions 2026-10-27).
+        let unpaid = { (role: String, choice: Bool) in
+            CloudBillingPresentation.make(fixtureMe(stored: 0, retained: 0, transfer: 0, billing: billingUnpaid, role: role, unpaid: true).workspaces.first,
+                                          state: .loaded, planChoiceAvailable: choice)
+        }
+        expect(unpaid("owner", true).notice == .init(id: "billing", text: "Start your 7-day free trial to store files in ParaAir Cloud. "
+                                                       + "Nothing is charged before it ends.", tone: .attention)
+               && unpaid("owner", true).controls == [.init(action: .choosePlan, title: "Start Free Trial…", prominent: true)],
+               "a workspace with no storage leads with the free trial")
+        expect(unpaid("member", false).controls.isEmpty
+               && unpaid("member", false).notice?.text == "This workspace has no storage yet. Ask the workspace owner to choose a plan.",
+               "a member is sent to the owner")
+        let unpaidUsage = CloudUsagePresentation.make(fixtureMe(stored: 0, billing: billingUnpaid, unpaid: true).workspaces.first, state: .loaded)
+        expect(unpaidUsage.unpaid && unpaidUsage.planLine == "No storage yet" && unpaidUsage.usedLine == nil, "no storage shows no figures")
+        expect(make(ParaAirCloudBilling(provider: .stripe, status: .none, checkoutAvailable: true, trialDays: 7), choice: true).controls
+               == [.init(action: .choosePlan, title: "Start Free Trial…")], "a beta workspace's first plan starts with the trial too")
+        let inTrial = make(billingTrial)
+        expect(inTrial.date == .init(label: "Free trial ends", value: "October 19, 2026") && inTrial.summary == "Personal, billed monthly after the trial"
+               && inTrial.notice == nil && inTrial.controls == [CloudBillingPresentation.managePlan], "a trial shows when it ends")
+        expect(make(billingTrialCancelled).notice?.text == "Your free trial is cancelled and ends on October 19, 2026, and you won’t be charged. "
+               + "Files then stay read-only until November 18, 2026 and are deleted after that. To keep the plan, resume it in Manage Plan.",
+               "a cancelled trial says nothing is charged")
+        expect(make(billingTrialCancelled).summary == "Personal, billed monthly", "a cancelled trial is never billed after it")
+
         // The home window carries the billing notice for ParaAir Cloud only; the menu bar panel shows it first.
         let scenarios = Dictionary(uniqueKeysWithValues: homeScenarios)
+        let noStorage = HomePresentation.make(scenarios["22-cloud-no-storage"]!)
+        expect(noStorage.status.title == "Connected, no storage yet" && noStorage.primary == .init(action: .choosePlan, title: "Start Free Trial…"),
+               "a drive with no storage yet leads with the free trial")
+        expect(!noStorage.notices.contains { $0.id == "billing" }, "the no-storage status replaces the billing notice on the home window")
         let home = HomePresentation.make(scenarios["14-cloud-past-due"]!)
         expect(home.notices.first == pastDue.notice && home.status.tone == .good, "past due keeps the drive connected and adds the notice")
         var ownBucket = scenarios["14-cloud-past-due"]!
@@ -1322,7 +1412,10 @@ final class BillingRecorder: @unchecked Sendable {
 /// (cloud/src/billing/disclosure.ts, refund Option A) for the snapshot day. `requests` records the selections asked for.
 final class OfferBox: @unchecked Sendable {
     let provider: ParaAirCloudBilling.Provider
-    let version = "A-draft-2026-10-23"
+    let version = "A-draft-2026-10-27"
+    /// Stripe Managed Payments (Link sells), and the free trial a quote for a workspace starts with.
+    let managed: Bool
+    let trialDays: Int
     private let prices: [String: Int]
     private let failure: DriveError?
     private let lock = NSLock()
@@ -1330,8 +1423,10 @@ final class OfferBox: @unchecked Sendable {
     static let catalog: [String: Int] = ["personal_month": 1_000, "personal_year": 10_000, "team_month": 1_600, "team_year": 16_000,
                                          "storage_month": 1_000, "storage_year": 12_000]
 
-    init(provider: ParaAirCloudBilling.Provider = .stripe, prices: [String: Int] = [:], failure: DriveError? = nil) {
+    init(provider: ParaAirCloudBilling.Provider = .stripe, prices: [String: Int] = [:], failure: DriveError? = nil, managed: Bool = false,
+         trialDays: Int = 0) {
         self.provider = provider; self.prices = Self.catalog.merging(prices) { $1 }; self.failure = failure
+        self.managed = managed; self.trialDays = trialDays
     }
     var requests: [ParaAirCloudOfferRequest?] { lock.withLock { asked } }
 
@@ -1352,33 +1447,46 @@ final class OfferBox: @unchecked Sendable {
         if let selection {
             let unit = prices["\(selection.plan.rawValue)_\(selection.interval.rawValue)"]!, block = prices["storage_\(selection.interval.rawValue)"]!
             let total = unit * (selection.plan == .team ? selection.seats : 1) + block * selection.extraStorageTb
-            let text = Self.disclosure(selection, unit: unit, block: block, total: total, seller: provider)
+            // The trial applies to a quote for a workspace (the sheet always names one).
+            let trial = selection.workspaceID == nil ? 0 : trialDays
+            let text = Self.disclosure(selection, unit: unit, block: block, total: total, seller: seller, trialDays: trial)
             quote = .init(plan: selection.plan, interval: selection.interval, seats: selection.seats, extraStorageTb: selection.extraStorageTb,
-                          amountCents: total, currency: "USD", terms: text.terms, consent: text.consent)
+                          amountCents: total, currency: "USD", terms: text.terms, consent: text.consent, trialDays: trial > 0 ? trial : nil,
+                          firstChargeAt: UISnapshots.day(trial > 0 ? "2026-10-19" : "2026-10-12"))
         }
-        return ParaAirCloudBillingOffer(provider: provider, merchant: provider == .paddle ? .init(name: "Paddle", reseller: true)
-                                            : .init(name: "Parafield Inc.", reseller: false),
-                                        disclosureVersion: version, currency: "USD", prices: rows, quote: quote)
+        let merchant: ParaAirCloudBillingOffer.Merchant = seller == "paddle" ? .init(name: "Paddle", reseller: true)
+            : seller == "link" ? .init(name: "Link", reseller: true) : .init(name: "Parafield Inc.", reseller: false)
+        return ParaAirCloudBillingOffer(provider: provider, merchant: merchant, disclosureVersion: version, currency: "USD", prices: rows, quote: quote)
     }
 
+    private var seller: String { provider == .paddle ? "paddle" : managed ? "link" : "parafield" }
+
+    /// For the snapshot day, October 12, 2026; a 7-day trial ends October 19.
     static func disclosure(_ s: ParaAirCloudOfferRequest, unit unitCents: Int, block: Int, total totalCents: Int,
-                           seller: ParaAirCloudBilling.Provider) -> (terms: [String], consent: String) {
+                           seller: String, trialDays: Int = 0) -> (terms: [String], consent: String) {
         let team = s.plan == .team, yearly = s.interval == .year, storageTb = s.extraStorageTb
         let unit = ParaAirCloudBillingCatalog.formatUSD(cents: unitCents), total = ParaAirCloudBillingCatalog.formatUSD(cents: totalCents)
-        let when = yearly ? "every year on October 12" : "on the 12th of every month"
+        let trial = trialDays > 0, firstDay = trial ? "October 19, 2026" : "October 12, 2026"
+        let when = yearly ? "every year on \(trial ? "October 19" : "October 12")" : "on the \(trial ? "19th" : "12th") of every month"
         let period = yearly ? "year" : "month"
-        let charger = seller == .paddle ? "Paddle, our reseller, charges" : "we charge"
+        let charger = seller == "paddle" ? "Paddle, our reseller, charges" : seller == "link" ? "Link, our reseller, charges" : "we charge"
         let account = UISnapshots.fixtureIssuer.absoluteString + "/billing/account"
         var terms = ["ParaAir Cloud \(team ? "Team" : "Personal"), billed \(yearly ? "yearly" : "monthly")",
-                     "\(unit) \(team ? "per member " : "")per \(period) plus tax. Renews automatically every \(period) until you cancel."]
+                     "\(unit) \(team ? "per member " : "")per \(period) plus tax\(trial ? " after a \(trialDays)-day free trial" : ""). "
+                        + "Renews automatically every \(period) until you cancel."]
         var bullets: [String] = []
         if team { bullets.append("You are buying \(s.seats) member seats\(storageTb > 0 ? " and added storage" : ""): \(total) per \(period) plus tax.") }
-        bullets.append("Today you pay \(total) plus any tax, which is shown before you pay.")
+        bullets.append(trial ? "Today you pay nothing. Your free trial ends on \(firstDay)." : "Today you pay \(total) plus any tax, which is shown before you pay.")
         if storageTb > 0 {
             bullets.append("This includes \(storageTb) TB of added storage at \(ParaAirCloudBillingCatalog.formatUSD(cents: block)) per TB per \(period) plus tax.")
         }
-        bullets.append(team ? "Then \(charger) for the current number of members, at \(unit) per member plus tax\(storageTb > 0 ? ", plus added storage" : ""), \(when)."
-                            : "Then \(charger) \(total) plus tax \(when).")
+        let starting = trial ? "on \(firstDay) and " : ""
+        bullets.append(team ? "Then \(charger) for the current number of members, at \(unit) per member plus tax\(storageTb > 0 ? ", plus added storage" : ""), \(starting)\(when)."
+                            : "Then \(charger) \(total) plus tax \(starting)\(when).")
+        if trial {
+            bullets.append("Cancel before \(firstDay) and you pay nothing. If that first payment fails, the plan stops at once: "
+                + "your files become read-only for 30 days, then are deleted.")
+        }
         if team {
             bullets.append("Your \(yearly ? "yearly" : "monthly") charge changes when you add or remove members. Adding a member charges a prorated amount "
                 + "\(yearly ? "for the rest of the year " : "")right away. Removing a member lowers the charge from your next \(yearly ? "yearly " : "")renewal; "
@@ -1399,12 +1507,13 @@ final class OfferBox: @unchecked Sendable {
                 + "Cancel before your renewal date to avoid the next charge."
             : "Cancel any time online: in the ParaAir app (Storage Settings > Manage Plan) or at \(account). Cancel before your renewal date "
                 + "to avoid the next charge. You keep access until the end of the \(period) you paid for.")
-        bullets.append("Full refund if you ask within 14 days of this first payment\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
+        bullets.append("Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
         bullets.append("We will email you at least 14 days before any price change, and you can cancel first.")
         terms += bullets.map { "- " + $0 }
+        let after = trial ? " after the \(trialDays)-day free trial" : ""
         let renewal = team
-            ? "I agree that this ParaAir Cloud Team plan renews automatically at \(unit) per member per \(period) plus tax, for the number of members at each renewal, until I cancel."
-            : "I agree that my ParaAir Cloud Personal plan renews automatically at \(total) per \(period) plus tax until I cancel."
+            ? "I agree that this ParaAir Cloud Team plan renews automatically\(after) at \(unit) per member per \(period) plus tax, for the number of members at each renewal, until I cancel."
+            : "I agree that my ParaAir Cloud Personal plan renews automatically\(after) at \(total) per \(period) plus tax until I cancel."
         let legal = UISnapshots.fixtureIssuer.absoluteString + "/legal/"
         let documents = "I agree to the [Terms of Service](\(legal)terms) and the [Subscription, Cancellation and Refund Policy](\(legal)subscription-policy)"
             + "\(team ? ", and I am authorized to agree for this team" : "")."

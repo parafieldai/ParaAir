@@ -28,20 +28,29 @@ public struct ParaAirCloudBilling: Codable, Equatable, Sendable {
     public var deletionAt: Date?
     public var checkoutAvailable: Bool
     public var portalAvailable: Bool
+    /// The free trial this workspace's next checkout starts with (added 2026-10-27); nil when none or checkout is unavailable.
+    public var trialDays: Int?
+    /// While the subscription is in its free trial (status `active`): when the trial ends and the first charge falls.
+    public var trialEndsAt: Date?
 
     public init(provider: Provider, status: Status, plan: Plan? = nil, interval: Interval? = nil, seats: Int? = nil,
                 extraStorageTb: Int = 0, currentPeriodEnd: Date? = nil, cancelAtPeriodEnd: Bool = false, graceEndsAt: Date? = nil,
-                readOnlyAt: Date? = nil, deletionAt: Date? = nil, checkoutAvailable: Bool = false, portalAvailable: Bool = false) {
+                readOnlyAt: Date? = nil, deletionAt: Date? = nil, checkoutAvailable: Bool = false, portalAvailable: Bool = false,
+                trialDays: Int? = nil, trialEndsAt: Date? = nil) {
         self.provider = provider; self.status = status; self.plan = plan; self.interval = interval; self.seats = seats
         self.extraStorageTb = extraStorageTb; self.currentPeriodEnd = currentPeriodEnd; self.cancelAtPeriodEnd = cancelAtPeriodEnd
         self.graceEndsAt = graceEndsAt; self.readOnlyAt = readOnlyAt; self.deletionAt = deletionAt
         self.checkoutAvailable = checkoutAvailable; self.portalAvailable = portalAvailable
+        self.trialDays = trialDays; self.trialEndsAt = trialEndsAt
     }
 
     enum CodingKeys: String, CodingKey {
         case provider, status, plan, interval, seats, extraStorageTb, currentPeriodEnd, cancelAtPeriodEnd, graceEndsAt, readOnlyAt,
-             deletionAt, checkoutAvailable, portalAvailable
+             deletionAt, checkoutAvailable, portalAvailable, trialDays, trialEndsAt
     }
+
+    /// Longest free trial the app shows: anything longer is a malformed reply (the service offers at most 30 days).
+    static let maxTrialDays = 365
 
     /// Unknown values and shapes the contract rules out are errors; the workspace then has no billing object. Counts
     /// are not capped here: the service raises Team seats past 1000 when members are added and takes storage blocks
@@ -58,7 +67,10 @@ public struct ParaAirCloudBilling: Codable, Equatable, Sendable {
         readOnlyAt = try c.decodeIfPresent(Date.self, forKey: .readOnlyAt); deletionAt = try c.decodeIfPresent(Date.self, forKey: .deletionAt)
         checkoutAvailable = try c.decode(Bool.self, forKey: .checkoutAvailable)
         portalAvailable = try c.decode(Bool.self, forKey: .portalAvailable)
-        guard seats.map({ $0 >= 0 }) ?? true, extraStorageTb >= 0,
+        // A service from before free trials omits both.
+        trialDays = try c.decodeIfPresent(Int.self, forKey: .trialDays)
+        trialEndsAt = try c.decodeIfPresent(Date.self, forKey: .trialEndsAt)
+        guard seats.map({ $0 >= 0 }) ?? true, extraStorageTb >= 0, trialDays.map({ (1...Self.maxTrialDays).contains($0) }) ?? true,
               provider != .none || (!checkoutAvailable && !portalAvailable),
               status != .none || (plan == nil && interval == nil) else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid billing object"))
@@ -67,6 +79,8 @@ public struct ParaAirCloudBilling: Codable, Equatable, Sendable {
 
     /// A subscription that blocks a new checkout (the service answers 409 `busy`): use the portal instead.
     public var isLive: Bool { status == .active || status == .pastDue || status == .deleting }
+    /// The subscription is in its free trial: nothing is charged before `trialEndsAt`.
+    public var inTrial: Bool { status == .active && trialEndsAt != nil }
 }
 
 /// Limits and units the checkout request and the plan cards use. Prices are not here: they come from the service's
@@ -103,7 +117,8 @@ public enum ParaAirCloudBillingCatalog {
 public struct ParaAirCloudBillingOffer: Equatable, Sendable {
     public struct Merchant: Equatable, Sendable {
         public var name: String
-        /// Paddle as "our online reseller" and seller of record (policy 2.2); false when Parafield Inc. charges itself.
+        /// A reseller and seller of record, "our online reseller" (policy 2.2): Paddle, or Link with Stripe Managed Payments.
+        /// False when Parafield Inc. charges itself.
         public var reseller: Bool
         public init(name: String, reseller: Bool) { self.name = name; self.reseller = reseller }
     }
@@ -134,10 +149,15 @@ public struct ParaAirCloudBillingOffer: Equatable, Sendable {
         public var terms: [String]
         /// The consent sentences; links are Markdown `[label](url)`.
         public var consent: String
+        /// The free trial before the first charge (added 2026-10-27); nil without one. Checkout sends it back.
+        public var trialDays: Int?
+        /// When the first charge falls: now without a trial, the trial's end with one. Nil from a service before trials.
+        public var firstChargeAt: Date?
         public init(plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int, extraStorageTb: Int, amountCents: Int,
-                    currency: String, terms: [String], consent: String) {
+                    currency: String, terms: [String], consent: String, trialDays: Int? = nil, firstChargeAt: Date? = nil) {
             self.plan = plan; self.interval = interval; self.seats = seats; self.extraStorageTb = extraStorageTb
             self.amountCents = amountCents; self.currency = currency; self.terms = terms; self.consent = consent
+            self.trialDays = trialDays; self.firstChargeAt = firstChargeAt
         }
     }
 
@@ -210,6 +230,7 @@ extension ParaAirCloudBillingOffer: Decodable {
         struct Quote: Decodable {
             var plan: ParaAirCloudBilling.Plan; var interval: ParaAirCloudBilling.Interval; var seats: Int; var extraStorageTb: Int
             var amountCents: Int; var currency: String; var terms: [String]; var consent: String
+            var trialDays: Int?; var firstChargeAt: Date?
         }
         var provider: ParaAirCloudBilling.Provider
         var merchantOfRecord: Merchant
@@ -241,9 +262,10 @@ extension ParaAirCloudBillingOffer: Decodable {
             guard (1...ParaAirCloudBillingCatalog.maxSeats).contains(q.seats), (0...ParaAirCloudBillingCatalog.maxStorageTb).contains(q.extraStorageTb),
                   q.plan == .team || q.seats == 1, q.amountCents >= 0, q.amountCents <= Self.maxUnitAmountCents * 1_100,
                   q.currency == wire.currency, (3...60).contains(q.terms.count), q.terms.allSatisfy({ Self.isDisplayable($0) }),
-                  Self.isDisplayable(q.consent, max: 4000) else { throw corrupt("Invalid quote") }
+                  Self.isDisplayable(q.consent, max: 4000),
+                  q.trialDays.map({ (1...ParaAirCloudBilling.maxTrialDays).contains($0) }) ?? true else { throw corrupt("Invalid quote") }
             quote = Quote(plan: q.plan, interval: q.interval, seats: q.seats, extraStorageTb: q.extraStorageTb, amountCents: q.amountCents,
-                          currency: q.currency, terms: q.terms, consent: q.consent)
+                          currency: q.currency, terms: q.terms, consent: q.consent, trialDays: q.trialDays, firstChargeAt: q.firstChargeAt)
         }
         self.init(provider: wire.provider, merchant: Merchant(name: wire.merchantOfRecord.name, reseller: wire.merchantOfRecord.reseller),
                   disclosureVersion: wire.disclosureVersion, currency: wire.currency, prices: prices, quote: quote)
@@ -257,20 +279,25 @@ public struct ParaAirCloudOfferRequest: Equatable, Sendable {
     public var interval: ParaAirCloudBilling.Interval
     public var seats: Int
     public var extraStorageTb: Int
+    /// The workspace the checkout is for: the quote then includes the free trial it starts with (added 2026-10-27).
+    public var workspaceID: String?
 
-    public init(plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int = 1, extraStorageTb: Int = 0) {
-        self.plan = plan; self.interval = interval; self.seats = seats; self.extraStorageTb = extraStorageTb
+    public init(plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int = 1, extraStorageTb: Int = 0,
+                workspaceID: String? = nil) {
+        self.plan = plan; self.interval = interval; self.seats = seats; self.extraStorageTb = extraStorageTb; self.workspaceID = workspaceID
     }
 
     var isValid: Bool {
         (0...ParaAirCloudBillingCatalog.maxStorageTb).contains(extraStorageTb)
             && (plan == .team ? (1...ParaAirCloudBillingCatalog.maxSeats).contains(seats) : seats == 1)
+            && (workspaceID.map(ParaAirCloudIDs.isWorkspaceID) ?? true)
     }
 
     var query: [URLQueryItem] {
         var items = [URLQueryItem(name: "plan", value: plan.rawValue), URLQueryItem(name: "interval", value: interval.rawValue)]
         if plan == .team { items.append(URLQueryItem(name: "seats", value: String(seats))) }
         items.append(URLQueryItem(name: "extraStorageTb", value: String(extraStorageTb)))
+        if let workspaceID { items.append(URLQueryItem(name: "workspaceId", value: workspaceID)) }
         return items
     }
 
@@ -368,18 +395,21 @@ public struct ParaAirCloudCheckoutRequest: Equatable, Sendable {
     /// Team seats, 1 to 1000 and at least the team's member count. Personal is always 1.
     public var seats: Int
     public var extraStorageTb: Int
-    /// Nil only for callers that show no terms (older apps send neither field; the service then records no consent).
+    /// Nil only for callers that show no terms; the service refuses a checkout without consent (since 2026-10-23).
     public var consent: ParaAirCloudCheckoutConsent?
+    /// The free trial the quote showed (0 for none); the service answers 409 `disclosure_outdated` when it differs.
+    public var trialDays: Int
 
     public init(workspaceID: String, plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int = 1, extraStorageTb: Int = 0,
-                consent: ParaAirCloudCheckoutConsent? = nil) {
+                consent: ParaAirCloudCheckoutConsent? = nil, trialDays: Int = 0) {
         self.workspaceID = workspaceID; self.plan = plan; self.interval = interval; self.seats = seats; self.extraStorageTb = extraStorageTb
-        self.consent = consent
+        self.consent = consent; self.trialDays = trialDays
     }
 
     /// The selection a quote must answer before this checkout may open.
     public var selection: ParaAirCloudOfferRequest {
-        ParaAirCloudOfferRequest(plan: plan, interval: interval, seats: plan == .team ? seats : 1, extraStorageTb: extraStorageTb)
+        ParaAirCloudOfferRequest(plan: plan, interval: interval, seats: plan == .team ? seats : 1, extraStorageTb: extraStorageTb,
+                                 workspaceID: workspaceID)
     }
 
     /// Consent is both boxes ticked or nothing: the service refuses one without the other (400 `invalid_request`).
@@ -387,18 +417,19 @@ public struct ParaAirCloudCheckoutRequest: Equatable, Sendable {
         ParaAirCloudIDs.isWorkspaceID(workspaceID) && (0...ParaAirCloudBillingCatalog.maxStorageTb).contains(extraStorageTb)
             && (plan == .team ? (1...ParaAirCloudBillingCatalog.maxSeats).contains(seats) : seats == 1)
             && (consent.map { ParaAirCloudBillingOffer.isVersion($0.disclosureVersion) && $0.autoRenew && $0.terms } ?? true)
+            && (0...ParaAirCloudBilling.maxTrialDays).contains(trialDays)
     }
 
-    /// Personal sends no seat count (the service accepts only 1 or none).
+    /// Personal sends no seat count (the service accepts only 1 or none); no trial sends no `trialDays`.
     func body() throws -> Data {
         struct Consent: Encodable { var autoRenew: Bool; var terms: Bool }
         struct Body: Encodable {
             var workspaceId: String; var plan: String; var interval: String; var seats: Int?; var extraStorageTb: Int
-            var disclosureVersion: String?; var consent: Consent?
+            var disclosureVersion: String?; var consent: Consent?; var trialDays: Int?
         }
         return try ParaAirCloudJSON.encoder().encode(Body(
             workspaceId: workspaceID, plan: plan.rawValue, interval: interval.rawValue, seats: plan == .team ? seats : nil,
             extraStorageTb: extraStorageTb, disclosureVersion: consent?.disclosureVersion,
-            consent: consent.map { Consent(autoRenew: $0.autoRenew, terms: $0.terms) }))
+            consent: consent.map { Consent(autoRenew: $0.autoRenew, terms: $0.terms) }, trialDays: trialDays > 0 ? trialDays : nil))
     }
 }

@@ -62,19 +62,27 @@ node generate-manifests.mjs --check   # exit 1 if manifests.json is stale
 
 Billing is off unless the service sets `BILLING_PROVIDER` to `stripe` or `paddle`. While it is off (`none`), both endpoints answer 404 `not_found` and every workspace's `billing` object reports `"provider":"none","status":"none"` with `checkoutAvailable: false`. Amounts never travel from the client: it names a plan, an interval and quantities.
 
+Free trials and self-serve accounts (added 2026-10-27):
+
+- With Stripe, a workspace's first subscription starts with a free trial (`BILLING_TRIAL_DAYS`, 7 by default; 0 turns trials off). The card is collected at checkout and charged when the trial ends. If that first charge fails, the plan ends at once: no grace period, the workspace becomes `read_only` for 30 days, then it is deleted. Later renewals keep the usual grace period.
+- A user gets one trial, and a workspace that has had a subscription gets none. Paddle sells without trials.
+- With self-serve sign-up (`SELF_SIGNUP=1`), any address can sign in. A new account gets a Personal workspace with no storage, transfer or retained space (`plan.storageLimitBytes` 0, `billing.status` `none`, `checkoutAvailable` true and `trialDays` set) until its trial or a plan starts. Uploads answer 507 `quota_exceeded` until then.
+- With Stripe Managed Payments (`STRIPE_MANAGED_PAYMENTS`, on by default), Link is the merchant of record. Stripe's checkout page then shows Stripe's standard terms, not the disclosure, so the app's plan sheet is where the buyer reads it.
+
 ### `POST /v1/billing/checkout`
 
 Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted and not required.
 
 ```json
-{"workspaceId":"ws_…","plan":"team","interval":"year","seats":3,"extraStorageTb":0,
- "disclosureVersion":"A-draft-2026-10-23","consent":{"autoRenew":true,"terms":true}}
+{"workspaceId":"ws_…","plan":"personal","interval":"month","extraStorageTb":0,
+ "disclosureVersion":"A-draft-2026-10-27","consent":{"autoRenew":true,"terms":true},"trialDays":7}
 ```
 
 - `plan` is `personal` or `team` and must equal the workspace's `kind`; `interval` is `month` or `year`.
 - `seats`: Team only, 1 to 1000, at least the workspace's current member count; default the member count. Personal accepts only `1` or no value.
 - `extraStorageTb`: 0 to 100 added 1 TB blocks, default 0.
 - `disclosureVersion` and `consent` (added 2026-10-13): the version of the disclosure text the app showed (`disclosureVersion` of `GET /v1/billing/offer`) and the two unticked boxes the buyer ticked (subscription policy 7.1: automatic renewal, and the Terms and the policy). Both are required (since 2026-10-23): `consent.autoRenew` and `consent.terms` must be `true` and the version must be the server's current one; the server stores them with the checkout record, with the time and the `X-ParaAir-Client` version, and the confirmation email cites that record. No released app sent checkout without them.
+- `trialDays` (added 2026-10-27): the free trial the quote for this workspace showed (`quote.trialDays` of `GET /v1/billing/offer?workspaceId=`); absent or 0 for none. A different value answers 409 `disclosure_outdated`, because the buyer agreed to other terms.
 - Each workspace keeps one processor customer, so every checkout and the portal use the same one. A new checkout makes the workspace's earlier unpaid checkouts unpayable (Stripe expires the session, Paddle cancels the transaction); a subscription paid for one of them anyway is cancelled and refunded in full.
 - 200 `{"url":"https://…"}`: open it in the browser. Stripe returns its hosted checkout; Paddle returns the service's payment link page (`<issuer>/billing/pay?_ptxn=txn_…`). The plan changes only when the processor's webhook arrives; refresh `GET /v1/me` afterwards. A subscription whose plan, interval, seats or storage differ from what this request asked for is not applied: it is cancelled and refunded.
 - The browser comes back to `<issuer>/billing/success` or `<issuer>/billing/cancel` (plain pages that say to return to ParaAir).
@@ -86,7 +94,7 @@ Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted an
 | 403 | `suspended` | the workspace is suspended |
 | 404 | `workspace_not_found` | not a member of that workspace (existence never leaks) |
 | 404 | `not_found` | billing is off |
-| 409 | `disclosure_outdated` | `disclosureVersion` is not the server's current version: fetch `GET /v1/billing/offer`, show the new text and ask for consent again |
+| 409 | `disclosure_outdated` | `disclosureVersion` is not the server's current version, or `trialDays` is not the trial this checkout starts: fetch `GET /v1/billing/offer`, show the new text and ask for consent again |
 | 409 | `busy` | the workspace already has a live subscription (`active` or `past_due`) or is being purged: use the portal; or an earlier checkout was paid and its subscription has not arrived yet: wait and refresh `GET /v1/me` |
 | 429 | `rate_limited` | more than 20 checkout or portal sessions for the workspace this hour (`retryAfterSeconds`) |
 | 503 | `billing_unavailable` | billing is not set up on the server (prices, keys, links, or the email and notice settings its notices need): show "plans cannot be bought right now" |
@@ -94,26 +102,28 @@ Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted an
 
 ### `GET /v1/billing/offer`
 
-Access token. Added 2026-10-13. What the server sells and how, so the plan sheet shows exactly what checkout records and charges. Optional query: `plan`, `interval`, `seats`, `extraStorageTb` (the same rules as checkout; `seats` defaults to 1).
+Access token. Added 2026-10-13. What the server sells and how, so the plan sheet shows exactly what checkout records and charges. Optional query: `plan`, `interval`, `seats`, `extraStorageTb` (the same rules as checkout; `seats` defaults to 1), and `workspaceId` (added 2026-10-27: a workspace the caller belongs to, so the quote includes the free trial its checkout starts; 404 `workspace_not_found` otherwise). Without `workspaceId` the quote assumes a workspace that has never had a subscription.
 
 ```json
-{"provider":"paddle","merchantOfRecord":{"name":"Paddle","reseller":true},"disclosureVersion":"A-draft-2026-10-23","currency":"USD",
+{"provider":"stripe","merchantOfRecord":{"name":"Link","reseller":true},"disclosureVersion":"A-draft-2026-10-27","currency":"USD",
  "prices":[{"item":"personal_month","kind":"plan","plan":"personal","interval":"month","unitAmountCents":1000,"perMember":false},
            {"item":"team_year","kind":"plan","plan":"team","interval":"year","unitAmountCents":16000,"perMember":true},
            {"item":"storage_month","kind":"storage","plan":null,"interval":"month","unitAmountCents":1000,"perMember":false}],
- "quote":{"plan":"team","interval":"year","seats":3,"extraStorageTb":0,"amountCents":48000,"currency":"USD",
-          "terms":["ParaAir Cloud Team, billed yearly","$160.00 per member per year plus tax. Renews automatically every year until you cancel.","- …"],
-          "consent":"I agree that this ParaAir Cloud Team plan renews automatically at … I agree to the Terms of Service and the …"}}
+ "quote":{"plan":"personal","interval":"month","seats":1,"extraStorageTb":0,"amountCents":1000,"currency":"USD",
+          "trialDays":7,"firstChargeAt":"2026-11-03T14:02:11.000Z",
+          "terms":["ParaAir Cloud Personal, billed monthly","$10.00 per month plus tax after a 7-day free trial. Renews automatically every month until you cancel.",
+                   "- Today you pay nothing. Your free trial ends on November 3, 2026.","- …"],
+          "consent":"I agree that my ParaAir Cloud Personal plan renews automatically after the 7-day free trial at … I agree to the Terms of Service and the …"}}
 ```
 
 | Field | Meaning |
 |---|---|
 | `provider` | `stripe` or `paddle` |
-| `merchantOfRecord` | who charges the buyer: `{"name":"Paddle","reseller":true}` (Paddle, the online reseller and seller of record, policy 2.2) or `{"name":"Parafield Inc.","reseller":false}` (Stripe) |
+| `merchantOfRecord` | who charges the buyer: a reseller and seller of record (policy 2.2), `{"name":"Link","reseller":true}` (Stripe Managed Payments) or `{"name":"Paddle","reseller":true}`, or `{"name":"Parafield Inc.","reseller":false}` (Stripe direct) |
 | `disclosureVersion` | the current disclosure version; send it back as checkout's `disclosureVersion` |
 | `currency` | the catalog currency (prices are before tax; the processor may charge local currency, shown at its checkout) |
 | `prices` | the catalog items this server sells (those in its price map): `unitAmountCents` per unit per interval, `perMember` for Team |
-| `quote` | with `plan` and `interval`: the amount of the first charge before tax and the disclosure (Appendix A): `terms` (a heading, the price line, then bullets prefixed `- `) and the `consent` sentences, exactly what the checkout records under `disclosureVersion`; null without them or when that plan is not sold. Links in `consent` are Markdown `[label](url)` |
+| `quote` | with `plan` and `interval`: the amount of the first charge before tax, `trialDays` (the free trial before it, null for none) and `firstChargeAt` (when it falls: now, or when the trial ends), and the disclosure (Appendix A): `terms` (a heading, the price line, then bullets prefixed `- `) and the `consent` sentences, exactly what the checkout records under `disclosureVersion`; null without them or when that plan is not sold. Links in `consent` are Markdown `[label](url)` |
 
 Errors: 401 `unauthorized`; 404 `not_found` when billing is off; 400 `invalid_request` for bad query values; 503 `billing_unavailable` as for checkout.
 
@@ -132,7 +142,8 @@ Every entry of `workspaces[]` gains:
 ```json
 "billing":{"provider":"stripe","status":"past_due","plan":"team","interval":"year","seats":3,"extraStorageTb":1,
            "currentPeriodEnd":"2027-10-12T00:00:00.000Z","cancelAtPeriodEnd":false,"graceEndsAt":"2026-10-26T00:00:00.000Z",
-           "readOnlyAt":"2026-10-26T00:00:00.000Z","deletionAt":"2026-11-25T00:00:00.000Z","checkoutAvailable":false,"portalAvailable":true}
+           "readOnlyAt":"2026-10-26T00:00:00.000Z","deletionAt":"2026-11-25T00:00:00.000Z","checkoutAvailable":false,"portalAvailable":true,
+           "trialDays":null,"trialEndsAt":null}
 ```
 
 | Field | Meaning |
@@ -149,6 +160,8 @@ Every entry of `workspaces[]` gains:
 | `deletionAt` | 30 days after `readOnlyAt`, when known. With the server's admin-confirmed purge (the default) deletion can come later; never earlier |
 | `checkoutAvailable` | the caller is the owner, billing is configured with a price for this workspace's kind, and the workspace has no live subscription |
 | `portalAvailable` | the caller is the owner and the workspace has a customer with the configured processor |
+| `trialDays` | added 2026-10-27: the free trial this workspace's next checkout starts with; null when there is none or `checkoutAvailable` is false |
+| `trialEndsAt` | added 2026-10-27: while the subscription is in its free trial (`status` `active`), when the trial ends and the first charge falls; null otherwise |
 
 While `status` is `read_only` (and later), the workspace's own `status` is `read_only` when billing set it: uploads, commits and mkdir answer 403 `read_only` (fencing as in `errors.json`); reads, deletes (`POST …/remove`), moves (`POST …/move`) and restores from the trash keep working (subscription policy 16.1). A full refund ends the plan the same way (`read_only`). An open dispute or chargeback makes the workspace's own `status` `read_only` while `billing.status` can stay `active`, until an operator reviews it.
 

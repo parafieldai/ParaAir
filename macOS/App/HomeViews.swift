@@ -95,7 +95,9 @@ struct DriveHomeContent: View {
                                 .textSelection(.enabled)
                         }
                         HStack {
-                            if let controls = input.cloudUsage?.billing.controls, !controls.isEmpty {
+                            // Not again here when the drive status already leads with choosing a plan.
+                            if let controls = input.cloudUsage?.billing.controls.filter({ $0.action != .choosePlan || presentation.primary.action != .choosePlan }),
+                               !controls.isEmpty {
                                 CloudBillingButtons(controls: controls, allowsProminence: false, perform: actions.billing)
                             }
                             Button("Drive Appearance…", action: actions.editAppearance)

@@ -151,6 +151,12 @@ struct CloudAccountSection: View {
             }
             CloudBillingRows(billing: billing)
             if let notice = billing.notice { NoticeRow(notice: notice) }
+        } else if usage.unpaid {
+            // No storage until a free trial or plan starts: say so, and let the notice and button below lead.
+            Text(usage.planLine)
+                .font(.glideDisplay(.title))
+                .padding(.vertical, 4)
+            if let notice = billing.notice { NoticeRow(notice: notice) }
         } else {
             HStack(spacing: 10) {
                 if model.presentationState == .failed {
