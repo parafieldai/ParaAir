@@ -38,7 +38,7 @@ struct CloudAccountSection: View {
     // MARK: Signed out
 
     @ViewBuilder private func signedOut(error: String?) -> some View {
-        Text("Storage from Parafield Inc. No buckets or keys to set up. Invite-only beta.")
+        Text("Storage from Parafield Inc. No buckets or keys to set up.")
             .fixedSize(horizontal: false, vertical: true)
         if let error { ErrorLine(text: error) }
         Toggle("Open the sign-in page in my default browser", isOn: $model.openDefaultBrowserAutomatically)
@@ -150,6 +150,12 @@ struct CloudAccountSection: View {
                 NoticeRow(notice: .init(id: "throttled", text: notice, tone: .attention))
             }
             CloudBillingRows(billing: billing)
+            if let notice = billing.notice { NoticeRow(notice: notice) }
+        } else if usage.unpaid {
+            // No storage until a free trial or plan starts: say so, and let the notice and button below lead.
+            Text(usage.planLine)
+                .font(.glideDisplay(.title))
+                .padding(.vertical, 4)
             if let notice = billing.notice { NoticeRow(notice: notice) }
         } else {
             HStack(spacing: 10) {

@@ -110,7 +110,11 @@ final class FakeParaAirCloud: @unchecked Sendable {
     /// False: billing is set up without what checkout needs (keys, prices, notice settings): 503 `billing_unavailable`.
     var billingConfigured = true
     /// The service's `DISCLOSURE_VERSION`; a checkout naming another is 409 `disclosure_outdated`.
-    var disclosureVersion = "A-draft-2026-10-23"
+    var disclosureVersion = "A-draft-2026-10-27"
+    /// `BILLING_TRIAL_DAYS` on Stripe: the free trial a workspace's first checkout starts with, once per user (0: none).
+    var trialDays = 0
+    /// `STRIPE_MANAGED_PAYMENTS`: Link (Stripe Managed Payments) is the merchant of record instead of Parafield Inc.
+    var stripeManaged = false
     /// Prices the offer lists instead of the catalog's (the server's catalog after a price change).
     var priceOverrides: [String: Int] = [:]
     /// An earlier checkout of the workspace was paid but its subscription has not arrived: a new checkout is 409 `busy`.
@@ -144,6 +148,8 @@ final class FakeParaAirCloud: @unchecked Sendable {
     private var authCodes: [String: AuthCode] = [:]
     private(set) var outbox: [(to: String, code: String, createdAt: Date)] = []
     private var billingSessions: [String: [Date]] = [:]
+    /// Users who started a free trial (the service counts trial checkouts that bound a subscription; this fake, checkouts).
+    private var trialledUsers: Set<String> = []
     /// Accepted checkout bodies, in order.
     private(set) var checkouts: [[String: Any]] = []
     /// Checkout URLs a later checkout of the same workspace made unpayable (Stripe expires them, Paddle cancels them).
@@ -164,6 +170,8 @@ final class FakeParaAirCloud: @unchecked Sendable {
         var readOnlyAt: Date?
         var deletionAt: Date?
         var hasCustomer = true
+        /// In the free trial: when it ends (the service's `trial_end` while the processor says trialing).
+        var trialEndsAt: Date?
     }
 
     private struct Fault { var route: String; var remaining: Int; var action: FaultAction }
@@ -435,7 +443,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
         case "GET /v1/me": return me(user)
         case "POST /v1/billing/checkout": return try billingCheckout(user: user.id, body: body, headers: headers)
         case "POST /v1/billing/portal": return try billingPortal(user: user.id, body: body, headers: headers)
-        case "GET /v1/billing/offer": return try billingOffer(query)
+        case "GET /v1/billing/offer": return try billingOffer(query, user: user.id)
         case "DELETE /v1/sessions/current":
             grants[user.grant]?.revoked = true
             return Reply(status: 204)
@@ -730,7 +738,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
                     "usage": ["storedBytes": workspace.logical, "retainedBytes": workspace.retained, "reservedBytes": workspace.reserved,
                               "transferBytes": workspace.bytesOut, "uploadedBytes": workspace.bytesIn,
                               "periodStart": "2026-10-01T00:00:00.000Z", "periodEnd": "2026-11-01T00:00:00.000Z", "throttled": false, "reconciledAt": NSNull()]]
-                if !omitsBilling { object["billing"] = billingView(workspace, role: workspace.members[user.id]!) }
+                if !omitsBilling { object["billing"] = billingView(workspace, role: workspace.members[user.id]!, user: user.id) }
                 return object
             }])
     }
@@ -739,8 +747,13 @@ final class FakeParaAirCloud: @unchecked Sendable {
 
     private static let liveBillingStates: Set<String> = ["active", "past_due", "deleting"]
 
+    /// `trialDaysOf` of the service: Stripe, a workspace never subscribed, a user who has not had a trial.
+    private func offeredTrial(_ workspace: Workspace?, user: String) -> Int {
+        billingProvider == "stripe" && workspace?.billing == nil && !trialledUsers.contains(user) ? trialDays : 0
+    }
+
     /// `billingView` of the service: the subscription's processor else the configured one, owner-only actions.
-    private func billingView(_ workspace: Workspace, role: String) -> [String: Any] {
+    private func billingView(_ workspace: Workspace, role: String, user: String) -> [String: Any] {
         let configured = billingProvider == "none" ? nil : billingProvider
         let account = workspace.billing
         let owner = role == "owner"
@@ -751,16 +764,19 @@ final class FakeParaAirCloud: @unchecked Sendable {
             portal = account.map { $0.provider == configured && $0.hasCustomer && $0.state != "deleting" && $0.state != "deleted" } ?? false
         }
         func date(_ value: Date?) -> Any { value.map(Self.date) ?? NSNull() }
+        let trial = checkout ? offeredTrial(workspace, user: user) : 0
         guard let account else {
             return ["provider": configured ?? "none", "status": "none", "plan": NSNull(), "interval": NSNull(), "seats": NSNull(),
                     "extraStorageTb": 0, "currentPeriodEnd": NSNull(), "cancelAtPeriodEnd": false, "graceEndsAt": NSNull(),
-                    "readOnlyAt": NSNull(), "deletionAt": NSNull(), "checkoutAvailable": checkout, "portalAvailable": portal]
+                    "readOnlyAt": NSNull(), "deletionAt": NSNull(), "checkoutAvailable": checkout, "portalAvailable": portal,
+                    "trialDays": trial > 0 ? trial : NSNull(), "trialEndsAt": NSNull()]
         }
         return ["provider": account.provider, "status": account.state, "plan": account.plan, "interval": account.interval,
                 "seats": account.quantity, "extraStorageTb": account.storageTb, "currentPeriodEnd": date(account.periodEnd),
                 "cancelAtPeriodEnd": account.cancelAtPeriodEnd, "graceEndsAt": account.state == "past_due" ? date(account.graceEndsAt) : NSNull(),
                 "readOnlyAt": date(account.readOnlyAt), "deletionAt": date(account.deletionAt),
-                "checkoutAvailable": checkout, "portalAvailable": portal]
+                "checkoutAvailable": checkout, "portalAvailable": portal, "trialDays": NSNull(),
+                "trialEndsAt": account.state == "active" ? date(account.trialEndsAt) : NSNull()]
     }
 
     /// `ownerOf`: 404 for non-members (existence never leaks), then suspended, then owner only, then 20 sessions an hour.
@@ -812,10 +828,14 @@ final class FakeParaAirCloud: @unchecked Sendable {
         guard billingConfigured, sellablePlans.contains(plan) else { throw Fail(code: "billing_unavailable") }
         if let agreed, agreed != disclosureVersion { throw Fail(code: "disclosure_outdated") }
         if let account = workspace.billing, Self.liveBillingStates.contains(account.state) { throw Fail(code: "busy") }
+        // The trial the app showed (absent: none) must be the one this checkout starts.
+        let trial = offeredTrial(workspace, user: user)
+        guard (try integer("trialDays", 0...365) ?? 0) == trial else { throw Fail(code: "disclosure_outdated") }
         // closeEarlierCheckouts: a paid one refuses the new checkout; unpaid ones stop being payable.
         guard !paidUnboundCheckouts.contains(workspace.id) else { throw Fail(code: "busy") }
         closedCheckoutURLs += openCheckouts[workspace.id] ?? []
         checkouts.append(request)
+        if trial > 0 { trialledUsers.insert(user) }
         let url: String
         if billingProvider == "paddle" {
             url = issuerString + "/billing/pay?_ptxn=txn_" + Self.base32().lowercased()
@@ -836,9 +856,19 @@ final class FakeParaAirCloud: @unchecked Sendable {
 
     /// B3 `GET /v1/billing/offer`: the price map's items, the merchant of record and, with a plan and an interval, the
     /// quote with the disclosure text (cloud/src/billing/disclosure.ts) in dev mode, so its links are the dev pages.
-    private func billingOffer(_ query: [String: String]) throws -> Reply {
+    private func billingOffer(_ query: [String: String], user: String) throws -> Reply {
         guard billingProvider != "none" else { throw Fail(code: "not_found") }
         guard billingConfigured else { throw Fail(code: "billing_unavailable") }
+        // With workspaceId (one the caller belongs to), the quote includes the free trial its checkout starts with.
+        var target: Workspace?
+        if let id = query["workspaceId"] {
+            guard id.range(of: "^ws_[0-9A-Z]{26}$", options: .regularExpression) != nil, let workspace = workspaces[id], workspace.members[user] != nil else {
+                throw Fail(code: "workspace_not_found")
+            }
+            target = workspace
+        }
+        let trial = offeredTrial(target, user: user)
+        let seller = billingProvider == "paddle" ? "paddle" : stripeManaged ? "link" : "parafield"
         func amount(_ id: String) -> Int { priceOverrides[id] ?? Self.catalog[id]! }
         let sold = ["personal_month", "personal_year", "team_month", "team_year", "storage_month", "storage_year"].filter {
             $0.hasPrefix("storage") || sellablePlans.contains(String($0.split(separator: "_")[0]))
@@ -866,41 +896,56 @@ final class FakeParaAirCloud: @unchecked Sendable {
             if sellablePlans.contains(plan) {
                 let unit = amount("\(plan)_\(interval)"), block = amount("storage_\(interval)")
                 let total = unit * (plan == "team" ? seats : 1) + block * storage
+                let now = Date()
                 let text = Self.disclosure(plan: plan, interval: interval, seats: seats, storageTb: storage, unit: unit, block: block, total: total,
-                                           now: Date(), accountURL: issuerString + "/billing/account", seller: billingProvider,
+                                           now: now, accountURL: issuerString + "/billing/account", seller: seller, trialDays: trial,
                                            termsURL: issuerString + "/legal/terms", policyURL: issuerString + "/legal/subscription-policy")
                 quote = ["plan": plan, "interval": interval, "seats": seats, "extraStorageTb": storage, "amountCents": total, "currency": "USD",
+                         "trialDays": trial > 0 ? trial : NSNull(), "firstChargeAt": Self.date(now.addingTimeInterval(Double(trial) * 86_400)),
                          "terms": text.terms, "consent": text.consent]
             }
         }
-        let merchant: [String: Any] = billingProvider == "paddle" ? ["name": "Paddle", "reseller": true] : ["name": "Parafield Inc.", "reseller": false]
+        let merchant: [String: Any] = seller == "paddle" ? ["name": "Paddle", "reseller": true]
+            : seller == "link" ? ["name": "Link", "reseller": true] : ["name": "Parafield Inc.", "reseller": false]
         return json(200, ["provider": billingProvider, "merchantOfRecord": merchant, "disclosureVersion": disclosureVersion, "currency": "USD",
                           "prices": prices, "quote": quote])
     }
 
-    /// disclosure.ts with refund Option A, word for word.
+    /// disclosure.ts with refund Option A, word for word. `seller`: "paddle", "link" (Stripe Managed Payments) or "parafield".
     static func disclosure(plan: String, interval: String, seats: Int, storageTb: Int, unit unitCents: Int, block: Int, total totalCents: Int,
-                           now: Date, accountURL: String, seller: String, termsURL: String?, policyURL: String?) -> (terms: [String], consent: String) {
+                           now: Date, accountURL: String, seller: String, trialDays: Int = 0, termsURL: String?, policyURL: String?)
+        -> (terms: [String], consent: String) {
         let team = plan == "team", yearly = interval == "year"
         let unit = ParaAirCloudBillingCatalog.formatUSD(cents: unitCents), total = ParaAirCloudBillingCatalog.formatUSD(cents: totalCents)
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "UTC")!
         let months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-        let day = calendar.component(.day, from: now), month = months[calendar.component(.month, from: now) - 1]
+        // With a trial the first charge, and every renewal date after it, falls on the day the trial ends.
+        let trial = trialDays > 0, first = now.addingTimeInterval(Double(trialDays) * 86_400)
+        let day = calendar.component(.day, from: first), month = months[calendar.component(.month, from: first) - 1]
+        // A deadline with its UTC time, as disclosure.ts gives it.
+        let firstDay = "\(month) \(day), \(calendar.component(.year, from: first)) at "
+            + String(format: "%02d:%02d UTC", calendar.component(.hour, from: first), calendar.component(.minute, from: first))
         let tens = day % 100, ones = day % 10
         let ordinal = "\(day)" + ((11...13).contains(tens) ? "th" : ones == 1 ? "st" : ones == 2 ? "nd" : ones == 3 ? "rd" : "th")
         let when = yearly ? "every year on \(month) \(day)" : "on the \(ordinal) of every month"
         let period = yearly ? "year" : "month"
-        let charger = seller == "paddle" ? "Paddle, our reseller, charges" : "we charge"
+        let charger = seller == "paddle" ? "Paddle, our reseller, charges" : seller == "link" ? "Link, our reseller, charges" : "we charge"
         var terms = ["ParaAir Cloud \(team ? "Team" : "Personal"), billed \(yearly ? "yearly" : "monthly")",
-                     "\(unit) \(team ? "per member " : "")per \(period) plus tax. Renews automatically every \(period) until you cancel."]
+                     "\(unit) \(team ? "per member " : "")per \(period) plus tax\(trial ? " after a \(trialDays)-day free trial" : ""). "
+                        + "Renews automatically every \(period) until you cancel."]
         var bullets: [String] = []
         if team { bullets.append("You are buying \(seats) member seats\(storageTb > 0 ? " and added storage" : ""): \(total) per \(period) plus tax.") }
-        bullets.append("Today you pay \(total) plus any tax, which is shown before you pay.")
+        bullets.append(trial ? "Today you pay nothing. Your free trial ends on \(firstDay)." : "Today you pay \(total) plus any tax, which is shown before you pay.")
         if storageTb > 0 {
             bullets.append("This includes \(storageTb) TB of added storage at \(ParaAirCloudBillingCatalog.formatUSD(cents: block)) per TB per \(period) plus tax.")
         }
-        bullets.append(team ? "Then \(charger) for the current number of members, at \(unit) per member plus tax\(storageTb > 0 ? ", plus added storage" : ""), \(when)."
-                            : "Then \(charger) \(total) plus tax \(when).")
+        let starting = trial ? "on \(firstDay) and " : ""
+        bullets.append(team ? "Then \(charger) for the current number of members, at \(unit) per member plus tax\(storageTb > 0 ? ", plus added storage" : ""), \(starting)\(when)."
+                            : "Then \(charger) \(total) plus tax \(starting)\(when).")
+        if trial {
+            bullets.append("Cancel before \(firstDay) and you pay nothing. If that first payment fails, the plan stops at once: "
+                + "your files become read-only for 30 days, then are deleted.")
+        }
         if team {
             bullets.append("Your \(yearly ? "yearly" : "monthly") charge changes when you add or remove members. Adding a member charges a prorated amount "
                 + "\(yearly ? "for the rest of the year " : "")right away. Removing a member lowers the charge from your next \(yearly ? "yearly " : "")renewal; "
@@ -921,13 +966,14 @@ final class FakeParaAirCloud: @unchecked Sendable {
                 + "Cancel before your renewal date to avoid the next charge."
             : "Cancel any time online: in the ParaAir app (Storage Settings > Manage Plan) or at \(accountURL). Cancel before your renewal date "
                 + "to avoid the next charge. You keep access until the end of the \(period) you paid for.")
-        bullets.append("Full refund if you ask within 14 days of this first payment\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
+        bullets.append("Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
         bullets.append("We will email you at least 14 days before any price change, and you can cancel first.")
         terms += bullets.map { "- " + $0 }
         func link(_ label: String, _ url: String?) -> String { url.map { "[\(label)](\($0))" } ?? label }
+        let after = trial ? " after the \(trialDays)-day free trial" : ""
         let renewal = team
-            ? "I agree that this ParaAir Cloud Team plan renews automatically at \(unit) per member per \(period) plus tax, for the number of members at each renewal, until I cancel."
-            : "I agree that my ParaAir Cloud Personal plan renews automatically at \(total) per \(period) plus tax until I cancel."
+            ? "I agree that this ParaAir Cloud Team plan renews automatically\(after) at \(unit) per member per \(period) plus tax, for the number of members at each renewal, until I cancel."
+            : "I agree that my ParaAir Cloud Personal plan renews automatically\(after) at \(total) per \(period) plus tax until I cancel."
         let documents = "I agree to the \(link("Terms of Service", termsURL)) and the \(link("Subscription, Cancellation and Refund Policy", policyURL))"
             + "\(team ? ", and I am authorized to agree for this team" : "")."
         return (terms, renewal + " " + documents)

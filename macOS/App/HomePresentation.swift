@@ -60,10 +60,14 @@ struct CloudUsage: Equatable {
 /// to an existing MenuModel operation.
 struct HomePresentation: Equatable {
     enum Tone: Equatable { case good, working, attention, problem, neutral }
+    static let noStorageTitle = "Connected, no storage yet"
+
     enum Action: Equatable {
         case addStorage, createDrive, signInAgain, openSystemSettings, connectDrive, openInFinder
         /// Opens the list of conflicts and refused changes.
         case reviewChanges
+        /// Opens the ParaAir Cloud plan sheet (a workspace with no storage yet).
+        case choosePlan
     }
     enum StepState: Equatable { case done, current, upcoming }
 
@@ -127,6 +131,19 @@ struct HomePresentation: Equatable {
                                              tone: .attention),
                                primary: .init(action: .signInAgain, title: "Sign In Again…"),
                                offersOpenInFinder: true)
+            } else if input.storageKind == .paraairCloud, let cloud = input.cloudUsage, cloud.state == .loaded,
+                      CloudBillingPresentation.isUnpaid(cloud.workspace) {
+                // A self-serve workspace before its free trial: files open, nothing uploads until a plan grants storage.
+                let control = cloud.billing.controls.first { $0.action == .choosePlan }
+                result = .init(status: .init(title: Self.noStorageTitle,
+                                             // Only the owner can start a plan; anyone else is sent to them.
+                                             detail: control == nil ? "Ask the workspace owner to choose a ParaAir Cloud plan to add files to this drive."
+                                                 : cloud.workspace?.billing?.trialDays.map {
+                                                     "Start your \($0)-day free trial to add files to this drive. Nothing is charged before it ends."
+                                                 } ?? "Choose a ParaAir Cloud plan to add files to this drive.",
+                                             tone: .attention),
+                               primary: control.map { .init(action: .choosePlan, title: $0.title) } ?? .init(action: .openInFinder, title: "Open in Finder"),
+                               offersOpenInFinder: control != nil)
             } else if input.storageKind == .paraairCloud, input.cloudUsage?.workspace?.status == "read_only" {
                 // The service refuses uploads, commits and new folders (403 read_only); reads, deletes, moves and
                 // restores from the trash keep working (contract README "Billing"; subscription policy 16.1).
@@ -192,7 +209,10 @@ struct HomePresentation: Equatable {
         if let renewal = input.renewalError, input.connectionIssue == nil {
             result.notices.append(.init(id: "renewal", text: renewal, tone: .attention))
         }
-        if let billing = input.cloudUsage?.billing.notice, input.storageKind == .paraairCloud { result.notices.append(billing) }
+        // The no-storage status already says what the billing notice would; the notice stays in Storage Settings.
+        if let billing = input.cloudUsage?.billing.notice, input.storageKind == .paraairCloud, result.status.title != Self.noStorageTitle {
+            result.notices.append(billing)
+        }
         if let message = input.sidebarMessage { result.notices.append(.init(id: "sidebar", text: message, tone: .neutral)) }
         if let owner = input.ownedElsewhere, !input.mounted {
             result.notices.append(.init(id: "owned-elsewhere", text: "\(owner) took over this drive. It opens read-only on this Mac.", tone: .attention))
@@ -355,11 +375,17 @@ struct CloudUsagePresentation: Equatable {
     /// The bare figures for the home window's Plan and Used rows.
     var planSize: String?
     var usedSize: String?
+    /// A workspace with no storage until its free trial or a plan starts: `planLine` says so instead of figures.
+    var unpaid = false
 
     static let unavailable = "Plan and usage are unavailable right now."
     static let checking = "Checking plan and usage…"
+    static let noStorage = "No storage yet"
 
     static func make(_ workspace: ParaAirCloudMe.Workspace?, state: CloudSummaryState) -> CloudUsagePresentation {
+        if state == .loaded, CloudBillingPresentation.isUnpaid(workspace) {
+            return .init(planLine: noStorage, planSize: noStorage, unpaid: true)
+        }
         guard state != .failed, let plan = workspace?.plan, let usage = workspace?.usage, plan.storageLimitBytes > 0 else {
             return .init(planLine: state == .idle || state == .loading ? checking : unavailable)
         }

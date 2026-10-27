@@ -51,9 +51,12 @@ final class CloudAccountModel: ObservableObject {
         var openedAt: Date
         /// The workspace's billing status when the page opened; a different status means the checkout was settled.
         var status: ParaAirCloudBilling.Status?
+        /// The free trial the checkout starts (0 for none): the page then only collects a payment method.
+        var trialDays = 0
     }
 
-    nonisolated static let inviteOnly = "ParaAir Cloud is invite-only right now. Use the email address your invite was sent to."
+    /// The service refused the address: no account, and sign-up closed or no invite (SELF_SIGNUP off).
+    nonisolated static let inviteOnly = "ParaAir Cloud couldn’t sign you in with that email address. If you were invited, use the address your invite was sent to."
 
     @Published private(set) var phase: Phase = .signedOut
     @Published private(set) var summary: ParaAirCloudMe?
@@ -540,7 +543,8 @@ final class CloudAccountModel: ObservableObject {
         guard let account = signedInAccount, planSheetPresented, pendingCheckout == nil else { return }
         if case .working = checkout { return }
         guard case .loaded(let shown) = quote, shown.selection == request.selection, let consent = request.consent,
-              consent.disclosureVersion == shown.offer.disclosureVersion, consent.autoRenew, consent.terms else { return }
+              consent.disclosureVersion == shown.offer.disclosureVersion, consent.autoRenew, consent.terms,
+              request.trialDays == (shown.offer.quote?.trialDays ?? 0) else { return }
         let id = UUID(); checkoutID = id
         checkout = .working; checkoutWorkspaceID = request.workspaceID
         let root = stateRoot, starter = checkoutStarter
@@ -552,7 +556,8 @@ final class CloudAccountModel: ObservableObject {
                 guard signedInAccount == account, checkoutID == id else { return }
                 let checked = try Self.billingLink(url, kind: .checkout, account: account)
                 guard openURL(checked) else { throw DriveError(EIO, "The payment page couldn’t be opened in your browser") }
-                setPending(PendingCheckout(workspaceID: request.workspaceID, url: checked, openedAt: Date(), status: status))
+                setPending(PendingCheckout(workspaceID: request.workspaceID, url: checked, openedAt: Date(), status: status,
+                                           trialDays: request.trialDays))
                 checkout = .opened(checked)
                 watchBilling(workspaceID: request.workspaceID, baseline: nil)
             } catch {
