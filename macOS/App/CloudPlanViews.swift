@@ -48,13 +48,14 @@ struct CloudPlanSheet: View {
     @State private var interval: ParaAirCloudBilling.Interval
     @State private var seats: Int
     @State private var teamWorkspaceID: String?
-    @State private var agreesToRenewal: Bool
-    @State private var agreesToTerms: Bool
+    /// The one consent box: automatic renewal and the Terms and the policy together (operator decision 2026-10-27).
+    @State private var agrees: Bool
+    @State private var showsFullTerms = false
     @State private var confirmingStartOver = false
 
     /// The arguments past `model` set a starting state for the offscreen snapshot harness.
     init(model: CloudAccountModel, step: Step = .choose, plan: ParaAirCloudBilling.Plan? = nil, interval: ParaAirCloudBilling.Interval = .month,
-         seats: Int? = nil, agreed: Bool = false) {
+         seats: Int? = nil, agreed: Bool = false, fullTerms: Bool = false) {
         self.model = model
         let choice = model.planChoice
         _step = State(initialValue: step)
@@ -62,8 +63,8 @@ struct CloudPlanSheet: View {
         _interval = State(initialValue: interval)
         _seats = State(initialValue: seats ?? CloudPlanChoice.defaultSeats(choice.team.workspaces.first))
         _teamWorkspaceID = State(initialValue: choice.team.workspaces.first?.id)
-        _agreesToRenewal = State(initialValue: agreed)
-        _agreesToTerms = State(initialValue: agreed)
+        _agrees = State(initialValue: agreed)
+        _showsFullTerms = State(initialValue: fullTerms)
     }
 
     private var choice: CloudPlanChoice { model.planChoice }
@@ -94,7 +95,7 @@ struct CloudPlanSheet: View {
         .padding(24)
         .frame(width: 640, alignment: .leading)
         .glideSurface()
-        .onChange(of: model.quote) { _, _ in agreesToRenewal = false; agreesToTerms = false }
+        .onChange(of: model.quote) { _, _ in agrees = false }
         .onChange(of: model.offer) { _, _ in adoptOffer() }
         .confirmationDialog("Start over with a new payment page?", isPresented: $confirmingStartOver, titleVisibility: .visible) {
             Button("Start Over") { step = .choose; model.startOver() }
@@ -214,7 +215,7 @@ struct CloudPlanSheet: View {
             Button("Cancel", role: .cancel) { model.closePlans() }
                 .keyboardShortcut(.cancelAction)
             Button("Continue") {
-                agreesToRenewal = false; agreesToTerms = false
+                agrees = false; showsFullTerms = false
                 // Fresh terms each time: the renewal date in them is the day of the checkout.
                 model.loadQuote(selection, force: true)
                 step = .review
@@ -237,7 +238,7 @@ struct CloudPlanSheet: View {
         let firstCharge = trial == nil ? nil : shown?.offer.quote?.firstChargeAt.map { "First charge on \(CloudBillingPresentation.formatDeadline($0))." }
         let detail = [plan == .team ? "For \(workspace.name)." : "For your personal workspace.",
                       (shown?.offer ?? loadedOffer).map(Self.seller), firstCharge].compactMap { $0 }.joined(separator: " ")
-        header(trial.map { "Start your \($0)-day free trial" } ?? "Review and agree", detail)
+        header(trial.map { "Start your \($0)-day free trial" } ?? "Review and continue", detail)
         if let shown {
             terms(shown.terms)
         } else if case .failed(let failed, let message) = model.quote, failed == selection {
@@ -258,22 +259,44 @@ struct CloudPlanSheet: View {
             }
             Button("Cancel", role: .cancel) { model.closePlans() }
                 .keyboardShortcut(.cancelAction)
-            Button(trial == nil ? "Agree and Continue to Payment" : "Start Free Trial") {
+            Button(trial == nil ? "Continue to Payment" : "Start Free Trial") {
                 guard let shown else { return }
+                // The one box covers both consents the record keeps.
                 model.startCheckout(ParaAirCloudCheckoutRequest(
                     workspaceID: workspace.id, plan: plan, interval: interval, seats: selection.seats,
-                    consent: ParaAirCloudCheckoutConsent(disclosureVersion: shown.offer.disclosureVersion, autoRenew: agreesToRenewal,
-                                                         terms: agreesToTerms),
+                    consent: ParaAirCloudCheckoutConsent(disclosureVersion: shown.offer.disclosureVersion, autoRenew: agrees, terms: agrees),
                     trialDays: shown.offer.quote?.trialDays ?? 0))
             }
             .buttonStyle(.glideProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(shown == nil || !agreesToRenewal || !agreesToTerms || working || model.pendingCheckout != nil)
+            .disabled(shown == nil || !agrees || working || model.pendingCheckout != nil)
         }
     }
 
-    /// The service's box (Appendix A) above its two consent sentences, each with an unticked box.
+    /// The service's short summary, its full box (Appendix A) one click away, and its consent sentences beside one
+    /// unticked box. Stripe's page then shows the price, trial and dates again with the card form.
     @ViewBuilder private func terms(_ terms: ParaAirCloudCheckoutTerms) -> some View {
+        if terms.summary.isEmpty {
+            fullTerms(terms)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(terms.summary.enumerated()), id: \.offset) { index, line in
+                    Text(line)
+                        .fontWeight(index == 0 ? .medium : .regular)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            DisclosureGroup(isExpanded: $showsFullTerms) { fullTerms(terms).padding(.top, 6) } label: { Text("Show full terms") }
+        }
+        Toggle(isOn: $agrees) { Text(Self.consentText(terms.consent)).fixedSize(horizontal: false, vertical: true) }
+            .toggleStyle(.checkbox)
+            .glideControlTint()
+            .disabled(working)
+    }
+
+    /// The service's whole box: heading, price line and bullets.
+    @ViewBuilder private func fullTerms(_ terms: ParaAirCloudCheckoutTerms) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(terms.heading).font(.headline)
             Text(terms.priceLine).fontWeight(.medium)
@@ -291,13 +314,6 @@ struct CloudPlanSheet: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Glide.surface))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Glide.rule))
         .accessibilityElement(children: .combine)
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle(isOn: $agreesToRenewal) { Text(Self.consentText(terms.renewalConsent)).fixedSize(horizontal: false, vertical: true) }
-            Toggle(isOn: $agreesToTerms) { Text(Self.consentText(terms.documentsConsent)).fixedSize(horizontal: false, vertical: true) }
-        }
-        .toggleStyle(.checkbox)
-        .glideControlTint()
-        .disabled(working)
     }
 
     /// Consent text with its Markdown links. Only https links stay links; any other target shows as plain text.

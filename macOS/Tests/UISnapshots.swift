@@ -527,6 +527,9 @@ struct UISnapshots {
             try render(CloudPlanSheet(model: trialBuyer, step: .review, agreed: appearance == .darkAqua), size: nil, appearance: appearance,
                        to: output.appendingPathComponent("plan-review-trial-\(suffix(appearance)).png"))
         }
+        // The full Appendix A text stays one click away.
+        try render(CloudPlanSheet(model: trialBuyer, step: .review, fullTerms: true), size: nil, appearance: .aqua,
+                   to: output.appendingPathComponent("plan-review-trial-full-terms-light.png"))
         // A checkout without the trial the terms showed never starts.
         var withoutTrial = trialPersonal
         withoutTrial.trialDays = 0
@@ -1418,7 +1421,7 @@ final class BillingRecorder: @unchecked Sendable {
 /// (cloud/src/billing/disclosure.ts, refund Option A) for the snapshot day. `requests` records the selections asked for.
 final class OfferBox: @unchecked Sendable {
     let provider: ParaAirCloudBilling.Provider
-    let version = "A-draft-2026-10-27"
+    let version = "A-draft-2026-10-27b"
     /// Stripe Managed Payments (Link sells), and the free trial a quote for a workspace starts with.
     let managed: Bool
     let trialDays: Int
@@ -1458,7 +1461,7 @@ final class OfferBox: @unchecked Sendable {
             let text = Self.disclosure(selection, unit: unit, block: block, total: total, seller: seller, trialDays: trial)
             quote = .init(plan: selection.plan, interval: selection.interval, seats: selection.seats, extraStorageTb: selection.extraStorageTb,
                           amountCents: total, currency: "USD", terms: text.terms, consent: text.consent, trialDays: trial > 0 ? trial : nil,
-                          firstChargeAt: UISnapshots.day(trial > 0 ? "2026-10-19" : "2026-10-12"))
+                          firstChargeAt: UISnapshots.day(trial > 0 ? "2026-10-19" : "2026-10-12"), summary: text.summary)
         }
         let merchant: ParaAirCloudBillingOffer.Merchant = seller == "paddle" ? .init(name: "Paddle", reseller: true)
             : seller == "link" ? .init(name: "Link", reseller: true) : .init(name: "Parafield Inc.", reseller: false)
@@ -1469,7 +1472,7 @@ final class OfferBox: @unchecked Sendable {
 
     /// For the snapshot day, October 12, 2026; a 7-day trial ends October 19.
     static func disclosure(_ s: ParaAirCloudOfferRequest, unit unitCents: Int, block: Int, total totalCents: Int,
-                           seller: String, trialDays: Int = 0) -> (terms: [String], consent: String) {
+                           seller: String, trialDays: Int = 0) -> (terms: [String], summary: [String], consent: String) {
         let team = s.plan == .team, yearly = s.interval == .year, storageTb = s.extraStorageTb
         let unit = ParaAirCloudBillingCatalog.formatUSD(cents: unitCents), total = ParaAirCloudBillingCatalog.formatUSD(cents: totalCents)
         // The trial's end is a deadline, given with its UTC time as disclosure.ts does (the snapshot clock is midnight UTC).
@@ -1524,7 +1527,17 @@ final class OfferBox: @unchecked Sendable {
         let legal = UISnapshots.fixtureIssuer.absoluteString + "/legal/"
         let documents = "I agree to the [Terms of Service](\(legal)terms) and the [Subscription, Cancellation and Refund Policy](\(legal)subscription-policy)"
             + "\(team ? ", and I am authorized to agree for this team" : "")."
-        return (terms, renewal + " " + documents)
+        // The short screen's lines (disclosure.ts, A-draft-2026-10-27b).
+        let price = team ? "\(unit) per member per \(period) plus tax (\(total) for \(s.seats) member\(s.seats == 1 ? "" : "s"))" : "\(total) per \(period) plus tax"
+        let place = "in ParaAir (Storage Settings > Manage Plan) or at \(account)"
+        let who = team ? "The owner or a billing admin can cancel" : "Cancel"
+        var summary = [trial ? "Free for \(trialDays) days, then \(price), renewing automatically every \(period) until you cancel."
+                             : "\(price), charged today and renewing automatically every \(period) until you cancel.",
+                       trial ? "\(who) online before \(firstDay) to pay nothing: \(place)."
+                             : "\(who) online any time: \(place). Access lasts until the end of the \(period) paid for.",
+                       "Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment."]
+        if trial { summary.append("If that first payment fails, the plan stops at once: your files become read-only for 30 days, then are deleted.") }
+        return (terms, summary, renewal + " " + documents)
     }
 }
 

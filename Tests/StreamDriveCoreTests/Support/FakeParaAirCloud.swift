@@ -110,7 +110,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
     /// False: billing is set up without what checkout needs (keys, prices, notice settings): 503 `billing_unavailable`.
     var billingConfigured = true
     /// The service's `DISCLOSURE_VERSION`; a checkout naming another is 409 `disclosure_outdated`.
-    var disclosureVersion = "A-draft-2026-10-27"
+    var disclosureVersion = "A-draft-2026-10-27b"
     /// `BILLING_TRIAL_DAYS` on Stripe: the free trial a workspace's first checkout starts with, once per user (0: none).
     var trialDays = 0
     /// `STRIPE_MANAGED_PAYMENTS`: Link (Stripe Managed Payments) is the merchant of record instead of Parafield Inc.
@@ -902,7 +902,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
                                            termsURL: issuerString + "/legal/terms", policyURL: issuerString + "/legal/subscription-policy")
                 quote = ["plan": plan, "interval": interval, "seats": seats, "extraStorageTb": storage, "amountCents": total, "currency": "USD",
                          "trialDays": trial > 0 ? trial : NSNull(), "firstChargeAt": Self.date(now.addingTimeInterval(Double(trial) * 86_400)),
-                         "terms": text.terms, "consent": text.consent]
+                         "summary": text.summary, "terms": text.terms, "consent": text.consent]
             }
         }
         let merchant: [String: Any] = seller == "paddle" ? ["name": "Paddle", "reseller": true]
@@ -914,7 +914,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
     /// disclosure.ts with refund Option A, word for word. `seller`: "paddle", "link" (Stripe Managed Payments) or "parafield".
     static func disclosure(plan: String, interval: String, seats: Int, storageTb: Int, unit unitCents: Int, block: Int, total totalCents: Int,
                            now: Date, accountURL: String, seller: String, trialDays: Int = 0, termsURL: String?, policyURL: String?)
-        -> (terms: [String], consent: String) {
+        -> (terms: [String], summary: [String], consent: String) {
         let team = plan == "team", yearly = interval == "year"
         let unit = ParaAirCloudBillingCatalog.formatUSD(cents: unitCents), total = ParaAirCloudBillingCatalog.formatUSD(cents: totalCents)
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "UTC")!
@@ -976,7 +976,17 @@ final class FakeParaAirCloud: @unchecked Sendable {
             : "I agree that my ParaAir Cloud Personal plan renews automatically\(after) at \(total) per \(period) plus tax until I cancel."
         let documents = "I agree to the \(link("Terms of Service", termsURL)) and the \(link("Subscription, Cancellation and Refund Policy", policyURL))"
             + "\(team ? ", and I am authorized to agree for this team" : "")."
-        return (terms, renewal + " " + documents)
+        // The short screen's lines (disclosure.ts, A-draft-2026-10-27b).
+        let price = team ? "\(unit) per member per \(period) plus tax (\(total) for \(seats) member\(seats == 1 ? "" : "s"))" : "\(total) per \(period) plus tax"
+        let place = "in ParaAir (Storage Settings > Manage Plan) or at \(accountURL)"
+        let who = team ? "The owner or a billing admin can cancel" : "Cancel"
+        var summary = [trial ? "Free for \(trialDays) days, then \(price), renewing automatically every \(period) until you cancel."
+                             : "\(price), charged today and renewing automatically every \(period) until you cancel.",
+                       trial ? "\(who) online before \(firstDay) to pay nothing: \(place)."
+                             : "\(who) online any time: \(place). Access lasts until the end of the \(period) paid for.",
+                       "Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment."]
+        if trial { summary.append("If that first payment fails, the plan stops at once: your files become read-only for 30 days, then are deleted.") }
+        return (terms, summary, renewal + " " + documents)
     }
 
     private func billingPortal(user: String, body: Data, headers: [String: String]) throws -> Reply {
