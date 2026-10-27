@@ -168,12 +168,44 @@ private struct Journal: Codable {
     /// run of failed uploads. Nil in journals written before they were recorded.
     var createdAt: Int64? = nil
     var failingSince: Int64? = nil
-    var pendingLength: Int64 { segments.reduce(0) { $0 + $1.length } }
+    /// Changes written while the sealed contents upload, so writers never wait for an upload: they sit on top of the
+    /// sealed view, of which the first `visible` bytes stay. Once the upload settles they become the next journal
+    /// (published) or fold back in (not in flight any more). Nil without any; older binaries decode it as nil.
+    var tail: Tail? = nil
+    var allSegments: [Segment] { segments + (tail?.segments ?? []) }
+    var pendingLength: Int64 { allSegments.reduce(0) { $0 + $1.length } }
+    /// What reads, listings and stat see: the sealed view with the tail on top.
+    var effective: Journal { var view = self; view.foldTail(); return view }
+    mutating func foldTail() {
+        guard let tail else { return }
+        segments = Self.clip(segments, to: tail.visible) + tail.segments
+        size = tail.size; baseVisibleSize = min(baseVisibleSize, tail.visible); modified = tail.modified
+        self.tail = nil
+    }
+    /// The tail as a journal a writer can change like any other: its segments over the whole sealed view.
+    var tailView: Journal {
+        var view = self
+        view.segments = tail?.segments ?? []; view.size = tail?.size ?? effective.size
+        view.baseVisibleSize = tail?.visible ?? size; view.modified = tail?.modified ?? modified; view.tail = nil
+        return view
+    }
+    static func clip(_ segments: [Segment], to size: Int64) -> [Segment] {
+        segments.compactMap { segment in
+            guard segment.offset < size else { return nil }
+            var clipped = segment; clipped.length = min(clipped.length, size - segment.offset); return clipped
+        }
+    }
     var entry: FileEntry {
         FileEntry(id: id, path: path, kind: .file, size: size, modifiedNanoseconds: modified,
                   version: "local:" + transactionID + ":" + String(modified), mode: mode,
                   accessedNanoseconds: accessed ?? base?.accessedNanoseconds ?? base?.modifiedNanoseconds ?? modified)
     }
+}
+private struct Tail: Codable {
+    var segments: [Segment]
+    var size: Int64
+    var visible: Int64
+    var modified: Int64
 }
 private struct Block: Codable {
     var key: String
@@ -410,7 +442,7 @@ public final class Engine {
         for attempt in 0..<3 {
             let fetched = try refreshMetadataIfNeeded(path, force: attempt > 0)
             let answer: FileEntry? = try lock.withLock(timeout: 10) {
-                if let pending: Journal = try db.get("journal", path) { return pending.entry }
+                if let pending: Journal = try db.get("journal", path) { return pending.effective.entry }
                 if let cached: Metadata = try db.get("metadata", path) { return cached.entry }
                 return fetched
             }
@@ -455,7 +487,7 @@ public final class Engine {
         return try lock.withLock(timeout: 10) {
             let pending: [Journal] = try db.all("journal")
             var byPath = Dictionary(entries.map { ($0.path, $0) }, uniquingKeysWith: { _, last in last })
-            for item in pending where parent(item.path) == path { byPath[item.path] = item.entry }
+            for item in pending where parent(item.path) == path { byPath[item.path] = item.effective.entry }
             return byPath.values.sorted { $0.name < $1.name }
         }
     }
@@ -483,7 +515,7 @@ public final class Engine {
     /// Under the state lock. Fills in journal bytes now, because publication deletes
     /// their blobs, and lists the base blocks to copy. Nil when no metadata is known.
     private func planRead(_ path: String, offset: Int64, length: Int, fetched: FileEntry?) throws -> ReadPlan? {
-        let pending: Journal? = try db.get("journal", path)
+        let pending = (try db.get("journal", path) as Journal?)?.effective
         let stored: Metadata? = pending == nil ? try db.get("metadata", path) : nil
         guard let entry = pending?.entry ?? stored?.entry ?? fetched else { return nil }
         guard entry.kind == .file else { throw DriveError(EISDIR, "Cannot read a directory") }
@@ -641,18 +673,23 @@ public final class Engine {
     @discardableResult public func write(_ value: String, offset: Int64, data: Data) throws -> Int {
         let path = try canonicalPath(value)
         try refuseIfOwnedElsewhere(path)
-        let wrote: Int = try withWritableJournal(path) { original in
+        let wrote: Int = try withWritableJournal(path) { pending in
             guard offset >= 0, data.count <= 64 * 1024 * 1024, offset <= Int64.max - Int64(data.count) else {
                 throw DriveError(EINVAL, "Invalid write range (maximum 64 MiB per call)")
             }
-            var pending = original
             if data.isEmpty { return 0 }
             try ensureJournalSpace(Int64(data.count), drainable: true)
-            let blob = UUID().uuidString + ".data"
-            try DurableIO.write(data, to: journal.appendingPathComponent(blob))
-            pending.segments.append(Segment(offset: offset, length: Int64(data.count), blob: blob))
+            // A write that continues the previous one extends its payload, so a sequential copy keeps a few large
+            // segments: one per write made every later write re-save all earlier ones and slowed big copies down.
+            if let last = pending.segments.last, last.offset + last.length == offset, last.length + Int64(data.count) <= Self.maxPayloadBytes,
+               try DurableIO.append(data, to: journal.appendingPathComponent(last.blob), expectedSize: last.length) {
+                pending.segments[pending.segments.count - 1].length += Int64(data.count)
+            } else {
+                let blob = UUID().uuidString + ".data"
+                try DurableIO.write(data, to: journal.appendingPathComponent(blob))
+                pending.segments.append(Segment(offset: offset, length: Int64(data.count), blob: blob))
+            }
             pending.size = max(pending.size, offset + Int64(data.count)); pending.modified = now()
-            try db.transaction { try db.put("journal", path, pending); try invalidatePins(under: path) }
             return data.count
         }
         touched(path)
@@ -687,22 +724,19 @@ public final class Engine {
     public func truncate(_ value: String, size: Int64) throws {
         let path = try canonicalPath(value)
         try refuseIfOwnedElsewhere(path)
-        try withWritableJournal(path) { original in
+        try withWritableJournal(path, cleansUp: true) { pending in
             guard size >= 0 else { throw DriveError(EINVAL, "Negative file size") }
-            var pending = original
             try ensureJournalSpace(0, drainable: true)
             pending.size = size; pending.baseVisibleSize = min(pending.baseVisibleSize, size); pending.modified = now()
-            pending.segments = pending.segments.compactMap { segment in
-                guard segment.offset < size else { return nil }
-                var clipped = segment; clipped.length = min(clipped.length, size - segment.offset); return clipped
-            }
-            try db.transaction { try db.put("journal", path, pending); try invalidatePins(under: path) }
-            try recoverOrphans()
+            pending.segments = Journal.clip(pending.segments, to: size)
         }
         touched(path)
     }
     private enum JournalAccess<T> { case done(T), sealed, metadataMissing }
-    private func withWritableJournal<T>(_ path: String, _ body: (Journal) throws -> T) throws -> T {
+    /// Runs `body` on the journal a change of `path` goes into and saves it: the file's journal, a new one, or, while
+    /// the journal's sealed contents upload, its tail, so the writer never waits for an upload. `cleansUp` drops
+    /// payloads the change left unused.
+    private func withWritableJournal<T>(_ path: String, cleansUp: Bool = false, _ body: (inout Journal) throws -> T) throws -> T {
         var drains = 0, missing = 0
         while true {
             // A new journal's base comes from metadata refreshed outside the state lock.
@@ -710,17 +744,33 @@ public final class Engine {
             let access: JournalAccess<T>
             do {
                 access = try lock.withLock {
-                    if let existing: Journal = try db.get("journal", path) {
-                        if existing.sealed { return .sealed }
-                        return .done(try body(existing))
+                    let save = { (journal: Journal) in
+                        try self.db.transaction { try self.db.put("journal", path, journal); try self.invalidatePins(under: path) }
+                        if cleansUp { try self.recoverOrphans() }
+                    }
+                    if var existing: Journal = try db.get("journal", path) {
+                        // A conflict waits for a decision (resolveSealed refuses with ESTALE).
+                        if existing.sealed && existing.state == "conflict" { return .sealed }
+                        if existing.sealed {
+                            var view = existing.tailView
+                            let result = try body(&view)
+                            existing.tail = Tail(segments: view.segments, size: view.size, visible: view.baseVisibleSize, modified: view.modified)
+                            try save(existing)
+                            return .done(result)
+                        }
+                        let result = try body(&existing)
+                        try save(existing)
+                        return .done(result)
                     }
                     let stored: Metadata? = try db.get("metadata", path)
                     guard let base = stored?.entry ?? fetched else { return .metadataMissing }
                     guard base.kind == .file else { throw DriveError(EISDIR, "Cannot modify a directory") }
                     let timestamp = now()
-                    return .done(try body(Journal(transactionID: UUID().uuidString, path: path, base: base, size: base.size,
-                                                  baseVisibleSize: base.size, modified: timestamp, id: base.id, mode: base.mode, segments: [],
-                                                  mayHaveApplied: false, createdAt: timestamp)))
+                    var fresh = Journal(transactionID: UUID().uuidString, path: path, base: base, size: base.size, baseVisibleSize: base.size,
+                                        modified: timestamp, id: base.id, mode: base.mode, segments: [], mayHaveApplied: false, createdAt: timestamp)
+                    let result = try body(&fresh)
+                    try save(fresh)
+                    return .done(result)
                 }
             } catch is JournalFull {
                 // Publishing other files can make room. No state lock is held here.
@@ -729,7 +779,7 @@ public final class Engine {
                     throw DriveError(ENOSPC, "Pending-write journal limit reached; upload before writing more")
                 }
                 drains += 1
-                _ = try flushUploads(policy: .immediate)
+                try drainOnePart()
                 continue
             }
             switch access {
@@ -762,6 +812,7 @@ public final class Engine {
                         guard var current: Journal = try db.get("journal", path), current.transactionID == item.transactionID else { return }
                         current.state = "conflict"; current.lastErrno = ESTALE
                         current.lastError = "Remote file changed; local data is retained"
+                        current.foldTail()
                         try db.put("journal", path, current)
                     }
                     throw error
@@ -773,7 +824,7 @@ public final class Engine {
                 case .applied(let entry):
                     try lock.withLock {
                         guard let current: Journal = try db.get("journal", path), current.transactionID == item.transactionID else { return }
-                        try db.transaction { try db.delete("journal", path); try record(entry); try invalidateListings() }
+                        try db.transaction { try settlePublished(path, as: entry); try record(entry); try invalidateListings() }
                         namespaceEpoch &+= 1; offline = false; noteIndexChange(); try recoverOrphans()
                     }
                     published(path, lock: pathLock, sealedAt: DispatchTime.now().uptimeNanoseconds)
@@ -788,11 +839,38 @@ public final class Engine {
             }
         }
     }
+    /// Under journal pressure, changes past `uploadPartBytes` upload in parts: the journal keeps the first segments, at least one, and the rest
+    /// become its tail, which uploads next on top of the part just published. So the journal drains steadily while a
+    /// large file is still being written, and a writer waiting for room waits for one part, never the whole file.
+    private func splitForUpload(_ item: inout Journal) {
+        var total: Int64 = 0, count = 0
+        for segment in item.segments {
+            if count > 0 && total + segment.length > Self.uploadPartBytes { break }
+            total += segment.length; count += 1
+        }
+        guard count < item.segments.count else { return }
+        // The part ends where its data does, so a version stored between parts is a shorter copy, never one with
+        // zero-filled holes where later parts go (an index backup or a recovery could catch it).
+        let parts = Array(item.segments[..<count])
+        let end = min(item.size, max(min(item.baseVisibleSize, item.size), parts.map { $0.offset + $0.length }.max() ?? 0))
+        item.tail = Tail(segments: Array(item.segments[count...]), size: item.size, visible: end, modified: item.modified)
+        item.segments = parts; item.size = end
+    }
+    /// Inside the publication's transaction: the published journal goes, and a tail written meanwhile becomes the next
+    /// journal, on top of the version just published.
+    private func settlePublished(_ path: String, as entry: FileEntry) throws {
+        guard let current: Journal = try db.get("journal", path), let tail = current.tail else { try db.delete("journal", path); return }
+        let next = Journal(transactionID: UUID().uuidString, path: path, base: entry, size: tail.size, baseVisibleSize: min(entry.size, tail.visible),
+                           modified: tail.modified, id: entry.id, mode: current.mode, segments: tail.segments, accessed: current.accessed,
+                           mayHaveApplied: false, createdAt: tail.modified)
+        try db.put("journal", path, next)
+    }
     /// Gives an unpublished journal a fresh identity so writers can append again.
     private func rotate(_ path: String, transactionID: String) throws {
         try lock.withLock {
             guard var current: Journal = try db.get("journal", path), current.transactionID == transactionID else { return }
             rotate(&current)
+            current.foldTail()
             try db.put("journal", path, current)
         }
     }
@@ -831,6 +909,17 @@ public final class Engine {
         if remaining.contains(where: { $0.lastErrno == EROFS }) { _ = try? ownedElsewhere(refresh: true) }
         return remaining
     }
+    /// Makes room in a full journal by uploading one part of the largest change (waiting first for an upload of it in
+    /// flight), so a writer waits for about one part's upload rather than everything pending.
+    private func drainOnePart() throws {
+        let pending: [Journal] = try lock.withLock { try db.all("journal") }
+        // Largest first; one that can't upload (refused, failing) leaves room to the next.
+        let candidates = pending.filter { $0.state != "conflict" && !Housekeeping.staysLocal($0.path) && $0.lastErrno != EROFS }
+            .sorted { $0.pendingLength > $1.pendingLength }
+        for candidate in candidates.prefix(8) {
+            do { _ = try uploadOnce(candidate.path, modifiedNoLaterThan: .max); return } catch {}
+        }
+    }
     /// Background passes do nothing while offline, probing at most every 15 s.
     /// BYO metadata is local, so its probe always succeeds and backoff applies instead.
     private func reachableForBackgroundUpload() throws -> Bool {
@@ -849,6 +938,16 @@ public final class Engine {
     private func syncOne(_ path: String, modifiedNoLaterThan cutoff: Int64 = .max) throws {
         assert(!lock.isHeldByCurrentThread, "Uploads must not run under the drive state lock")
         guard !Housekeeping.staysLocal(path) else { return }
+        // Large changes upload in parts, and a tail written meanwhile becomes the next journal: keep going while what
+        // remains was written before this call (fsync means everything written so far). Changes made since stay for
+        // a later pass, so a file that keeps changing never holds this call.
+        let started = now()
+        var limit = cutoff
+        while try uploadOnce(path, modifiedNoLaterThan: limit) { limit = min(cutoff, started) }
+    }
+    /// One upload of `path`'s journal. True when it published and a tail left a newer journal behind.
+    private func uploadOnce(_ path: String, modifiedNoLaterThan cutoff: Int64) throws -> Bool {
+        var continues = false
         try legacyUploadLock.withShared {
         let pathLock = try uploadLock(for: path)
         try pathLock.withLock {
@@ -858,6 +957,11 @@ public final class Engine {
             guard var item: Journal = try db.get("journal", path) else { return nil }
             if item.state == "conflict" { throw DriveError(ESTALE, Self.conflictMessage) }
             if !item.sealed && item.modified > cutoff { return nil }
+            // Parts only while the journal is under pressure, where draining and short waits matter; otherwise a file
+            // uploads in one commit, so a finished copy doesn't become hundreds of stored versions.
+            if !item.sealed, Double(try directoryAllocation(journal)) >= UploadPolicy.background.pressureFraction * Double(journalLimit) {
+                splitForUpload(&item)
+            }
             prior = item.mayHaveApplied ?? true
             item.sealed = true; item.mayHaveApplied = true
             try db.put("journal", path, item); return item
@@ -872,9 +976,10 @@ public final class Engine {
             do { published = try publisher.commit(commit); recordTraffic(on: publisher) }
             catch { recordTraffic(on: publisher); throw error }
             try lock.withLock {
-                try db.transaction { try db.delete("journal", path); try record(published); try invalidateListings() }
+                try db.transaction { try settlePublished(path, as: published); try record(published); try invalidateListings() }
                 // Published: a failed cleanup is not a failed upload. Later passes reclaim the payloads.
                 namespaceEpoch &+= 1; offline = false; noteIndexChange(); try? persistTraffic(); try? recoverOrphans()
+                continues = (try db.get("journal", path) as Journal?) != nil
             }
             self.published(path, lock: pathLock, sealedAt: sealedAt)
         } catch {
@@ -914,13 +1019,18 @@ public final class Engine {
             // Write back only over the transaction this attempt sealed (before any rotation
             // above). Once it is gone, a writer may have started a new one, which must stay.
             if let current: Journal = try db.get("journal", path), current.transactionID == commit.transactionID {
-                try db.put("journal", path, pending)
+                // Contents no longer in flight take the tail back; a sealed identity awaiting its outcome keeps it apart.
+                var next = pending
+                next.tail = current.tail
+                if !next.sealed || next.state == "conflict" { next.foldTail() }
+                try db.put("journal", path, next)
             }
             }
             throw error
         }
         }
         }
+        return continues
     }
     /// The per-path upload lock: `<state>/uploads/<sha256(path)>.lock`. At most
     /// 1,024 are cached; the cache drops paths that no longer have journals.
@@ -956,8 +1066,8 @@ public final class Engine {
         try lock.withLock {
             let pending: [Journal] = try db.all("journal")
             return pending.filter { !Housekeeping.staysLocal($0.path) }.map { item in
-                UploadRecord(transactionID: item.transactionID, path: item.path, logicalSize: item.size,
-                             pendingBytes: item.segments.reduce(0) { $0 + DurableIO.allocatedBytes(journal.appendingPathComponent($1.blob)) },
+                UploadRecord(transactionID: item.transactionID, path: item.path, logicalSize: item.effective.size,
+                             pendingBytes: item.allSegments.reduce(0) { $0 + DurableIO.allocatedBytes(journal.appendingPathComponent($1.blob)) },
                              state: item.state, lastError: item.lastError, lastErrno: item.lastErrno, failures: item.failures ?? 0,
                              failingSinceNanoseconds: item.failingSince, pendingSinceNanoseconds: item.createdAt ?? item.modified,
                              modifiedNanoseconds: item.modified)
@@ -1165,7 +1275,7 @@ public final class Engine {
             let blocks: [Block] = try db.all("block")
             let pending: [Journal] = try db.all("journal")
             let cached = blocks.filter { contains(path, $0.path) }.reduce(Int64(0)) { $0 + DurableIO.allocatedBytes(cache.appendingPathComponent($1.key)) }
-            let dirty = pending.filter { contains(path, $0.path) }.flatMap(\.segments).reduce(Int64(0)) { $0 + DurableIO.allocatedBytes(journal.appendingPathComponent($1.blob)) }
+            let dirty = pending.filter { contains(path, $0.path) }.flatMap(\.allSegments).reduce(Int64(0)) { $0 + DurableIO.allocatedBytes(journal.appendingPathComponent($1.blob)) }
             return cached + dirty
         }
     }
@@ -1261,6 +1371,10 @@ public final class Engine {
 
     // MARK: Changes that need a decision
 
+    /// The largest journal payload a run of sequential writes grows to before the next one starts.
+    static let maxPayloadBytes: Int64 = 64 << 20
+    /// How much of one file's changes an upload carries; more uploads in parts (splitForUpload).
+    static let uploadPartBytes: Int64 = 64 << 20
     static let conflictMessage = "This file changed elsewhere. Your copy is kept on this Mac until you choose which to keep."
     /// The file system type ParaAir volumes report (FSShortName in the extension's Info.plist).
     static let fileSystemName = "streamdrive"
@@ -1323,6 +1437,7 @@ public final class Engine {
                 var copy = current
                 copy.path = target; copy.base = nil; copy.baseVisibleSize = 0
                 copy.transactionID = UUID().uuidString; copy.id = UInt64.random(in: (1 << 62)..<UInt64.max)
+                copy.foldTail()
                 copy.sealed = false; copy.state = "pending"; copy.mayHaveApplied = false
                 copy.lastError = nil; copy.lastErrno = nil; copy.failures = nil; copy.failingSince = nil; copy.nextAttemptAt = nil
                 namespaceEpoch &+= 1
@@ -1710,16 +1825,16 @@ public final class Engine {
     /// Journal bytes that still have to upload: everything but local-only files.
     private func uploadableJournalAllocation() throws -> Int64 {
         let pending: [Journal] = try db.all("journal")
-        let local = pending.filter { Housekeeping.staysLocal($0.path) }.flatMap(\.segments)
+        let local = pending.filter { Housekeeping.staysLocal($0.path) }.flatMap(\.allSegments)
             .reduce(Int64(0)) { $0 + DurableIO.allocatedBytes(journal.appendingPathComponent($1.blob)) }
         return max(0, try directoryAllocation(journal) - local)
     }
     private func recoverOrphans() throws {
         let pending: [Journal] = try db.all("journal"), blocks: [Block] = try db.all("block")
-        let liveJournal = Set(pending.flatMap(\.segments).map(\.blob)), liveCache = Set(blocks.map(\.key))
+        let liveJournal = Set(pending.flatMap(\.allSegments).map(\.blob)), liveCache = Set(blocks.map(\.key))
         for (directory, live) in [(journal, liveJournal), (cache, liveCache)] {
             for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) where !live.contains(url.lastPathComponent) {
-                // Only generated immutable payload names are owned by recovery.
+                // Only generated payload names are owned by recovery (a payload only grows, while its journal names it).
                 let name = url.lastPathComponent
                 if name.hasPrefix(".tmp-") || (directory == journal && name.hasSuffix(".data") && UUID(uuidString: String(name.dropLast(5))) != nil) || (directory == cache && name.count == 64 && name.allSatisfy(\.isHexDigit)) {
                     try FileManager.default.removeItem(at: url)

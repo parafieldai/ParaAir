@@ -174,6 +174,8 @@ private struct JournalProbe: Decodable {
     var mayHaveApplied: Bool?
     var failures: Int?
     var nextAttemptAt: Int64?
+    struct Tail: Decodable { var size: Int64 }
+    var tail: Tail?
 }
 
 final class EngineTests: XCTestCase {
@@ -512,68 +514,120 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(try remoteData(), Data("one".utf8))
     }
 
-    func testWriterResolvesSealedJournalWithCommitStatusWithoutUploading() throws {
+    /// A writer never waits for, settles or makes an upload: a change to a file whose earlier upload is sealed (in
+    /// flight, or with an unknown outcome) goes on top, and the next upload settles the earlier one first.
+    func testWriterAddsToASealedJournalWithoutSettlingOrUploading() throws {
         try seed(Data("old".utf8))
         let drive = try engine()
         _ = try drive.write("/file", offset: 0, data: Data("one".utf8))
         backend.failAfterCommit = true
         expectError(ECONNRESET, try drive.fsync("/file"))
-        // Applied: the writer settles the sealed journal and starts a new one on top.
-        var commits = backend.commits
+        let identity = try transaction(drive)
+        var commits = backend.commits, statusCalls = backend.statusCalls
         XCTAssertEqual(try drive.write("/file", offset: 0, data: Data("two".utf8)), 3)
         XCTAssertEqual(backend.commits, commits, "A writer must never upload")
-        XCTAssertEqual(backend.statusCalls, 1)
+        XCTAssertEqual(backend.statusCalls, statusCalls, "nor settle the earlier upload")
         var probe = try XCTUnwrap(journal("/file"))
-        XCTAssertFalse(probe.sealed)
-        XCTAssertEqual(probe.mayHaveApplied, false)
+        XCTAssertTrue(probe.sealed)
+        XCTAssertEqual(probe.transactionID, identity, "the sealed identity stays fixed for its replay")
+        XCTAssertNotNil(probe.tail)
         XCTAssertEqual(try drive.read("/file", offset: 0, length: 3), Data("two".utf8))
+        // The applied first upload replays to its receipt, then the change on top uploads in the same fsync.
         try drive.fsync("/file")
         XCTAssertEqual(try remoteData(), Data("two".utf8))
-        // Absent: a sealed attempt that never published is rotated, not uploaded.
+        XCTAssertTrue(try drive.uploads().isEmpty)
+        // A failed attempt that may still have applied keeps its sealed identity; the change sits on top of it.
         _ = try drive.write("/file", offset: 0, data: Data("3".utf8))
         backend.failBeforeCommit = true
         expectError(EIO, try drive.fsync("/file"))
         backend.failBeforeCommit = false
-        let sealed = try transaction(drive)
         commits = backend.commits
         XCTAssertEqual(try drive.write("/file", offset: 1, data: Data("4".utf8)), 1)
         XCTAssertEqual(backend.commits, commits)
-        XCTAssertEqual(backend.statusCalls, 2)
         probe = try XCTUnwrap(journal("/file"))
-        XCTAssertNotEqual(probe.transactionID, sealed)
-        XCTAssertFalse(probe.sealed)
+        XCTAssertTrue(probe.sealed)
+        XCTAssertNotNil(probe.tail)
+        XCTAssertEqual(try drive.read("/file", offset: 0, length: 3), Data("34o".utf8))
         try drive.fsync("/file")
         XCTAssertEqual(try remoteData(), Data("34o".utf8))
+        XCTAssertTrue(try drive.uploads().isEmpty)
     }
 
-    func testWriterGetsEIOWhenOutcomeUnknownAndMayHaveApplied() throws {
+    /// A write that arrives while the file uploads lands at once (no waiting for the upload) and uploads after it.
+    func testAWriteDuringAnUploadLandsAtOnceAndUploadsNext() throws {
+        let drive = try engine()
+        _ = try drive.create("/live", directory: false)
+        _ = try drive.write("/live", offset: 0, data: Data("first".utf8))
+        var during: Result<Int, Error>?
+        backend.onCommit = {
+            self.backend.onCommit = nil
+            during = Result { try drive.write("/live", offset: 5, data: Data(" second".utf8)) }
+        }
+        try drive.fsync("/live")
+        XCTAssertEqual(try XCTUnwrap(during).get(), 7)
+        // The fsync covers what was written before it; the change made during it is the next journal.
+        XCTAssertEqual(backend.committedPaths, ["/live"])
+        XCTAssertEqual(try remoteData("live"), Data("first".utf8))
+        XCTAssertEqual(try drive.read("/live", offset: 0, length: 64), Data("first second".utf8))
+        XCTAssertEqual(try drive.uploads().map(\.path), ["/live"])
+        try drive.fsync("/live")
+        XCTAssertEqual(try remoteData("live"), Data("first second".utf8))
+        XCTAssertTrue(try drive.uploads().isEmpty)
+    }
+
+    /// Under journal pressure, a change larger than an upload part goes up in parts, each on top of the last, all in one
+    /// fsync; with room to spare it goes up in one commit.
+    func testALargeChangeUploadsInPartsUnderPressure() throws {
+        let relaxed = try Engine(backend: backend, stateDirectory: state.appendingPathComponent("relaxed"), cacheLimitBytes: 8192, minFreeBytes: 0,
+                                 blockSize: 4096, maxJournalBytes: 1 << 30)
+        _ = try relaxed.create("/whole", directory: false)
+        for half in 0..<2 { _ = try relaxed.write("/whole", offset: Int64(half * (50 << 20)), data: Data(repeating: 7, count: 50 << 20)) }
+        try relaxed.fsync("/whole")
+        XCTAssertEqual(backend.committedPaths, ["/whole"])
+        let drive = try engine(journal: 160 << 20)
+        _ = try drive.create("/big", directory: false)
+        // Three separate 40 MiB runs (gaps between them), each its own payload.
+        let run = 40 << 20
+        for index in 0..<3 { _ = try drive.write("/big", offset: Int64(index * (run + 4096)), data: Data(repeating: UInt8(index + 1), count: run)) }
+        // When the second part starts, storage holds the first part only: a shorter copy, not zero-filled holes.
+        var sizeBeforeSecond: Int?
+        var calls = 0
+        backend.onCommit = {
+            calls += 1
+            if calls == 2 { sizeBeforeSecond = try? self.remoteData("big").count }
+        }
+        try drive.fsync("/big")
+        XCTAssertEqual(sizeBeforeSecond, run)
+        XCTAssertEqual(backend.committedPaths, ["/whole", "/big", "/big", "/big"])
+        let uploaded = try remoteData("big")
+        XCTAssertEqual(uploaded.count, 3 * run + 2 * 4096)
+        XCTAssertEqual(uploaded[2 * (run + 4096)], 3)
+        XCTAssertEqual(uploaded[run], 0, "the gaps stay zero")
+        XCTAssertTrue(try drive.uploads().isEmpty)
+    }
+
+    /// While an earlier upload's outcome is unknown (unreachable fence), writes and truncations still land locally on
+    /// top of it, and upload once the connection returns.
+    func testChangesDuringAnUnknownOutcomeWaitForTheConnection() throws {
         try seed(Data("old".utf8))
         let drive = try engine()
         _ = try drive.write("/file", offset: 0, data: Data("one".utf8))
         backend.failAfterCommit = true
         expectError(ECONNRESET, try drive.fsync("/file"))
         let identity = try transaction(drive), commits = backend.commits
-        let message = "The previous upload of this file has an unknown outcome. Your changes are kept and will upload when the connection returns."
         backend.statusUnknown = true
-        XCTAssertThrowsError(try drive.write("/file", offset: 0, data: Data("two".utf8))) {
-            XCTAssertEqual(($0 as? DriveError)?.code, EIO)
-            XCTAssertEqual(($0 as? DriveError)?.message, message)
-        }
-        // An unreachable fence is just as unknown.
+        XCTAssertEqual(try drive.write("/file", offset: 0, data: Data("two".utf8)), 3)
         backend.statusUnknown = false; backend.offline = true
-        expectError(EIO, try drive.write("/file", offset: 0, data: Data("two".utf8)))
-        expectError(EIO, try drive.truncate("/file", size: 1))
+        try drive.truncate("/file", size: 2)
         XCTAssertEqual(backend.commits, commits)
-        XCTAssertTrue(try drive.status().offline)
-        // Acknowledged data stays readable, and the identity is unchanged.
-        XCTAssertEqual(try drive.read("/file", offset: 0, length: 3), Data("one".utf8))
+        XCTAssertEqual(try drive.read("/file", offset: 0, length: 3), Data("tw".utf8))
         let probe = try XCTUnwrap(journal("/file"))
         XCTAssertEqual(probe.transactionID, identity)
         XCTAssertTrue(probe.sealed)
         backend.offline = false
-        XCTAssertEqual(try drive.write("/file", offset: 0, data: Data("two".utf8)), 3)
         try drive.fsync("/file")
-        XCTAssertEqual(try remoteData(), Data("two".utf8))
+        XCTAssertEqual(try remoteData(), Data("tw".utf8))
+        XCTAssertTrue(try drive.uploads().isEmpty)
     }
 
     func testNamespaceRejectionBecomesConflict() throws {
@@ -728,11 +782,12 @@ final class EngineTests: XCTestCase {
             _ = try drive.write(name, offset: 0, data: Data(repeating: UInt8(name.utf8.last!), count: 4096))
         }
         XCTAssertEqual(backend.commits, 0)
-        // Full: this write drains the journal through uploads, then lands locally.
+        // Full: this write uploads one part of the largest change to make room (not everything), then lands locally.
         XCTAssertEqual(try drive.write("/c", offset: 4096, data: Data(repeating: 9, count: 4096)), 4096)
-        XCTAssertEqual(Set(backend.committedPaths), ["/a", "/b", "/c"])
-        XCTAssertEqual(try remoteData("a"), Data(repeating: UInt8(ascii: "a"), count: 4096))
-        XCTAssertEqual(try drive.uploads().map(\.path), ["/c"])
+        XCTAssertEqual(backend.committedPaths.count, 1, "only what the write needs")
+        let drained = try XCTUnwrap(backend.committedPaths.first)
+        XCTAssertEqual(try remoteData(String(drained.dropFirst())), Data(repeating: UInt8(drained.utf8.last!), count: 4096))
+        XCTAssertEqual(Set(try drive.uploads().map(\.path)), Set(["/a", "/b", "/c"]).subtracting([drained]).union(["/c"]))
         XCTAssertEqual(try drive.read("/c", offset: 4094, length: 4), Data([UInt8(ascii: "c"), UInt8(ascii: "c"), 9, 9]))
         try drive.fsync("/c")
         XCTAssertEqual(try remoteData("c"), Data(repeating: UInt8(ascii: "c"), count: 4096) + Data(repeating: 9, count: 4096))

@@ -217,6 +217,27 @@ enum DurableIO {
         guard Darwin.rename(temp.path, url.path) == 0 else { throw DriveError(errno, "Cannot publish local data") }
         try syncDirectory(url.deletingLastPathComponent())
     }
+    /// Appends `data` to the payload at `url` when it is still exactly `expectedSize` bytes long, durably (F_FULLFSYNC)
+    /// before returning true; false, writing nothing, when the size differs (for example bytes a crash left past the
+    /// recorded length). A failure midway leaves the file longer than `expectedSize`, so the next append refuses it.
+    static func append(_ data: Data, to url: URL, expectedSize: Int64) throws -> Bool {
+        let fd = Darwin.open(url.path, O_WRONLY | O_NOFOLLOW)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+        var s = Darwin.stat()
+        guard fstat(fd, &s) == 0, Int64(s.st_size) == expectedSize else { return false }
+        try data.withUnsafeBytes { raw in
+            var offset = 0
+            while offset < data.count {
+                let wrote = Darwin.pwrite(fd, raw.baseAddress!.advanced(by: offset), data.count - offset, off_t(expectedSize) + off_t(offset))
+                if wrote < 0 { if errno == EINTR { continue }; throw DriveError(errno, "Local write failed") }
+                guard wrote > 0 else { throw DriveError(EIO, "Local write made no progress") }
+                offset += wrote
+            }
+        }
+        guard Darwin.fsync(fd) == 0, fcntl(fd, F_FULLFSYNC) == 0 else { throw DriveError(errno, "Cannot persist local data") }
+        return true
+    }
     static func syncDirectory(_ url: URL) throws {
         let fd = Darwin.open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard fd >= 0 else { throw DriveError(errno, "Cannot open state directory") }
