@@ -136,9 +136,11 @@ struct HomePresentation: Equatable {
                 // A self-serve workspace before its free trial: files open, nothing uploads until a plan grants storage.
                 let control = cloud.billing.controls.first { $0.action == .choosePlan }
                 result = .init(status: .init(title: Self.noStorageTitle,
-                                             detail: cloud.workspace?.billing?.trialDays.map {
-                                                 "Start your \($0)-day free trial to add files to this drive. Nothing is charged before it ends."
-                                             } ?? "Choose a ParaAir Cloud plan to add files to this drive.",
+                                             // Only the owner can start a plan; anyone else is sent to them.
+                                             detail: control == nil ? "Ask the workspace owner to choose a ParaAir Cloud plan to add files to this drive."
+                                                 : cloud.workspace?.billing?.trialDays.map {
+                                                     "Start your \($0)-day free trial to add files to this drive. Nothing is charged before it ends."
+                                                 } ?? "Choose a ParaAir Cloud plan to add files to this drive.",
                                              tone: .attention),
                                primary: control.map { .init(action: .choosePlan, title: $0.title) } ?? .init(action: .openInFinder, title: "Open in Finder"),
                                offersOpenInFinder: control != nil)

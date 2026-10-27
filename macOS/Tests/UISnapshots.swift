@@ -836,6 +836,12 @@ struct UISnapshots {
         expect(noStorage.status.title == "Connected, no storage yet" && noStorage.primary == .init(action: .choosePlan, title: "Start Free Trial…"),
                "a drive with no storage yet leads with the free trial")
         expect(!noStorage.notices.contains { $0.id == "billing" }, "the no-storage status replaces the billing notice on the home window")
+        var memberNoStorage = scenarios["22-cloud-no-storage"]!
+        memberNoStorage.cloudUsage = CloudUsage(workspace: fixtureMe(stored: 0, billing: ParaAirCloudBilling(provider: .stripe, status: .none),
+                                                                     role: "member", unpaid: true).workspaces.first, state: .loaded)
+        let memberHome = HomePresentation.make(memberNoStorage)
+        expect(memberHome.status.detail == "Ask the workspace owner to choose a ParaAir Cloud plan to add files to this drive."
+               && memberHome.primary.action == .openInFinder, "a member with no storage is sent to the owner")
         let home = HomePresentation.make(scenarios["14-cloud-past-due"]!)
         expect(home.notices.first == pastDue.notice && home.status.tone == .good, "past due keeps the drive connected and adds the notice")
         var ownBucket = scenarios["14-cloud-past-due"]!
