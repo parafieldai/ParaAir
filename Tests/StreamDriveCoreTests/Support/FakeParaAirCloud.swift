@@ -977,14 +977,15 @@ final class FakeParaAirCloud: @unchecked Sendable {
         let documents = "I agree to the \(link("Terms of Service", termsURL)) and the \(link("Subscription, Cancellation and Refund Policy", policyURL))"
             + "\(team ? ", and I am authorized to agree for this team" : "")."
         // The short screen's lines (disclosure.ts, A-draft-2026-10-27b).
-        let price = team ? "\(unit) per member per \(period) plus tax (\(total) for \(seats) member\(seats == 1 ? "" : "s"))" : "\(total) per \(period) plus tax"
+        let price = team ? "\(unit) per member per \(period) plus tax (\(total) for \(seats) member\(seats == 1 ? "" : "s")"
+            + "\(storageTb > 0 ? " and \(storageTb) TB added storage" : ""))" : "\(total) per \(period) plus tax"
         let place = "in ParaAir (Storage Settings > Manage Plan) or at \(accountURL)"
         let who = team ? "The owner or a billing admin can cancel" : "Cancel"
         var summary = [trial ? "Free for \(trialDays) days, then \(price), renewing automatically every \(period) until you cancel."
                              : "\(price), charged today and renewing automatically every \(period) until you cancel.",
                        trial ? "\(who) online before \(firstDay) to pay nothing: \(place)."
                              : "\(who) online any time: \(place). Access lasts until the end of the \(period) paid for.",
-                       "Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment."]
+                       "Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment\(yearly ? " or of any yearly renewal charge" : "")."]
         if trial { summary.append("If that first payment fails, the plan stops at once: your files become read-only for 30 days, then are deleted.") }
         return (terms, summary, renewal + " " + documents)
     }

@@ -938,6 +938,7 @@ struct UISnapshots {
                                                                                             seats: plan == .team ? 3 : 1, extraStorageTb: 1))
                     guard let terms = quoted.quote.flatMap(ParaAirCloudCheckoutTerms.init) else { failures.append("fixture terms parse"); continue }
                     copy += [terms.heading, terms.priceLine, terms.renewalConsent, terms.documentsConsent, CloudPlanSheet.seller(quoted)] + terms.bullets
+                        + terms.summary
                 }
             }
         }
@@ -1528,14 +1529,15 @@ final class OfferBox: @unchecked Sendable {
         let documents = "I agree to the [Terms of Service](\(legal)terms) and the [Subscription, Cancellation and Refund Policy](\(legal)subscription-policy)"
             + "\(team ? ", and I am authorized to agree for this team" : "")."
         // The short screen's lines (disclosure.ts, A-draft-2026-10-27b).
-        let price = team ? "\(unit) per member per \(period) plus tax (\(total) for \(s.seats) member\(s.seats == 1 ? "" : "s"))" : "\(total) per \(period) plus tax"
+        let price = team ? "\(unit) per member per \(period) plus tax (\(total) for \(s.seats) member\(s.seats == 1 ? "" : "s")"
+            + "\(storageTb > 0 ? " and \(storageTb) TB added storage" : ""))" : "\(total) per \(period) plus tax"
         let place = "in ParaAir (Storage Settings > Manage Plan) or at \(account)"
         let who = team ? "The owner or a billing admin can cancel" : "Cancel"
         var summary = [trial ? "Free for \(trialDays) days, then \(price), renewing automatically every \(period) until you cancel."
                              : "\(price), charged today and renewing automatically every \(period) until you cancel.",
                        trial ? "\(who) online before \(firstDay) to pay nothing: \(place)."
                              : "\(who) online any time: \(place). Access lasts until the end of the \(period) paid for.",
-                       "Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment."]
+                       "Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment\(yearly ? " or of any yearly renewal charge" : "")."]
         if trial { summary.append("If that first payment fails, the plan stops at once: your files become read-only for 30 days, then are deleted.") }
         return (terms, summary, renewal + " " + documents)
     }
