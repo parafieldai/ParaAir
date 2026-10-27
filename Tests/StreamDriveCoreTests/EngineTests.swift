@@ -582,7 +582,15 @@ final class EngineTests: XCTestCase {
         // Three separate 40 MiB runs (gaps between them), each its own payload.
         let run = 40 << 20
         for index in 0..<3 { _ = try drive.write("/big", offset: Int64(index * (run + 4096)), data: Data(repeating: UInt8(index + 1), count: run)) }
+        // When the second part starts, storage holds the first part only: a shorter copy, not zero-filled holes.
+        var sizeBeforeSecond: Int?
+        var calls = 0
+        backend.onCommit = {
+            calls += 1
+            if calls == 2 { sizeBeforeSecond = try? self.remoteData("big").count }
+        }
         try drive.fsync("/big")
+        XCTAssertEqual(sizeBeforeSecond, run)
         XCTAssertEqual(backend.committedPaths, ["/big", "/big", "/big"])
         let uploaded = try remoteData("big")
         XCTAssertEqual(uploaded.count, 3 * run + 2 * 4096)

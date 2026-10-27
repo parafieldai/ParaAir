@@ -25,6 +25,27 @@ final class NativeBackendTests: XCTestCase {
         return (library, root, backend)
     }
 
+    /// A copy larger than an upload part goes into JuiceFS in parts, each a shorter correct prefix, and reads back whole.
+    func testLargeCopyUploadsToJuiceFSInParts() throws {
+        let (_, root, backend) = try fixture()
+        let drive = try Engine(backend: backend, stateDirectory: root.appendingPathComponent("state"), cacheLimitBytes: 1 << 20, minFreeBytes: 0,
+                               blockSize: 1 << 20, maxJournalBytes: 1 << 30)
+        _ = try drive.create("/movie.bin", directory: false)
+        let chunk = 1 << 20, total = 140
+        for index in 0..<total {
+            var block = Data(repeating: UInt8(index % 251), count: chunk)
+            block[0] = UInt8(index % 256)
+            _ = try drive.write("/movie.bin", offset: Int64(index * chunk), data: block)
+        }
+        try drive.fsync("/movie.bin")
+        XCTAssertTrue(try drive.uploads().isEmpty)
+        XCTAssertEqual(try backend.stat("/movie.bin").size, Int64(total * chunk))
+        for index in [0, 63, 64, 127, 128, 139] {
+            let read = try backend.read("/movie.bin", offset: Int64(index * chunk), length: 2)
+            XCTAssertEqual(read, Data([UInt8(index % 256), UInt8(index % 251)]), "block \(index)")
+        }
+    }
+
     /// A drive whose index is a SQLite file on this Mac backs it up into its own objects.
     func testEngineBacksUpALocalIndexIntoStorage() throws {
         let (_, root, backend) = try fixture()

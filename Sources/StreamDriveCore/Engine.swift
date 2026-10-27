@@ -849,8 +849,12 @@ public final class Engine {
             total += segment.length; count += 1
         }
         guard count < item.segments.count else { return }
-        item.tail = Tail(segments: Array(item.segments[count...]), size: item.size, visible: item.size, modified: item.modified)
-        item.segments = Array(item.segments[..<count])
+        // The part ends where its data does, so a version stored between parts is a shorter copy, never one with
+        // zero-filled holes where later parts go (an index backup or a recovery could catch it).
+        let parts = Array(item.segments[..<count])
+        let end = min(item.size, max(min(item.baseVisibleSize, item.size), parts.map { $0.offset + $0.length }.max() ?? 0))
+        item.tail = Tail(segments: Array(item.segments[count...]), size: item.size, visible: end, modified: item.modified)
+        item.segments = parts; item.size = end
     }
     /// Inside the publication's transaction: the published journal goes, and a tail written meanwhile becomes the next
     /// journal, on top of the version just published.
@@ -909,9 +913,12 @@ public final class Engine {
     /// flight), so a writer waits for about one part's upload rather than everything pending.
     private func drainOnePart() throws {
         let pending: [Journal] = try lock.withLock { try db.all("journal") }
-        guard let largest = pending.filter({ $0.state != "conflict" && !Housekeeping.staysLocal($0.path) })
-            .max(by: { $0.pendingLength < $1.pendingLength }) else { return }
-        do { _ = try uploadOnce(largest.path, modifiedNoLaterThan: .max) } catch {}
+        // Largest first; one that can't upload (refused, failing) leaves room to the next.
+        let candidates = pending.filter { $0.state != "conflict" && !Housekeeping.staysLocal($0.path) && $0.lastErrno != EROFS }
+            .sorted { $0.pendingLength > $1.pendingLength }
+        for candidate in candidates.prefix(8) {
+            do { _ = try uploadOnce(candidate.path, modifiedNoLaterThan: .max); return } catch {}
+        }
     }
     /// Background passes do nothing while offline, probing at most every 15 s.
     /// BYO metadata is local, so its probe always succeeds and backoff applies instead.
@@ -1426,6 +1433,7 @@ public final class Engine {
                 var copy = current
                 copy.path = target; copy.base = nil; copy.baseVisibleSize = 0
                 copy.transactionID = UUID().uuidString; copy.id = UInt64.random(in: (1 << 62)..<UInt64.max)
+                copy.foldTail()
                 copy.sealed = false; copy.state = "pending"; copy.mayHaveApplied = false
                 copy.lastError = nil; copy.lastErrno = nil; copy.failures = nil; copy.failingSince = nil; copy.nextAttemptAt = nil
                 namespaceEpoch &+= 1
