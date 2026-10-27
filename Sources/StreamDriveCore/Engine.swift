@@ -839,7 +839,7 @@ public final class Engine {
             }
         }
     }
-    /// Changes past `uploadPartBytes` upload in parts: the journal keeps the first segments, at least one, and the rest
+    /// Under journal pressure, changes past `uploadPartBytes` upload in parts: the journal keeps the first segments, at least one, and the rest
     /// become its tail, which uploads next on top of the part just published. So the journal drains steadily while a
     /// large file is still being written, and a writer waiting for room waits for one part, never the whole file.
     private func splitForUpload(_ item: inout Journal) {
@@ -957,7 +957,11 @@ public final class Engine {
             guard var item: Journal = try db.get("journal", path) else { return nil }
             if item.state == "conflict" { throw DriveError(ESTALE, Self.conflictMessage) }
             if !item.sealed && item.modified > cutoff { return nil }
-            if !item.sealed { splitForUpload(&item) }
+            // Parts only while the journal is under pressure, where draining and short waits matter; otherwise a file
+            // uploads in one commit, so a finished copy doesn't become hundreds of stored versions.
+            if !item.sealed, Double(try directoryAllocation(journal)) >= UploadPolicy.background.pressureFraction * Double(journalLimit) {
+                splitForUpload(&item)
+            }
             prior = item.mayHaveApplied ?? true
             item.sealed = true; item.mayHaveApplied = true
             try db.put("journal", path, item); return item

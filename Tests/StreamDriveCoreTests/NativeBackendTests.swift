@@ -28,8 +28,9 @@ final class NativeBackendTests: XCTestCase {
     /// A copy larger than an upload part goes into JuiceFS in parts, each a shorter correct prefix, and reads back whole.
     func testLargeCopyUploadsToJuiceFSInParts() throws {
         let (_, root, backend) = try fixture()
+        // A journal small enough that 140 MiB puts it under pressure, so the upload goes in parts.
         let drive = try Engine(backend: backend, stateDirectory: root.appendingPathComponent("state"), cacheLimitBytes: 1 << 20, minFreeBytes: 0,
-                               blockSize: 1 << 20, maxJournalBytes: 1 << 30)
+                               blockSize: 1 << 20, maxJournalBytes: 200 << 20)
         _ = try drive.create("/movie.bin", directory: false)
         let chunk = 1 << 20, total = 140
         for index in 0..<total {

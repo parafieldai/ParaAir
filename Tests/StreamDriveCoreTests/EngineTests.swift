@@ -575,9 +575,16 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(try drive.uploads().isEmpty)
     }
 
-    /// A change larger than an upload part goes up in parts, each on top of the last, all in one fsync.
-    func testALargeChangeUploadsInParts() throws {
-        let drive = try engine(journal: 1 << 30)
+    /// Under journal pressure, a change larger than an upload part goes up in parts, each on top of the last, all in one
+    /// fsync; with room to spare it goes up in one commit.
+    func testALargeChangeUploadsInPartsUnderPressure() throws {
+        let relaxed = try Engine(backend: backend, stateDirectory: state.appendingPathComponent("relaxed"), cacheLimitBytes: 8192, minFreeBytes: 0,
+                                 blockSize: 4096, maxJournalBytes: 1 << 30)
+        _ = try relaxed.create("/whole", directory: false)
+        for half in 0..<2 { _ = try relaxed.write("/whole", offset: Int64(half * (50 << 20)), data: Data(repeating: 7, count: 50 << 20)) }
+        try relaxed.fsync("/whole")
+        XCTAssertEqual(backend.committedPaths, ["/whole"])
+        let drive = try engine(journal: 160 << 20)
         _ = try drive.create("/big", directory: false)
         // Three separate 40 MiB runs (gaps between them), each its own payload.
         let run = 40 << 20
@@ -591,7 +598,7 @@ final class EngineTests: XCTestCase {
         }
         try drive.fsync("/big")
         XCTAssertEqual(sizeBeforeSecond, run)
-        XCTAssertEqual(backend.committedPaths, ["/big", "/big", "/big"])
+        XCTAssertEqual(backend.committedPaths, ["/whole", "/big", "/big", "/big"])
         let uploaded = try remoteData("big")
         XCTAssertEqual(uploaded.count, 3 * run + 2 * 4096)
         XCTAssertEqual(uploaded[2 * (run + 4096)], 3)
