@@ -165,6 +165,13 @@ struct CloudBillingPresentation: Equatable {
         style.timeZone = TimeZone(identifier: "UTC") ?? .current
         return date.formatted(style)
     }
+    /// A deadline with its UTC time, "October 19, 2026 at 14:03 UTC", as the service's terms give it.
+    static func formatDeadline(_ date: Date) -> String {
+        var time = Date.FormatStyle.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)
+        time.timeZone = TimeZone(identifier: "UTC") ?? .current
+        time.locale = Locale(identifier: "en_GB")
+        return "\(format(date)) at \(date.formatted(time)) UTC"
+    }
 }
 
 /// What the plan sheet can sell: Personal for the account's personal workspace, Team for a team workspace the user

@@ -234,7 +234,7 @@ struct CloudPlanSheet: View {
         }()
         let trial = shown?.offer.quote?.trialDays
         // With a trial the first charge waits for its end; the box below says the same in the service's words.
-        let firstCharge = trial == nil ? nil : shown?.offer.quote?.firstChargeAt.map { "First charge on \(CloudBillingPresentation.format($0))." }
+        let firstCharge = trial == nil ? nil : shown?.offer.quote?.firstChargeAt.map { "First charge on \(CloudBillingPresentation.formatDeadline($0))." }
         let detail = [plan == .team ? "For \(workspace.name)." : "For your personal workspace.",
                       (shown?.offer ?? loadedOffer).map(Self.seller), firstCharge].compactMap { $0 }.joined(separator: " ")
         header(trial.map { "Start your \($0)-day free trial" } ?? "Review and agree", detail)

@@ -55,7 +55,8 @@ final class CloudAccountModel: ObservableObject {
         var trialDays = 0
     }
 
-    nonisolated static let inviteOnly = "ParaAir Cloud is invite-only right now. Use the email address your invite was sent to."
+    /// The service refused the address: no account, and sign-up closed or no invite (SELF_SIGNUP off).
+    nonisolated static let inviteOnly = "ParaAir Cloud couldn’t sign you in with that email address. If you were invited, use the address your invite was sent to."
 
     @Published private(set) var phase: Phase = .signedOut
     @Published private(set) var summary: ParaAirCloudMe?

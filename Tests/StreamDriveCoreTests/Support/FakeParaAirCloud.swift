@@ -922,7 +922,9 @@ final class FakeParaAirCloud: @unchecked Sendable {
         // With a trial the first charge, and every renewal date after it, falls on the day the trial ends.
         let trial = trialDays > 0, first = now.addingTimeInterval(Double(trialDays) * 86_400)
         let day = calendar.component(.day, from: first), month = months[calendar.component(.month, from: first) - 1]
-        let firstDay = "\(month) \(day), \(calendar.component(.year, from: first))"
+        // A deadline with its UTC time, as disclosure.ts gives it.
+        let firstDay = "\(month) \(day), \(calendar.component(.year, from: first)) at "
+            + String(format: "%02d:%02d UTC", calendar.component(.hour, from: first), calendar.component(.minute, from: first))
         let tens = day % 100, ones = day % 10
         let ordinal = "\(day)" + ((11...13).contains(tens) ? "th" : ones == 1 ? "st" : ones == 2 ? "nd" : ones == 3 ? "rd" : "th")
         let when = yearly ? "every year on \(month) \(day)" : "on the \(ordinal) of every month"

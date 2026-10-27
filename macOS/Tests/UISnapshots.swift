@@ -517,7 +517,7 @@ struct UISnapshots {
         trialBuyer.loadQuote(trialPersonal.selection)
         settle { if case .loaded = trialBuyer.quote { return true } else { return false } }
         if case .loaded(let quote) = trialBuyer.quote {
-            expect(quote.offer.quote?.trialDays == 7 && quote.terms.bullets.first == "Today you pay nothing. Your free trial ends on October 19, 2026.",
+            expect(quote.offer.quote?.trialDays == 7 && quote.terms.bullets.first == "Today you pay nothing. Your free trial ends on October 19, 2026 at 00:00 UTC.",
                    "the quote includes the trial")
         } else {
             failures.append("the trial terms load")
@@ -1472,7 +1472,8 @@ final class OfferBox: @unchecked Sendable {
                            seller: String, trialDays: Int = 0) -> (terms: [String], consent: String) {
         let team = s.plan == .team, yearly = s.interval == .year, storageTb = s.extraStorageTb
         let unit = ParaAirCloudBillingCatalog.formatUSD(cents: unitCents), total = ParaAirCloudBillingCatalog.formatUSD(cents: totalCents)
-        let trial = trialDays > 0, firstDay = trial ? "October 19, 2026" : "October 12, 2026"
+        // The trial's end is a deadline, given with its UTC time as disclosure.ts does (the snapshot clock is midnight UTC).
+        let trial = trialDays > 0, firstDay = trial ? "October 19, 2026 at 00:00 UTC" : "October 12, 2026"
         let when = yearly ? "every year on \(trial ? "October 19" : "October 12")" : "on the \(trial ? "19th" : "12th") of every month"
         let period = yearly ? "year" : "month"
         let charger = seller == "paddle" ? "Paddle, our reseller, charges" : seller == "link" ? "Link, our reseller, charges" : "we charge"
