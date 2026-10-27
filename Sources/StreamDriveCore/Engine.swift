@@ -648,9 +648,16 @@ public final class Engine {
             var pending = original
             if data.isEmpty { return 0 }
             try ensureJournalSpace(Int64(data.count), drainable: true)
-            let blob = UUID().uuidString + ".data"
-            try DurableIO.write(data, to: journal.appendingPathComponent(blob))
-            pending.segments.append(Segment(offset: offset, length: Int64(data.count), blob: blob))
+            // A write that continues the previous one extends its payload, so a sequential copy keeps a few large
+            // segments: one per write made every later write re-save all earlier ones and slowed big copies down.
+            if let last = pending.segments.last, last.offset + last.length == offset, last.length + Int64(data.count) <= Self.maxPayloadBytes,
+               try DurableIO.append(data, to: journal.appendingPathComponent(last.blob), expectedSize: last.length) {
+                pending.segments[pending.segments.count - 1].length += Int64(data.count)
+            } else {
+                let blob = UUID().uuidString + ".data"
+                try DurableIO.write(data, to: journal.appendingPathComponent(blob))
+                pending.segments.append(Segment(offset: offset, length: Int64(data.count), blob: blob))
+            }
             pending.size = max(pending.size, offset + Int64(data.count)); pending.modified = now()
             try db.transaction { try db.put("journal", path, pending); try invalidatePins(under: path) }
             return data.count
@@ -1261,6 +1268,8 @@ public final class Engine {
 
     // MARK: Changes that need a decision
 
+    /// The largest journal payload a run of sequential writes grows to before the next one starts.
+    static let maxPayloadBytes: Int64 = 64 << 20
     static let conflictMessage = "This file changed elsewhere. Your copy is kept on this Mac until you choose which to keep."
     /// The file system type ParaAir volumes report (FSShortName in the extension's Info.plist).
     static let fileSystemName = "streamdrive"
@@ -1719,7 +1728,7 @@ public final class Engine {
         let liveJournal = Set(pending.flatMap(\.segments).map(\.blob)), liveCache = Set(blocks.map(\.key))
         for (directory, live) in [(journal, liveJournal), (cache, liveCache)] {
             for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) where !live.contains(url.lastPathComponent) {
-                // Only generated immutable payload names are owned by recovery.
+                // Only generated payload names are owned by recovery (a payload only grows, while its journal names it).
                 let name = url.lastPathComponent
                 if name.hasPrefix(".tmp-") || (directory == journal && name.hasSuffix(".data") && UUID(uuidString: String(name.dropLast(5))) != nil) || (directory == cache && name.count == 64 && name.allSatisfy(\.isHexDigit)) {
                     try FileManager.default.removeItem(at: url)
