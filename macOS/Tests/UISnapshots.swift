@@ -253,6 +253,11 @@ struct UISnapshots {
     static let billingDeleted = ParaAirCloudBilling(provider: .paddle, status: .deleted, plan: .personal, interval: .year, seats: 1,
                                                     currentPeriodEnd: day("2026-09-01"), readOnlyAt: day("2026-09-10"),
                                                     deletionAt: day("2026-10-10"), checkoutAvailable: true)
+    /// Past due after the processor ended the subscription over the payment: the service offers checkout again.
+    static let billingPastDueEnded = ParaAirCloudBilling(provider: .stripe, status: .pastDue, plan: .personal, interval: .month, seats: 1,
+                                                         currentPeriodEnd: day("2026-11-12"), graceEndsAt: day("2026-10-26"),
+                                                         readOnlyAt: day("2026-10-26"), deletionAt: day("2026-11-25"), checkoutAvailable: true,
+                                                         portalAvailable: true)
     /// A team member's view of the owner's failed payment: the service offers members neither checkout nor the portal.
     static let billingMemberPastDue = ParaAirCloudBilling(provider: .stripe, status: .pastDue, plan: .team, interval: .month, seats: 3,
                                                           currentPeriodEnd: day("2026-11-12"), graceEndsAt: day("2026-10-26"),
@@ -784,6 +789,12 @@ struct UISnapshots {
                                        + "Update your payment method by then to keep your plan.", tone: .attention), "past due notice")
         expect(pastDue.controls == [.init(action: .updatePayment, title: "Update Payment…", prominent: true)],
                "past due offers Update Payment… prominently")
+        let ended = make(billingPastDueEnded)
+        expect(ended.date == Row(label: "Grace period ends", value: "October 26, 2026")
+               && ended.notice == HomePresentation.Notice(id: "billing", text: "Your last payment didn’t go through, so your subscription has ended. "
+                                       + "Everything keeps working until October 26, 2026. Choose a plan by then to keep full access.", tone: .attention)
+               && ended.controls == [.init(action: .choosePlan, title: "Choose a Plan…", prominent: true)],
+               "past due after the processor ended the plan offers a new plan, not a new card")
         let member = make(billingMemberPastDue, kind: "team", role: "member", seats: 3)
         expect(member.controls.isEmpty && member.notice?.text
                == "This workspace’s last payment didn’t go through. Everything keeps working until October 26, 2026. "

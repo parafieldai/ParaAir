@@ -108,6 +108,14 @@ struct CloudBillingPresentation: Equatable {
             let grace = day(billing.graceEndsAt)
             result.date = grace.map { Row(label: "Grace period ends", value: $0) }
             let until = grace.map { "Everything keeps working until \($0)." } ?? "Everything keeps working for now."
+            if checkout {
+                // The service offers checkout during the grace period only once the processor has ended the subscription
+                // over the payment: a new card no longer keeps the plan, a new plan does.
+                result.notice = .init(id: "billing", text: "Your last payment didn’t go through, so your subscription has ended. \(until) "
+                                      + "Choose a plan by then to keep full access.", tone: .attention)
+                result.controls = [Control(action: .choosePlan, title: "Choose a Plan…", prominent: true)]
+                break
+            }
             result.notice = .init(id: "billing", text: owner
                 ? "Your last payment didn’t go through. \(until) Update your payment method by then to keep your plan."
                 : "This workspace’s last payment didn’t go through. \(until) Ask the workspace owner to update the payment method.",
