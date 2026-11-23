@@ -261,8 +261,23 @@ public final class ParaAirCloudSession: ParaAirCloudTokenProvider, @unchecked Se
                 guard let refreshToken = base.refreshToken, !refreshToken.isEmpty else { throw signedOut() }
                 let renewed = try exchange(refreshToken: refreshToken, previous: base, http: http, record: record)
                 let rotated = ConnectionSecrets(binding: record.binding, oauth: renewed)
-                do { try vault.save(rotated, id: accountID); clearPendingSave() }
-                catch { condition.lock(); pendingSave = (rotated, record.updatedAt, vaultBase); condition.unlock() }
+                // A state folder made for a second drive shares this Keychain item under a lock of its own
+                // (CloudAccountStore.share), so while the exchange ran it may have saved newer tokens, or signed out and
+                // removed them. Save only over the tokens this rotation began from: never older tokens over newer ones,
+                // never a removed sign-in back. The sandboxed extension can reach only its own folder, so no lock can
+                // span the folders; this leaves only the moment between the read and the save.
+                let latest = try? vault.load(id: accountID)
+                if let latest, latest.binding == record.binding, latest.oauth?.refreshToken == vaultBase {
+                    do { try vault.save(rotated, id: accountID); clearPendingSave() }
+                    catch { condition.lock(); pendingSave = (rotated, record.updatedAt, vaultBase); condition.unlock() }
+                } else if latest == nil {
+                    // Unreadable (a locked Keychain) or removed: retryPendingSave saves it later only if the vault then
+                    // holds what this rotation began from, which a removed item never does.
+                    condition.lock(); pendingSave = (rotated, record.updatedAt, vaultBase); condition.unlock()
+                } else {
+                    // Another process saved since: its tokens are as new or newer, and the next call reads them.
+                    condition.lock(); pendingSave = nil; loadedAt = nil; condition.unlock()
+                }
                 return Renewed(tokens: renewed, refreshed: true)
             }
         } catch let error as DriveError where error.code == EBUSY {

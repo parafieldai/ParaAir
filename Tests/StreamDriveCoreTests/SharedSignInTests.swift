@@ -91,4 +91,64 @@ final class SharedSignInTests: XCTestCase {
         folders.keep("/b", selected: "/s"); folders.keep("/b", selected: "/s"); folders.keep("/s", selected: "/s")
         XCTAssertEqual(folders.kept, ["/a", "/b"])
     }
+
+    /// A vault that runs `beforeLoad` once, at the first load after the fake has answered more token requests than
+    /// `after`: inside another folder's refresh, after its exchange and before it saves.
+    private final class HookVault: ConnectionVault, @unchecked Sendable {
+        let inner = TestConnectionVault()
+        var trigger: (() -> Bool)?
+        var beforeLoad: (() -> Void)?
+        func load(id: String) throws -> ConnectionSecrets {
+            if let trigger, trigger(), let hook = beforeLoad { beforeLoad = nil; self.trigger = nil; hook() }
+            return try inner.load(id: id)
+        }
+        func save(_ secrets: ConnectionSecrets, id: String) throws { try inner.save(secrets, id: id) }
+        func remove(id: String) throws { try inner.remove(id: id) }
+    }
+
+    private func sharedFolders(_ hook: HookVault) throws -> (a: ParaAirCloudSession, b: ParaAirCloudSession) {
+        let first = root.appendingPathComponent("hooked", isDirectory: true)
+        record = try fake.saveAccount(account, root: first, vault: hook)
+        let second = try CloudDriveSetup.newStateRoot(sharing: record, vault: hook, home: home)
+        let make = { (folder: URL) in
+            try ParaAirCloudSession(root: folder, accountID: self.record.id, vault: hook, configuration: self.fake.configuration,
+                                    policy: .init(allowsLoopbackHTTP: false))
+        }
+        return (try make(first), try make(second))
+    }
+
+    func testARefreshNeverSavesOlderTokensOverOnesAnotherFolderSavedMeanwhile() throws {
+        let vault = HookVault()
+        let (a, b) = try sharedFolders(vault)
+        fake.expireAccessTokens()
+        let before = fake.count("POST /oauth/token")
+        var newest: String?
+        vault.trigger = { self.fake.count("POST /oauth/token") > before }
+        vault.beforeLoad = {
+            // While b's exchange was in flight, the other folder rotated twice and saved.
+            _ = try? a.refreshIfDue(within: 7200); _ = try? a.refreshIfDue(within: 7200)
+            newest = try? vault.inner.load(id: self.record.id).oauth?.refreshToken
+        }
+        XCTAssertTrue(try b.refreshIfDue(within: 7200))
+        XCTAssertNotNil(newest)
+        XCTAssertEqual(try vault.inner.load(id: record.id).oauth?.refreshToken, newest, "b kept its older tokens out of the vault")
+        XCTAssertEqual(try ParaAirCloudAPI(http: try a.http(), tokens: a).me().user.email, account.email)
+        XCTAssertEqual(try ParaAirCloudAPI(http: try b.http(), tokens: b).me().user.email, account.email)
+        fake.expireAccessTokens()
+        XCTAssertTrue(try b.refreshIfDue(within: 7200), "b goes on from the newest tokens; the sign-in still works")
+    }
+
+    func testARefreshNeverBringsBackASignInAnotherFolderRemoved() throws {
+        let vault = HookVault()
+        let (_, b) = try sharedFolders(vault)
+        fake.expireAccessTokens()
+        let before = fake.count("POST /oauth/token")
+        vault.trigger = { self.fake.count("POST /oauth/token") > before }
+        vault.beforeLoad = { _ = try? CloudAccountStore(root: self.root.appendingPathComponent("hooked")).signOut(self.record.id, vault: vault) }
+        _ = try? b.refreshIfDue(within: 7200)
+        XCTAssertThrowsError(try vault.inner.load(id: record.id), "the removed Keychain item stays removed")
+        _ = try? b.accessToken()
+        XCTAssertThrowsError(try vault.inner.load(id: record.id))
+    }
 }
+

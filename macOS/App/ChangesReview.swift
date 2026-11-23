@@ -95,10 +95,12 @@ private struct ReviewRow: View {
             }
             Spacer(minLength: 8)
             if busy { ProgressView().controlSize(.small).accessibilityLabel("Working on \(decision.name)") }
-            // A refused change may still be welcome as a new file, as in a folder where members may only create.
+            // A change refused to this member may still be welcome as a new file (a folder where members may only
+            // create), and can always be kept outside the drive.
             if decision.kind == .conflict || decision.kind == .forbidden {
                 Button("Save My Copy As…") { actions.saveCopy(decision) }
-            } else {
+            }
+            if decision.kind != .conflict {
                 Button("Export My Copy…") { actions.export(decision) }
             }
             Button(decision.kind == .conflict ? "Keep Theirs" : "Discard Mine") { actions.discard(decision) }

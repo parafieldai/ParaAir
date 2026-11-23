@@ -185,3 +185,53 @@ final class CollaborationTests: XCTestCase {
         XCTAssertEqual(Set(encoded?.keys.map { $0 } ?? []), ["role", "path", "access", "updatedAt"])
     }
 }
+
+/// Local storage whose stat can be held after it has read the file, to stand for a request in flight in another process.
+private final class HeldStatBackend: StorageBackend, @unchecked Sendable {
+    let base: LocalDirectoryBackend
+    private let lock = NSLock()
+    private var holdNext = false
+    let fetched = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+    init(_ root: URL) throws { base = try LocalDirectoryBackend(root: root) }
+    func holdNextStat() { lock.withLock { holdNext = true } }
+    func stat(_ p: String) throws -> FileEntry {
+        let entry = try base.stat(p)
+        if lock.withLock({ defer { holdNext = false }; return holdNext }) { fetched.signal(); release.wait() }
+        return entry
+    }
+    func list(_ p: String) throws -> [FileEntry] { try base.list(p) }
+    func read(_ p: String, offset: Int64, length: Int) throws -> Data { try base.read(p, offset: offset, length: length) }
+    func commit(_ c: FileCommit) throws -> FileEntry { try base.commit(c) }
+    func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus {
+        try base.commitStatus(transactionID: transactionID, path: path, expectedVersion: expectedVersion)
+    }
+    func createDirectory(_ p: String) throws -> FileEntry { try base.createDirectory(p) }
+    func move(_ p: String, to d: String) throws { try base.move(p, to: d) }
+    func remove(_ p: String, directory: Bool) throws { try base.remove(p, directory: directory) }
+}
+
+final class RemoteInvalidationTests: XCTestCase {
+    func testAStatInFlightInAnotherProcessDoesNotRecordWhatTheFeedInvalidated() throws {
+        let work = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent(".runtime/tests/" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: work) }
+        let remote = work.appendingPathComponent("remote"), state = work.appendingPathComponent("state")
+        try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
+        try Data("v1".utf8).write(to: remote.appendingPathComponent("r.json"))
+        let held = try HeldStatBackend(remote)
+        let tuning = EngineTuning(metadataLifetimeNanoseconds: 60_000_000_000)
+        // The mounted drive's engine, and the app's, which follows the feed: one state, two instances.
+        let mount = try Engine(backend: held, stateDirectory: state, minFreeBytes: 0, blockSize: 4096, tuning: tuning)
+        let follower = try Engine(backend: try LocalDirectoryBackend(root: remote), stateDirectory: state, minFreeBytes: 0, blockSize: 4096, tuning: tuning)
+        held.holdNextStat()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { _ = try? mount.stat("/r.json"); done.signal() }
+        held.fetched.wait()
+        // The file changes, and the feed says so, while that stat is still on its way back with v1.
+        try Data("v2-new".utf8).write(to: remote.appendingPathComponent("r.json"))
+        try follower.applyRemoteChanges([ParaAirCloudChange(cursor: 1, change: "write", kind: "file", path: "/r.json", at: "", author: ParaAirCloudAuthor())])
+        held.release.signal(); done.wait()
+        XCTAssertEqual(try mount.stat("/r.json").size, 6, "the late answer wasn't recorded, so the next stat asks storage")
+    }
+}
+

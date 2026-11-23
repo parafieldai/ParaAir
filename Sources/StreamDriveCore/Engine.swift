@@ -267,6 +267,10 @@ private struct ConflictCopyRecord: Codable {
 }
 /// Where a follower of the change feed stopped, stored as ("feed", consumer).
 private struct FeedCursor: Codable { var cursor: Int64 }
+/// When changes made elsewhere were last applied (applyRemoteChanges), stored as ("feed", "invalidated"): wall-clock
+/// nanoseconds. It is shared by every process on the drive's state (the app follows the feed, the extension serves
+/// the mount), so a stat or listing any of them began earlier doesn't record what it fetched.
+private struct RemoteInvalidation: Codable { var at: Int64 }
 /// Stored as record ("index", "backup"). `notNeeded` once storage reports that the
 /// index is not local, so no further changes are tracked.
 private struct IndexBackupState: Codable {
@@ -441,11 +445,18 @@ public final class Engine {
     /// must not move. A pin refreshing its own files passes itself as `exceptPin`.
     private func recordFetched(_ entry: FileEntry, started: Int64, exceptPin: String? = nil) throws {
         if let _: Journal = try db.get("journal", entry.path) { return }
+        if try invalidatedSince(started) { return }
         if let previous: Metadata = try db.get("metadata", entry.path) {
             if previous.verified > started { return }
             if previous.entry.version != entry.version { try invalidatePins(under: entry.path, except: exceptPin) }
         }
         try db.put("metadata", entry.path, Metadata(entry: entry, verified: now()))
+    }
+    /// Under the state lock: whether changes made elsewhere were applied after `started`, by this or another process
+    /// (applyRemoteChanges), so what a request begun then fetched may predate them.
+    private func invalidatedSince(_ started: Int64) throws -> Bool {
+        guard let mark: RemoteInvalidation = try db.get("feed", "invalidated") else { return false }
+        return mark.at >= started
     }
     /// Under the state lock: whether a single-entry refresh that began at `epoch` may
     /// record what it found. Move and remove clear all metadata, so if `path` has
@@ -526,7 +537,7 @@ public final class Engine {
             entries = try backend.list(path).filter { !Housekeeping.hides($0) }
             try lock.withLock(timeout: 10) {
                 offline = false
-                guard namespaceEpoch == epoch else { return }
+                guard namespaceEpoch == epoch, try !invalidatedSince(started) else { return }
                 try db.transaction {
                     if let previous: [FileEntry] = try db.get("listing", path), Set(previous.map(\.path)) != Set(entries.map(\.path)) {
                         try invalidatePins(under: path, except: exceptPin)
@@ -1713,6 +1724,7 @@ public final class Engine {
         try lock.withLock(timeout: 10) {
             namespaceEpoch &+= 1
             try db.transaction {
+                try db.put("feed", "invalidated", RemoteInvalidation(at: now()))
                 if reset { try db.clear("metadata"); try invalidatePins(under: "/"); note("/") }
                 for change in changes {
                     for value in [change.path, change.fromPath].compactMap({ $0 }) {
@@ -1792,10 +1804,39 @@ public final class Engine {
                       item.state == "conflict" || item.lastErrno == EROFS || item.lastErrno == EPERM else {
                     throw DriveError(ENOENT, "This file has no change waiting for a decision")
                 }
+                try settleBeforeDecision(path, item, lock: pathLock)
                 let result = try body(item)
                 published(path, lock: pathLock, sealedAt: DispatchTime.now().uptimeNanoseconds)
                 return result
             }
+        }
+    }
+    /// A refused change (EROFS, EPERM) whose earlier upload may have reached storage keeps that transaction's identity
+    /// until its outcome is known. Before anything drops it, ask storage's commit fence, which also stops a late
+    /// arrival from applying: published means there is nothing to decide (EALREADY, and the file shows the published
+    /// version); absent means the change never arrived, so a decision may go on; no answer refuses the decision for now.
+    /// A conflict needs no check: storage refused it because the version moved, and a replay of an applied
+    /// transaction would have answered with its receipt instead.
+    private func settleBeforeDecision(_ path: String, _ item: Journal, lock pathLock: StateLock) throws {
+        guard item.state != "conflict", item.sealed, item.mayHaveApplied != false else { return }
+        let status: CommitStatus
+        do { status = try publisher.commitStatus(transactionID: item.transactionID, path: path, expectedVersion: item.base?.version) }
+        catch let error as DriveError where error.code == ESTALE { return }
+        catch {
+            throw DriveError(EIO, "Whether this change already reached storage isn’t known yet, so it is kept. Try again when storage can be reached.")
+        }
+        switch status {
+        case .applied(let entry):
+            try lock.withLock {
+                guard let current: Journal = try db.get("journal", path), current.transactionID == item.transactionID else { return }
+                try db.transaction { try settlePublished(path, as: entry); try record(entry); try invalidateListings() }
+                namespaceEpoch &+= 1; offline = false; noteIndexChange(); try recoverOrphans()
+            }
+            published(path, lock: pathLock, sealedAt: DispatchTime.now().uptimeNanoseconds)
+            throw DriveError(EALREADY, "This change already reached storage, so nothing waits for a decision.")
+        case .absent, .unknown:
+            // .unknown: storage has no commit fence; nothing more can be learned, so the decision goes on as before.
+            return
         }
     }
     /// Whether `current` is still the change `item` was read as. A refused change whose

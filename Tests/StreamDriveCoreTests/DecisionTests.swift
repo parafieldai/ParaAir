@@ -22,8 +22,15 @@ private final class RefusingBackend: StorageBackend, @unchecked Sendable {
         if let hook = lock.withLock({ () -> (() -> Void)? in defer { readHook = nil }; return readHook }) { hook() }
         return try base.read(p, offset: offset, length: length)
     }
+    private var applyThenLose = false
+    /// The next commit applies, then its reply is lost (an ambiguous failure).
+    func loseNextReply() { lock.withLock { applyThenLose = true } }
     func commit(_ c: FileCommit) throws -> FileEntry {
         if let error = commitError { throw error }
+        if lock.withLock({ defer { applyThenLose = false }; return applyThenLose }) {
+            _ = try base.commit(c)
+            throw DriveError(EIO, "The reply was lost", disposition: .ambiguous)
+        }
         return try base.commit(c)
     }
     func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus {
@@ -390,6 +397,23 @@ extension DecisionTests {
         XCTAssertEqual(try text("/notes.md"), "THEirs")
         XCTAssertTrue(try drive.flushUploads().isEmpty)
         XCTAssertEqual(try remoteText("notes.md"), "THEirs"); XCTAssertEqual(try remoteText(String(copy.dropFirst())), "mine")
+    }
+
+    func testARefusedChangeWhoseEarlierUploadArrivedIsSettledNotCopied() throws {
+        try seed("shared.txt", "theirs")
+        try drive.truncate("/shared.txt", size: 0)
+        _ = try drive.write("/shared.txt", offset: 0, data: Data("mine".utf8))
+        backend.loseNextReply()
+        XCTAssertEqual(try drive.flushUploads().map(\.lastErrno), [EIO])
+        XCTAssertEqual(try remoteText("shared.txt"), "mine", "it arrived; only the reply was lost")
+        // The retry, with the same identity, is refused: the folder rules changed meanwhile.
+        backend.commitError = DriveError(EPERM, "Your ParaAir Cloud access doesn’t allow this change", disposition: .attemptNotDispatched)
+        XCTAssertEqual(try drive.flushUploads().map(\.lastErrno), [EPERM])
+        backend.commitError = nil
+        expectError(EALREADY, try drive.keepMine("/shared.txt", as: "shared mine.txt"))
+        XCTAssertTrue(try drive.uploads().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: remote.appendingPathComponent("shared mine.txt").path))
+        XCTAssertEqual(try text("/shared.txt"), "mine")
     }
 }
 
