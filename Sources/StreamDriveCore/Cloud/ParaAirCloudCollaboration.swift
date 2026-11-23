@@ -167,6 +167,43 @@ public struct ParaAirCloudAccessRule: Codable, Equatable, Sendable {
     }
 }
 
+/// A service credential of a workspace (`GET /v1/workspaces/{ws}/credentials`): a backend's login, made by an owner or
+/// admin, that sees only the folders folder rules give it (`ParaAirCloudAccessPrincipal.credential`). Never holds the
+/// token.
+public struct ParaAirCloudServiceCredential: Codable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    public var createdAt: String
+    /// Email of the owner or admin who made it; null once that account is gone.
+    public var createdBy: String?
+    public var lastUsedAt: String?
+    public var revokedAt: String?
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id); try container.encode(name, forKey: .name)
+        try container.encode(createdAt, forKey: .createdAt); try container.encode(createdBy, forKey: .createdBy)
+        try container.encode(lastUsedAt, forKey: .lastUsedAt); try container.encode(revokedAt, forKey: .revokedAt)
+    }
+    var isValid: Bool {
+        ParaAirCloudIDs.isCredentialID(id) && !name.isEmpty && name.utf16.count <= 100
+            && ParaAirCloudJSON.parseDate(createdAt) != nil
+            && [lastUsedAt, revokedAt].allSatisfy { $0.map { ParaAirCloudJSON.parseDate($0) != nil } ?? true }
+            && createdBy.map { $0.utf8.count <= 320 } ?? true
+    }
+}
+
+/// A credential just made and its token (`pcs_cred_….<secret>`), which the service shows in that reply only and keeps
+/// as a hash. Printing, logging or dumping this value leaves the token out; read `token` to hand it over.
+public struct ParaAirCloudCreatedCredential: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public let credential: ParaAirCloudServiceCredential
+    public let token: String
+
+    public var description: String { "ParaAirCloudCreatedCredential(\(credential.id), token: <redacted>)" }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror { Mirror(self, children: ["credential": credential, "token": "<redacted>"]) }
+}
+
 /// Where a conflict copy came from: the file it was saved beside, the version this Mac's change was based on, and the
 /// version in storage it lost to. Kept by the service per file (`PUT`/`GET /v1/drives/{d}/conflicts`), so every Mac can
 /// answer it; the service adds `createdAt` and `author`.

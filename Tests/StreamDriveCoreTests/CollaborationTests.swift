@@ -272,3 +272,29 @@ final class RemoteInvalidationTests: XCTestCase {
     }
 }
 
+
+final class ServiceCredentialTests: XCTestCase {
+    private let id = "cred_01JDKQ2T5V7WXYZ0123456789A"
+    private var token: String { "pcs_\(id).Kq7xR2mZ9vT4wB8nL1cF6hJ3pD0sG5yA_-eUoIiNtMk" }
+
+    func testACreatedCredentialNeverDescribesItsToken() {
+        let credential = ParaAirCloudServiceCredential(id: id, name: "relay", createdAt: "2026-11-24T01:00:00.000Z", createdBy: nil,
+                                                       lastUsedAt: nil, revokedAt: nil)
+        let created = ParaAirCloudCreatedCredential(credential: credential, token: token)
+        var dumped = ""
+        dump(created, to: &dumped)
+        for text in [String(describing: created), String(reflecting: created), "\(created)", dumped] {
+            XCTAssertFalse(text.contains("Kq7xR2mZ9vT4wB8nL1cF6hJ3pD0sG5yA"), text)
+            XCTAssertTrue(text.contains("redacted"), text)
+        }
+        XCTAssertTrue(credential.isValid)
+    }
+
+    func testTokensMustBelongToTheirCredential() {
+        XCTAssertTrue(ParaAirCloudIDs.isCredentialToken(token, id: id))
+        XCTAssertFalse(ParaAirCloudIDs.isCredentialToken(token, id: "cred_01JDKQ2T5V7WXYZ0123456789B"))
+        XCTAssertFalse(ParaAirCloudIDs.isCredentialToken(String(token.dropLast()), id: id))
+        XCTAssertFalse(ParaAirCloudIDs.isCredentialToken(token + "\n", id: id))
+        XCTAssertFalse(ParaAirCloudIDs.isCredentialID("cred_01JDKQ2T5V7WXYZ0123456789I"), "Crockford base32 has no I")
+    }
+}

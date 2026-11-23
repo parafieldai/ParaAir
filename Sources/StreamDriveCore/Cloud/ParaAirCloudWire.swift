@@ -295,6 +295,13 @@ enum ParaAirCloudIDs {
     static func isWorkspaceID(_ value: String) -> Bool { value.range(of: "^ws_[0-9A-Z]{26}$", options: .regularExpression) != nil }
     static func isUserID(_ value: String) -> Bool { value.range(of: "^usr_[0-9A-Z]{26}$", options: .regularExpression) != nil }
     static func isUploadID(_ value: String) -> Bool { value.range(of: "^upl_[0-9A-Za-z]{1,64}$", options: .regularExpression) != nil }
+    /// A service credential id, `cred_` and a ULID.
+    static func isCredentialID(_ value: String) -> Bool { value.range(of: "^cred_[0-9A-HJKMNP-TV-Z]{26}$", options: .regularExpression) != nil }
+    /// A service credential's token for the credential `id`: `pcs_<id>.<43 base64url characters>`.
+    static func isCredentialToken(_ value: String, id: String) -> Bool {
+        isCredentialID(id) && value.hasPrefix("pcs_" + id + ".")
+            && value.range(of: "^pcs_cred_[0-9A-HJKMNP-TV-Z]{26}\\.[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil
+    }
 }
 
 enum ParaAirCloudJSON {

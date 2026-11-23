@@ -571,6 +571,71 @@ extension ParaAirCloudAPI {
         }
     }
 
+    // MARK: Service credentials (owners and admins of the workspace, with their own sign-in)
+
+    /// `POST /v1/workspaces/{ws}/credentials`: a new service credential and its token, which the service shows in this
+    /// reply only. Sent once: the service keeps no idempotency record for it (that would hold the token), so a retry could
+    /// make a second credential. When the outcome is unknown the error says to check the list.
+    public func createCredential(workspaceID: String, name: String) throws -> ParaAirCloudCreatedCredential {
+        struct Body: Decodable { var credential: ParaAirCloudServiceCredential; var token: String }
+        do {
+            guard !name.isEmpty else { throw invalidRequest() }
+            var call = Call(method: "POST", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/credentials",
+                            route: "POST /v1/workspaces/{ws}/credentials", body: try json(["name": name]))
+            call.attempts = 1
+            let body = try decode(Body.self, perform(call))
+            guard body.credential.isValid, body.credential.revokedAt == nil,
+                  ParaAirCloudIDs.isCredentialToken(body.token, id: body.credential.id) else { throw malformed() }
+            return ParaAirCloudCreatedCredential(credential: body.credential, token: body.token)
+        } catch let error as ParaAirCloudCallError { throw Self.credentialError(error, creating: true) }
+    }
+
+    /// `GET /v1/workspaces/{ws}/credentials`: the workspace's service credentials, revoked ones included, oldest first.
+    public func credentials(workspaceID: String) throws -> [ParaAirCloudServiceCredential] {
+        struct Body: Decodable { var credentials: [ParaAirCloudServiceCredential] }
+        do {
+            let call = Call(method: "GET", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/credentials",
+                            route: "GET /v1/workspaces/{ws}/credentials")
+            let credentials = try decode(Body.self, perform(call)).credentials
+            guard credentials.allSatisfy(\.isValid) else { throw malformed() }
+            return credentials
+        } catch let error as ParaAirCloudCallError { throw Self.credentialError(error, creating: false) }
+    }
+
+    /// `DELETE /v1/workspaces/{ws}/credentials/{id}`: revokes the credential, so its token stops working, and deletes its
+    /// folder rules. Revoking a revoked credential succeeds; one the workspace doesn't have is ENOENT.
+    public func revokeCredential(workspaceID: String, credentialID: String) throws {
+        do {
+            guard ParaAirCloudIDs.isCredentialID(credentialID) else { throw invalidRequest() }
+            let call = Call(method: "DELETE", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/credentials/\(credentialID)",
+                            route: "DELETE /v1/workspaces/{ws}/credentials/{id}")
+            _ = try perform(call)
+        } catch let error as ParaAirCloudCallError { throw Self.credentialError(error, creating: false) }
+    }
+
+    /// Texts for the codes these routes answer differently from drive routes. Fixed texts only: neither the service's
+    /// message nor anything from the reply (such as a token) is ever part of an error.
+    static func credentialError(_ error: ParaAirCloudCallError, creating: Bool) -> DriveError {
+        let suffix = error.requestID.flatMap(ParaAirCloudErrorMap.validRequestID).map { " (request \($0))" } ?? ""
+        switch error.code {
+        case .busy?:
+            return DriveError(EBUSY, "This workspace already has 20 active service credentials. Revoke one first" + suffix,
+                              disposition: error.drive.disposition)
+        case .notFound?:
+            return DriveError(ENOENT, "This workspace has no service credential with that id (see credentials list)" + suffix,
+                              disposition: error.drive.disposition)
+        default:
+            guard creating, error.drive.disposition == .ambiguous else { return error.drive }
+            return DriveError(error.drive.code, error.drive.message + ". The credential may have been made: run credentials list "
+                              + "and revoke any you didn’t get a token for", disposition: .ambiguous)
+        }
+    }
+
+    private func checkedWorkspace(_ id: String) throws -> String {
+        guard ParaAirCloudIDs.isWorkspaceID(id) else { throw invalidRequest() }
+        return id
+    }
+
     /// `PUT /v1/drives/{d}/conflicts`: records where the conflict copy at `record.path` came from, for every Mac.
     public func recordConflictCopy(driveID: String, _ record: ParaAirCloudConflictRecord) throws {
         struct Request: Encodable {
