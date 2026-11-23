@@ -378,5 +378,18 @@ extension DecisionTests {
         XCTAssertEqual(try remoteText("shared.txt"), "theirs"); XCTAssertEqual(try remoteText("shared mine.txt"), "MINErs")
         XCTAssertEqual(try drive.conflictCopyInfo(copy.path)?.original, "/shared.txt")
     }
+
+    func testWritingToAConflictedFileSavesTheCopyFirstWhenCopiesAreOn() throws {
+        try seed("notes.md", "base")
+        try conflict("/notes.md", local: "mine", remoteText: "theirs")
+        try reopen(conflictCopies: true)
+        // The write no longer fails with ESTALE: the losing change moves beside the file, and this one goes on theirs.
+        _ = try drive.write("/notes.md", offset: 0, data: Data("THE".utf8))
+        let copy = "/" + Engine.copyName("notes.md", date: Date()) { _ in false }
+        XCTAssertEqual(try text(copy), "mine")
+        XCTAssertEqual(try text("/notes.md"), "THEirs")
+        XCTAssertTrue(try drive.flushUploads().isEmpty)
+        XCTAssertEqual(try remoteText("notes.md"), "THEirs"); XCTAssertEqual(try remoteText(String(copy.dropFirst())), "mine")
+    }
 }
 
