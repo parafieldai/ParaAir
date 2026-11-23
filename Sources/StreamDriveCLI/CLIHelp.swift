@@ -20,6 +20,8 @@ enum CLIHelp {
               --block-size N         Read/cache block size in bytes (4096–8388608; default 1048576,
                                      4194304 with --connection; ParaAir Cloud requires 4194304)
               --journal-mib N        Pending-write admission limit (default 4096 MiB)
+              --conflict-copies      Save a change that loses to another device's beside the file as
+                                     "NAME (conflict YYYY-MM-DD).ext" instead of waiting for resolve (see settings)
               --replace             Explicitly replace an unmounted profile configuration (keeps its block size
                                     unless --block-size is given)
               --fixture-root PATH   Explicit local-directory test adapter; never a remote fallback
@@ -69,6 +71,59 @@ enum CLIHelp {
             Inspect pending writes and conflicts. --retry publishes eligible journaled writes.
             Conflicts stay on this Mac until resolved (see conflicts); exit 3 means records remain after retry.
             """ + "\n"
+        case "settings":
+            return """
+            Usage: paraair settings PROFILE [--conflict-copies on|off] [--json]
+            Shows or changes a drive's settings on this Mac. With conflict copies on, a file whose upload finds a
+            newer version from another device keeps that version, and this Mac's change is saved beside it as
+            "NAME (conflict YYYY-MM-DD).ext" (then "... 2", "... 3"), which uploads like any new file. Nothing is
+            merged. conflict-info tells where a copy came from. A mounted drive takes a change at its next mount.
+            """ + "\n"
+        case "versions", "cat-version", "restore-version":
+            return """
+            Usage: paraair versions (PROFILE PATH | MOUNTED_PATH) [--before CURSOR] [--limit N] [--json]
+                   paraair cat-version (PROFILE PATH | MOUNTED_PATH) VERSION
+                   paraair restore-version (PROFILE PATH | MOUNTED_PATH) VERSION [--expected-version VERSION] [--json]
+            ParaAir Cloud keeps replaced versions 30 days (Personal) or 90 (Team). versions lists one page, newest
+            first: {path, versions: [{version, size, createdAt, author, current, expiresAt}], nextBefore}; pass
+            nextBefore as --before for the next page. author is {userId, email}, or {credential, name, createdBy}
+            for a service credential. cat-version writes the version's bytes to standard output, unchanged (exit 0
+            only when all of them were written). restore-version makes a version current again, as a new version;
+            with --expected-version it refuses (exit 16) when the file's current version is another one.
+            A MOUNTED_PATH such as /Volumes/ParaOS/records/x.json names the drive and the file in one argument.
+            """ + "\n"
+        case "conflict-info":
+            return """
+            Usage: paraair conflict-info (PROFILE PATH | MOUNTED_PATH) [--json]
+            Where a conflict copy came from: {path, original, baseVersion, theirsVersion, createdAt, source}.
+            baseVersion is the version this Mac's change was based on (null for a file new on that Mac),
+            theirsVersion the version it lost to. source is "this-mac" for a copy saved here, or "service" for one
+            another Mac saved (then with its author). Exit 17 when the file isn't a known conflict copy.
+            """ + "\n"
+        case "changes":
+            return """
+            Usage: paraair changes (PROFILE [FOLDER] | MOUNTED_PATH) [--since CURSOR] [--follow [--interval SECONDS]] [--json]
+            A ParaAir Cloud drive's change feed (kept 30 days). Without --since and --follow: the cursor to start
+            from. With --since: the changes after it. --follow keeps polling (every 3 s, or --interval) and prints
+            each change as it comes. With --json each line is one object: first {"following": true, "cursor": N}
+            when following, then {cursor, change, kind, path, fromPath?, rescan?, version, at, author} per change,
+            and {"reset": true, "cursor": N} when changes after your cursor were pruned (rescan, then go on).
+            change is create, write, delete, move, restore, mkdir or purge; rescan asks to list that folder again.
+            Only changes at or under FOLDER (or the mounted path's folder) are printed. This Mac's caches drop each
+            path before its line is printed, so reading it through the mount right after gets the new contents.
+            Offline or busy service: --follow waits and goes on.
+            """ + "\n"
+        case "access":
+            return """
+            Usage: paraair access list (PROFILE [FOLDER] | MOUNTED_PATH) [--json]
+                   paraair access set (PROFILE FOLDER | MOUNTED_PATH) (--email E | --role members|viewers | --credential ID)
+                                      --level none|read|create|write [--json]
+                   paraair access remove (PROFILE FOLDER | MOUNTED_PATH) (--email E | --role members|viewers | --credential ID) [--json]
+            Folder rules of a ParaAir Cloud drive, for its workspace's owners and admins (exit 12 otherwise).
+            list shows the rules on, above and inside FOLDER (all with /). create lets someone add files and
+            folders and change only what they wrote, without moving or deleting anything. The most specific rule
+            wins; owners and admins are never limited.
+            """ + "\n"
         case "conflicts", "resolve":
             return """
             Usage: paraair conflicts PROFILE [--json]
@@ -78,6 +133,7 @@ enum CLIHelp {
             conflicts lists changes that never upload by themselves: files that changed elsewhere
             after this Mac's copy was made, and changes storage refuses (another Mac took over the
             drive, or a read-only ParaAir Cloud plan).
+            Changes refused to your ParaAir Cloud role or folder rules wait here too.
             --keep-mine-as saves this Mac's copy as a new file NAME in the same folder, which uploads;
             the original shows the version in storage. --export-to writes this Mac's copy to FILE on
             this Mac (outside the drive) and removes it from the drive, for drives that refuse new
@@ -108,6 +164,16 @@ enum CLIHelp {
               conflicts PROFILE                   List changes that wait for a decision
               resolve PROFILE PATH (--keep-mine-as NAME | --keep-theirs | --export-to FILE)
                                                   Settle one of them
+              settings PROFILE [--conflict-copies on|off]
+                                                  Show or change the drive's settings on this Mac
+              versions TARGET [--before CURSOR]   List a file's kept versions (ParaAir Cloud)
+              cat-version TARGET VERSION          Write one version's bytes to standard output
+              restore-version TARGET VERSION [--expected-version VERSION]
+                                                  Make an earlier version current again
+              conflict-info TARGET                Where a conflict copy came from
+              changes TARGET [--since CURSOR] [--follow]
+                                                  The drive's change feed, as JSON lines with --json
+              access list|set|remove TARGET ...   A drive's folder rules (owners and admins)
               trash PROFILE                       List deleted ParaAir Cloud files that can be restored
               restore PROFILE NODE_ID [--to PATH] Restore a deleted ParaAir Cloud file
               stored-drives --connection ID       List drives backed up in a connection's bucket
@@ -116,6 +182,8 @@ enum CLIHelp {
               doctor [PROFILE]                    Check local prerequisites without network or Keychain access
               help [COMMAND]
 
+            TARGET is PROFILE PATH (a path in the drive, such as /records/x.json) or a path under a mounted drive,
+            such as /Volumes/ParaOS/records/x.json; the drive and its state folder are worked out from the mount.
             --json returns structured results. --profile NAME can replace a positional profile.
             State: --state-dir, then STREAMDRIVE_HOME, then ~/Library/Application Support/StreamDrive.
             The streamdrive command remains available for compatibility.
@@ -125,9 +193,10 @@ enum CLIHelp {
             Untouched files are not downloaded; cache, pins, dirty writes and metadata are accounted separately.
             Exit codes: 0 success, 1 operation failed, 2 usage error, 3 uploads remain after retry, 10 the app isn't
             installed, 11 not signed in to ParaAir Cloud, 12 the account's role doesn't allow it, 13 the File System
-            Extension isn't turned on, 14 no such ParaAir Cloud drive. With --json an error prints
-            {"error", "exitCode", "code"}; code is failed, usage, app_not_installed, not_signed_in, forbidden,
-            extension_disabled or drive_not_found.
+            Extension isn't turned on, 14 no such ParaAir Cloud drive, 15 the path isn't on a mounted ParaAir drive,
+            16 the file changed since the expected version, 17 no such file, version or conflict copy. With --json an
+            error prints {"error", "exitCode", "code"}; code is failed, usage, app_not_installed, not_signed_in,
+            forbidden, extension_disabled, drive_not_found, not_mounted, version_conflict or not_found.
             """ + "\n"
         }
     }

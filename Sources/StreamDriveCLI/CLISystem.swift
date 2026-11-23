@@ -19,6 +19,12 @@ struct CLIOutcome: Equatable {
     static let forbidden = CLIOutcome(code: "forbidden", exitCode: 12)
     static let extensionDisabled = CLIOutcome(code: "extension_disabled", exitCode: 13)
     static let driveNotFound = CLIOutcome(code: "drive_not_found", exitCode: 14)
+    /// A mounted path that isn't inside a mounted ParaAir drive, or whose drive has no profile in a known state folder.
+    static let notMounted = CLIOutcome(code: "not_mounted", exitCode: 15)
+    /// The file changed since the version the caller expected (restore-version --expected-version).
+    static let versionConflict = CLIOutcome(code: "version_conflict", exitCode: 16)
+    /// No such file, version or conflict copy.
+    static let notFound = CLIOutcome(code: "not_found", exitCode: 17)
 
     static func of(_ error: Error) -> CLIOutcome {
         if error is CLIUsageError { return .usage }

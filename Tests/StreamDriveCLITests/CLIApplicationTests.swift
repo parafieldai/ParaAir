@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 import Darwin
+import CryptoKit
 import StreamDriveCore
 @testable import StreamDriveCLI
 
@@ -27,6 +28,9 @@ private final class CLICloudStub: URLProtocol {
     /// What GET /v1/drives lists (names only; the drive above is the one whose details exist).
     private static var listed: [(id: String, name: String)] = [(drive, "ParaAir Cloud")]
     static var requests: [(path: String, body: Data)] { lock.lock(); defer { lock.unlock() }; return logged }
+    /// Not valid UTF-8, so cat-version must pass bytes through untouched.
+    static let versionBytes = Data([0x7b, 0x22, 0x76, 0x22, 0x3a, 0x31, 0x7d, 0x0a, 0x00, 0xff, 0xfe])
+    static var versionHash: String { SHA256.hash(data: versionBytes).map { String(format: "%02x", $0) }.joined() }
     static func reset() { lock.lock(); logged = []; listed = [(drive, "ParaAir Cloud")]; lock.unlock() }
     static func list(_ drives: [(id: String, name: String)]) { lock.lock(); listed = drives; lock.unlock() }
 
@@ -40,7 +44,15 @@ private final class CLICloudStub: URLProtocol {
             while stream.hasBytesAvailable { let count = stream.read(&buffer, maxLength: buffer.count); if count <= 0 { break }; body.append(buffer, count: count) }
         }
         let path = request.url!.path
-        Self.lock.lock(); Self.logged.append((path, body)); Self.lock.unlock()
+        Self.lock.lock(); Self.logged.append((path + (request.url!.query(percentEncoded: true).map { "?" + $0 } ?? ""), body)); Self.lock.unlock()
+        if path.hasPrefix("/v1/w/") {
+            // The one chunk of version pv:9001 (cat-version).
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                                                  headerFields: ["Content-Type": "application/octet-stream"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Self.versionBytes)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         let drive = "/v1/drives/" + Self.drive
         let entry = { (path: String) -> [String: Any] in
             ["id": 42, "path": path, "kind": "file", "size": 9, "mtimeNs": "1791547200123456000", "version": "pv:9001", "mode": 420]
@@ -63,6 +75,58 @@ private final class CLICloudStub: URLProtocol {
         case drive + "/trash/42/restore":
             let to = (try? JSONSerialization.jsonObject(with: body) as? [String: String])?["to"]
             object = ["entry": entry(to ?? "/Movies/a.mov")]
+        case drive + "/versions":
+            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let file = items.first { $0.name == "path" }?.value ?? "/"
+            let limit = Int(items.first { $0.name == "limit" }?.value ?? "") ?? 100, before = Int(items.first { $0.name == "before" }?.value ?? "") ?? .max
+            let kept: [(id: Int, object: [String: Any])] = [
+                (9001, ["version": "pv:9001", "size": Self.versionBytes.count, "createdAt": "2026-11-23T10:00:00.000Z", "current": true, "expiresAt": NSNull(),
+                        "author": ["userId": "usr_0123456789ABCDEFGHJKMNPQRS", "email": "cli@example.test"]]),
+                (8000, ["version": "pv:8000", "size": 3, "createdAt": "2026-11-22T10:00:00.000Z", "current": false, "expiresAt": "2027-02-20T10:00:00.000Z",
+                        "author": ["credential": "cred_relay", "name": "relay", "createdBy": ["userId": "usr_0123456789ABCDEFGHJKMNPQRS", "email": "cli@example.test"]]])
+            ].filter { $0.id < before }
+            let page = Array(kept.prefix(limit))
+            object = ["path": file, "versions": page.map(\.object), "nextBefore": kept.count > limit ? page.last!.id as Any : NSNull()]
+        case drive + "/manifest":
+            object = ["version": "pv:9001", "size": Self.versionBytes.count, "chunkSize": 4_194_304, "chunkCount": 1, "start": 0,
+                      "chunks": [["index": 0, "sha256": Self.versionHash, "size": Self.versionBytes.count]], "nextStart": NSNull(),
+                      "workspaceId": Self.workspace, "readToken": "prt1.test.token", "readTokenExpiresAt": "2099-01-01T00:00:00.000Z"]
+        case drive + "/versions/restore":
+            let fields = (try? JSONSerialization.jsonObject(with: body) as? [String: String]) ?? [:]
+            if fields["expectedVersion"] == "pv:1" {
+                status = 409; object = ["error": ["code": "version_conflict", "message": "x", "requestId": "req_TEST"]]
+            } else {
+                object = ["entry": entry(fields["path"] ?? "/")]
+            }
+        case drive + "/changes":
+            let since = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "since" }?.value
+            let author: [String: Any] = ["userId": "usr_0123456789ABCDEFGHJKMNPQRS", "email": "cli@example.test"]
+            switch since {
+            case nil: object = ["changes": [], "cursor": 10, "more": false, "reset": false]
+            case "10":
+                object = ["changes": [["cursor": 11, "change": "write", "kind": "file", "path": "/records/x.json", "version": "pv:9001",
+                                       "at": "2026-11-23T10:00:00.000Z", "author": author],
+                                      ["cursor": 12, "change": "move", "kind": "file", "path": "/other/y.json", "fromPath": "/elsewhere/y.json",
+                                       "version": "pv:9002", "at": "2026-11-23T10:00:01.000Z", "author": author]], "cursor": 12, "more": false, "reset": false]
+            case "1": object = ["changes": [], "cursor": 12, "more": false, "reset": true]
+            default: object = ["changes": [], "cursor": Int(since!) ?? 0, "more": false, "reset": false]
+            }
+        case drive + "/access":
+            switch request.httpMethod {
+            case "PUT":
+                let fields = (try? JSONSerialization.jsonObject(with: body) as? [String: String]) ?? [:]
+                object = ["rule": ["role": fields["role"] ?? "members", "path": fields["path"] ?? "/", "access": fields["access"] ?? "read",
+                                   "updatedAt": "2026-11-23T10:00:00.000Z"]]
+            case "DELETE": status = 204; object = [String: Any]()
+            default:
+                object = ["rules": [["role": "members", "path": "/claims", "access": "create", "updatedAt": "2026-11-23T10:00:00.000Z"],
+                                    ["userId": "usr_0123456789ABCDEFGHJKMNPQRS", "email": "cli@example.test", "path": "/admin", "access": "none",
+                                     "updatedAt": "2026-11-23T10:00:00.000Z"]]]
+            }
+        case drive + "/conflicts":
+            object = ["conflict": ["path": "/records/x (conflict 2026-11-23).json", "original": "/records/x.json", "baseVersion": "pv:7",
+                                   "theirsVersion": "pv:8", "createdAt": "2026-11-23T10:00:00.000Z",
+                                   "author": ["userId": "usr_0123456789ABCDEFGHJKMNPQRS", "email": "other@example.test"]]]
         default:
             status = 404
             object = ["error": ["code": path.hasPrefix("/v1/drives/") ? "drive_not_found" : "not_found", "message": "x", "requestId": "req_TEST"]]
@@ -547,4 +611,168 @@ extension CLIApplicationTests {
         let usage = app.run(["mount", "--json"])
         XCTAssertEqual(usage.exitCode, 2); XCTAssertEqual(try object(usage)["code"] as? String, "usage")
     }
+}
+
+// MARK: Shared editing: versions, change feed, conflict copies, folder rules, mounted paths
+
+extension CLIApplicationTests {
+    /// A ParaAir Cloud profile "ParaOS" mounted at /Volumes/ParaOS, and an app that sees that mount.
+    private func mountedCloud() throws -> (app: CLIApplication, root: URL, fake: FakeSystem, written: () -> Data) {
+        let fixture = try cloudFixture(), fake = FakeSystem()
+        let profile = DriveProfile(name: "ParaOS", backend: .paraairCloud, mountPoint: "/Volumes/ParaOS", blockSize: 4_194_304,
+                                   cloudIssuer: fixture.account.issuer, cloudAccountID: fixture.account.id, cloudDriveID: CLICloudStub.drive)
+        try ProfileStore(root: fixture.root).save(profile)
+        fake.mounted = [MountedVolume(mountPoint: "/Volumes/ParaOS", type: "streamdrive"), MountedVolume(mountPoint: "/Volumes/Other", type: "apfs")]
+        let box = OutputBox()
+        addTeardownBlock { _ = fake }  // its CLISystem holds it unowned
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path, "PARAAIR_APP_PATH": "/missing/ParaAir.app"],
+                                 dependencies: fixture.dependencies, system: fake.system, output: { box.append($0) })
+        return (app, fixture.root, fake, { box.data })
+    }
+    private func lines(_ data: Data) throws -> [[String: Any]] {
+        try String(decoding: data, as: UTF8.self).split(separator: "\n").map {
+            try XCTUnwrap(try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+        }
+    }
+
+    func testParsesCollaborationCommands() throws {
+        XCTAssertEqual(try CLIParser.parse(["versions", "ParaOS", "/records/x.json", "--before", "8000"]).command,
+                       .versions(target: .drive(profile: "ParaOS", path: "/records/x.json"), before: 8000, limit: nil))
+        XCTAssertEqual(try CLIParser.parse(["versions", "/Volumes/ParaOS/records/x.json"]).command,
+                       .versions(target: .mounted("/Volumes/ParaOS/records/x.json"), before: nil, limit: nil))
+        XCTAssertEqual(try CLIParser.parse(["--profile", "ParaOS", "cat-version", "/a", "pv:12"]).command,
+                       .catVersion(target: .drive(profile: "ParaOS", path: "/a"), version: "pv:12"))
+        XCTAssertEqual(try CLIParser.parse(["restore-version", "ParaOS", "/a", "pv:12", "--expected-version", "pv:13"]).command,
+                       .restoreVersion(target: .drive(profile: "ParaOS", path: "/a"), version: "pv:12", expectedVersion: "pv:13"))
+        XCTAssertEqual(try CLIParser.parse(["changes", "ParaOS", "--follow", "--interval", "5"]).command,
+                       .changes(target: .drive(profile: "ParaOS", path: "/"), follow: true, since: nil, intervalSeconds: 5))
+        XCTAssertEqual(try CLIParser.parse(["access", "set", "ParaOS", "/claims", "--role", "members", "--level", "create"]).command,
+                       .access(.set(.role("members"), .create), target: .drive(profile: "ParaOS", path: "/claims")))
+        XCTAssertEqual(try CLIParser.parse(["access", "remove", "/Volumes/ParaOS/people/ann", "--email", "ann@example.test"]).command,
+                       .access(.remove(.email("ann@example.test")), target: .mounted("/Volumes/ParaOS/people/ann")))
+        XCTAssertEqual(try CLIParser.parse(["access", "list", "ParaOS"]).command, .access(.list, target: .drive(profile: "ParaOS", path: "/")))
+        XCTAssertEqual(try CLIParser.parse(["settings", "ParaOS", "--conflict-copies", "on"]).command, .settings(profile: "ParaOS", conflictCopies: true))
+        for bad in [["cat-version", "ParaOS", "/a", "12"], ["versions", "ParaOS"], ["versions", "ParaOS", "records"], ["changes", "ParaOS", "--interval", "5"],
+                    ["access", "set", "ParaOS", "/a", "--role", "admins", "--level", "read"], ["access", "set", "ParaOS", "/a", "--role", "members"],
+                    ["access", "remove", "ParaOS", "/a"], ["access", "grant", "ParaOS", "/a"], ["settings", "ParaOS", "--conflict-copies", "yes"],
+                    ["versions", "ParaOS", "/a", "--limit", "0"]] {
+            XCTAssertThrowsError(try CLIParser.parse(bad), bad.joined(separator: " "))
+        }
+    }
+
+    func testVersionsByMountedPathAndCatVersionWritesRawBytes() throws {
+        let (app, _, _, written) = try mountedCloud()
+        let page = app.run(["versions", "/Volumes/ParaOS/records/x.json", "--json"])
+        XCTAssertEqual(page.exitCode, 0, page.stdout + page.stderr)
+        let json = try object(page)
+        XCTAssertEqual(json["path"] as? String, "/records/x.json"); XCTAssertTrue(json["nextBefore"] is NSNull)
+        let versions = try XCTUnwrap(json["versions"] as? [[String: Any]])
+        XCTAssertEqual(versions.map { $0["version"] as? String }, ["pv:9001", "pv:8000"])
+        XCTAssertEqual(versions[0]["author"] as? [String: String], ["userId": "usr_0123456789ABCDEFGHJKMNPQRS", "email": "cli@example.test"])
+        XCTAssertTrue(versions[0]["expiresAt"] is NSNull)
+        let credential = try XCTUnwrap(versions[1]["author"] as? [String: Any])
+        XCTAssertEqual(credential["credential"] as? String, "cred_relay"); XCTAssertEqual(credential["name"] as? String, "relay")
+        XCTAssertEqual(CLICloudStub.requests.last?.path, "/v1/drives/\(CLICloudStub.drive)/versions?path=/records/x.json&limit=100")
+        let first = app.run(["versions", "ParaOS", "/records/x.json", "--limit", "1"]).stdout
+        XCTAssertTrue(first.hasPrefix("pv:9001\t11\t2026-11-23T10:00:00.000Z\tcli@example.test\tcurrent\n"), first)
+        XCTAssertTrue(first.contains("More: --before 9001"), first)
+        XCTAssertEqual(try XCTUnwrap(try object(app.run(["versions", "ParaOS", "/records/x.json", "--before", "9001", "--json"]))["versions"] as? [[String: Any]])
+            .map { $0["version"] as? String }, ["pv:8000"])
+
+        let bytes = app.run(["cat-version", "/Volumes/ParaOS/records/x.json", "pv:9001"])
+        XCTAssertEqual(bytes.exitCode, 0, bytes.stderr); XCTAssertEqual(bytes.stdout, "")
+        XCTAssertEqual(written(), CLICloudStub.versionBytes)
+        XCTAssertTrue(CLICloudStub.requests.contains { $0.path.contains("/versions?path=/records/x.json&limit=1&before=9002") })
+        let other = app.run(["cat-version", "ParaOS", "/records/x.json", "pv:8001", "--json"])
+        XCTAssertEqual(other.exitCode, 17, "pv:8001 isn't one of the file's versions")
+        XCTAssertEqual(try object(other)["code"] as? String, "not_found")
+
+        let outside = app.run(["versions", "/Volumes/Other/x.json", "--json"])
+        XCTAssertEqual(outside.exitCode, 15); XCTAssertEqual(try object(outside)["code"] as? String, "not_mounted")
+        XCTAssertEqual(app.run(["versions", "/tmp/x.json"]).exitCode, 15)
+    }
+
+    func testRestoreVersionReportsConflictsAndTheNewVersion() throws {
+        let (app, _, _, _) = try mountedCloud()
+        let restored = app.run(["restore-version", "ParaOS", "/records/x.json", "pv:8000", "--expected-version", "pv:9001", "--json"])
+        XCTAssertEqual(restored.exitCode, 0, restored.stdout + restored.stderr)
+        let json = try object(restored)
+        XCTAssertEqual(json["restoredVersion"] as? String, "pv:8000"); XCTAssertEqual(json["version"] as? String, "pv:9001")
+        XCTAssertEqual(json["path"] as? String, "/records/x.json")
+        let body = try XCTUnwrap(CLICloudStub.requests.last { $0.path.hasSuffix("/versions/restore") }?.body)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: String],
+                       ["path": "/records/x.json", "version": "pv:8000", "expectedVersion": "pv:9001"])
+        let stale = app.run(["restore-version", "/Volumes/ParaOS/records/x.json", "pv:8000", "--expected-version", "pv:1", "--json"])
+        XCTAssertEqual(stale.exitCode, 16); XCTAssertEqual(try object(stale)["code"] as? String, "version_conflict")
+    }
+
+    func testChangesFollowPrintsOneJSONLinePerChange() throws {
+        let (app, _, _, written) = try mountedCloud()
+        let start = app.run(["changes", "ParaOS", "--json"])
+        XCTAssertEqual(start.exitCode, 0, start.stderr)
+        XCTAssertEqual(try lines(written()).first?["cursor"] as? Int, 10)
+
+        let (follower, _, fake, followed) = try mountedCloud()
+        follower.maxFollowPolls = 2
+        let result = follower.run(["changes", "/Volumes/ParaOS", "--follow", "--json"])
+        XCTAssertEqual(result.exitCode, 0, result.stdout + result.stderr)
+        let printed = try lines(followed())
+        XCTAssertEqual(printed.count, 3, String(decoding: followed(), as: UTF8.self))
+        XCTAssertEqual(printed[0]["following"] as? Bool, true); XCTAssertEqual(printed[0]["cursor"] as? Int, 10)
+        XCTAssertEqual(printed[1]["path"] as? String, "/records/x.json"); XCTAssertEqual(printed[1]["change"] as? String, "write")
+        XCTAssertEqual(printed[1]["version"] as? String, "pv:9001"); XCTAssertEqual(printed[1]["cursor"] as? Int, 11)
+        XCTAssertNil(printed[1]["fromPath"]); XCTAssertNil(printed[1]["rescan"])
+        XCTAssertEqual(printed[2]["fromPath"] as? String, "/elsewhere/y.json")
+        XCTAssertEqual((printed[1]["author"] as? [String: String])?["email"], "cli@example.test")
+        XCTAssertEqual(fake.sleeps, 1)
+        XCTAssertFalse(String(decoding: followed(), as: UTF8.self).contains("\n\n"))
+
+        let (filtered, _, _, only) = try mountedCloud()
+        XCTAssertEqual(filtered.run(["changes", "/Volumes/ParaOS/records", "--since", "10", "--json"]).exitCode, 0)
+        XCTAssertEqual(try lines(only()).compactMap { $0["path"] as? String }, ["/records/x.json"])
+        let (pruned, _, _, reset) = try mountedCloud()
+        XCTAssertEqual(pruned.run(["changes", "ParaOS", "--since", "1", "--json"]).exitCode, 0)
+        XCTAssertEqual(try lines(reset()).first?["reset"] as? Bool, true)
+    }
+
+    func testConflictInfoFromTheServiceAndSettings() throws {
+        let (app, root, _, _) = try mountedCloud()
+        let info = app.run(["conflict-info", "/Volumes/ParaOS/records/x (conflict 2026-11-23).json", "--json"])
+        XCTAssertEqual(info.exitCode, 0, info.stdout + info.stderr)
+        let json = try object(info)
+        XCTAssertEqual(json["original"] as? String, "/records/x.json"); XCTAssertEqual(json["baseVersion"] as? String, "pv:7")
+        XCTAssertEqual(json["theirsVersion"] as? String, "pv:8"); XCTAssertEqual(json["source"] as? String, "service")
+
+        XCTAssertEqual(try ProfileStore(root: root).load("ParaOS").conflictCopies, nil)
+        let on = app.run(["settings", "ParaOS", "--conflict-copies", "on", "--json"])
+        XCTAssertEqual(on.exitCode, 0, on.stdout)
+        XCTAssertEqual(try object(on)["conflictCopies"] as? Bool, true)
+        XCTAssertEqual(try ProfileStore(root: root).load("ParaOS").conflictCopies, true)
+        XCTAssertEqual(try object(app.run(["settings", "ParaOS", "--conflict-copies", "off", "--json"]))["conflictCopies"] as? Bool, false)
+    }
+
+    func testAccessRulesListSetAndRemove() throws {
+        let (app, _, _, _) = try mountedCloud()
+        let list = app.run(["access", "list", "/Volumes/ParaOS/claims", "--json"])
+        XCTAssertEqual(list.exitCode, 0, list.stdout + list.stderr)
+        let rules = try XCTUnwrap(try object(list)["rules"] as? [[String: Any]])
+        XCTAssertEqual(rules.map { $0["path"] as? String }, ["/claims"], "rules elsewhere don't decide access here")
+        XCTAssertEqual(try XCTUnwrap(try object(app.run(["access", "list", "ParaOS", "--json"]))["rules"] as? [[String: Any]]).count, 2)
+        let set = app.run(["access", "set", "ParaOS", "/claims", "--role", "members", "--level", "create", "--json"])
+        XCTAssertEqual(set.exitCode, 0, set.stdout + set.stderr)
+        XCTAssertEqual((try object(set)["rule"] as? [String: Any])?["access"] as? String, "create")
+        let body = try XCTUnwrap(CLICloudStub.requests.last?.body)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: String], ["role": "members", "path": "/claims", "access": "create"])
+        let removed = app.run(["access", "remove", "ParaOS", "/people/ann", "--email", "ann@example.test", "--json"])
+        XCTAssertEqual(removed.exitCode, 0, removed.stdout + removed.stderr)
+        XCTAssertEqual(try object(removed)["removed"] as? Bool, true)
+        XCTAssertEqual(CLICloudStub.requests.last?.path, "/v1/drives/\(CLICloudStub.drive)/access?email=ann%40example.test&path=/people/ann")
+    }
+}
+
+private final class OutputBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = Data()
+    var data: Data { lock.lock(); defer { lock.unlock() }; return stored }
+    func append(_ bytes: Data) { lock.lock(); stored.append(bytes); lock.unlock() }
 }

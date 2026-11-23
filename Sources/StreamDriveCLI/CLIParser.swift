@@ -1,4 +1,5 @@
 import Foundation
+import StreamDriveCore
 
 struct CLIInvocation: Equatable {
     var stateDirectory: String?
@@ -10,6 +11,7 @@ struct ConnectArguments: Equatable {
     var profile: String
     var values: [String: String]
     var overwrite: Bool
+    var conflictCopies = false
 }
 
 enum CLICommand: Equatable {
@@ -36,6 +38,27 @@ enum CLICommand: Equatable {
     case recover(profile: String, connection: String, volume: String, backup: String?, takeOver: Bool, library: String?)
     case conflicts(profile: String)
     case resolve(profile: String, path: String, choice: CLIResolution)
+    case settings(profile: String, conflictCopies: Bool?)
+    case versions(target: CLITarget, before: Int64?, limit: Int?)
+    case catVersion(target: CLITarget, version: String)
+    case restoreVersion(target: CLITarget, version: String, expectedVersion: String?)
+    case conflictInfo(target: CLITarget)
+    case changes(target: CLITarget, follow: Bool, since: Int64?, intervalSeconds: Int?)
+    case access(CLIAccessAction, target: CLITarget)
+}
+
+/// A path in a drive: a profile and a drive path (`PROFILE /records/x.json`), or a path under a mounted ParaAir drive
+/// (`/Volumes/ParaOS/records/x.json`), from which the profile and its state folder are worked out.
+enum CLITarget: Equatable {
+    case drive(profile: String, path: String)
+    case mounted(String)
+}
+
+/// What `access` does with a drive's folder rules.
+enum CLIAccessAction: Equatable {
+    case list
+    case set(ParaAirCloudAccessPrincipal, ParaAirCloudAccessLevel)
+    case remove(ParaAirCloudAccessPrincipal)
 }
 
 /// How `resolve` settles a change that needs a decision.
@@ -94,7 +117,7 @@ enum CLIParser {
             try noExtraArguments(commandArguments, command: name)
             command = .connections
         case "connect":
-            let options = try parseOptions(commandArguments, valueNames: ["metadata-url", "library", "mount-point", "fixture-root", "credential-id", "connection", "cache-mib", "min-free-mib", "block-size", "journal-mib", "cloud-account", "cloud-drive", "cloud-drive-name"], switchNames: ["replace"])
+            let options = try parseOptions(commandArguments, valueNames: ["metadata-url", "library", "mount-point", "fixture-root", "credential-id", "connection", "cache-mib", "min-free-mib", "block-size", "journal-mib", "cloud-account", "cloud-drive", "cloud-drive-name"], switchNames: ["replace", "conflict-copies"])
             commandArguments = options.positionals
             let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
             try noExtraArguments(commandArguments, command: name)
@@ -111,7 +134,8 @@ enum CLIParser {
                     throw usage("--\(flag) requires a lowercase identifier")
                 }
             }
-            command = .connect(ConnectArguments(profile: profile, values: options.values, overwrite: options.switches.contains("replace")))
+            command = .connect(ConnectArguments(profile: profile, values: options.values, overwrite: options.switches.contains("replace"),
+                                                conflictCopies: options.switches.contains("conflict-copies")))
         case "mount":
             let options = try parseOptions(commandArguments, valueNames: ["mount-point", "wait"])
             commandArguments = options.positionals
@@ -212,6 +236,101 @@ enum CLIParser {
             else if let file = options.values["export-to"] { choice = .export(to: file, replace: options.switches.contains("replace")) }
             else { choice = .keepTheirs }
             command = .resolve(profile: profile, path: commandArguments[0], choice: choice)
+        case "settings":
+            let options = try parseOptions(commandArguments, valueNames: ["conflict-copies"])
+            commandArguments = options.positionals
+            let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
+            try noExtraArguments(commandArguments, command: name)
+            command = .settings(profile: profile, conflictCopies: try options.values["conflict-copies"].map { try onOff($0, option: "conflict-copies") })
+        case "versions":
+            let options = try parseOptions(commandArguments, valueNames: ["before", "limit"])
+            commandArguments = options.positionals
+            let target = try target(globals["profile"], positionals: &commandArguments, usageText: "Usage: paraair versions (PROFILE PATH | MOUNTED_PATH) [--before CURSOR] [--limit N]")
+            try noExtraArguments(commandArguments, command: name)
+            let before = try options.values["before"].map { value -> Int64 in
+                guard let cursor = Int64(value), cursor >= 1, cursor < 1 << 53 else { throw usage("--before requires a cursor from nextBefore") }
+                return cursor
+            }
+            let limit = try options.values["limit"].map { value -> Int in
+                guard let count = Int(value), (1...1000).contains(count) else { throw usage("--limit requires 1 to 1000") }
+                return count
+            }
+            command = .versions(target: target, before: before, limit: limit)
+        case "cat-version", "restore-version":
+            let restoring = name == "restore-version"
+            let options = try parseOptions(commandArguments, valueNames: restoring ? ["expected-version"] : [])
+            commandArguments = options.positionals
+            let usageText = restoring ? "Usage: paraair restore-version (PROFILE PATH | MOUNTED_PATH) VERSION [--expected-version VERSION]"
+                : "Usage: paraair cat-version (PROFILE PATH | MOUNTED_PATH) VERSION"
+            let target = try target(globals["profile"], positionals: &commandArguments, usageText: usageText)
+            guard commandArguments.count == 1 else { throw usage(usageText) }
+            let version = try fileVersion(commandArguments[0], option: "VERSION")
+            if restoring {
+                let expected = try options.values["expected-version"].map { try fileVersion($0, option: "--expected-version") }
+                command = .restoreVersion(target: target, version: version, expectedVersion: expected)
+            } else {
+                command = .catVersion(target: target, version: version)
+            }
+        case "conflict-info":
+            let options = try parseOptions(commandArguments)
+            commandArguments = options.positionals
+            let target = try target(globals["profile"], positionals: &commandArguments, usageText: "Usage: paraair conflict-info (PROFILE PATH | MOUNTED_PATH)")
+            try noExtraArguments(commandArguments, command: name)
+            command = .conflictInfo(target: target)
+        case "changes":
+            let options = try parseOptions(commandArguments, valueNames: ["since", "interval"], switchNames: ["follow"])
+            commandArguments = options.positionals
+            let target = try target(globals["profile"], positionals: &commandArguments, pathRequired: false,
+                                    usageText: "Usage: paraair changes (PROFILE [FOLDER] | MOUNTED_PATH) [--since CURSOR] [--follow [--interval SECONDS]]")
+            try noExtraArguments(commandArguments, command: name)
+            let since = try options.values["since"].map { value -> Int64 in
+                guard let cursor = Int64(value), cursor >= 0, cursor < 1 << 53 else { throw usage("--since requires a cursor from the change feed") }
+                return cursor
+            }
+            let interval = try options.values["interval"].map { value -> Int in
+                guard let seconds = Int(value), (1...300).contains(seconds) else { throw usage("--interval requires 1 to 300 seconds") }
+                return seconds
+            }
+            guard interval == nil || options.switches.contains("follow") else { throw usage("--interval applies only to --follow") }
+            command = .changes(target: target, follow: options.switches.contains("follow"), since: since, intervalSeconds: interval)
+        case "access":
+            guard let verb = commandArguments.first, ["list", "set", "remove"].contains(verb) else {
+                throw usage("Usage: paraair access list|set|remove (PROFILE FOLDER | MOUNTED_PATH) [(--email E | --role members|viewers | --credential ID) [--level none|read|create|write]]")
+            }
+            let options = try parseOptions(Array(commandArguments.dropFirst()), valueNames: ["email", "role", "credential", "level"])
+            commandArguments = options.positionals
+            let usageText = verb == "list" ? "Usage: paraair access list (PROFILE [FOLDER] | MOUNTED_PATH)"
+                : verb == "set" ? "Usage: paraair access set (PROFILE FOLDER | MOUNTED_PATH) (--email E | --role members|viewers | --credential ID) --level none|read|create|write"
+                : "Usage: paraair access remove (PROFILE FOLDER | MOUNTED_PATH) (--email E | --role members|viewers | --credential ID)"
+            let target = try target(globals["profile"], positionals: &commandArguments, pathRequired: verb != "list", usageText: usageText)
+            try noExtraArguments(commandArguments, command: "access " + verb)
+            let principals = ["email", "role", "credential"].compactMap { key in options.values[key].map { (key, $0) } }
+            switch verb {
+            case "list":
+                guard principals.isEmpty, options.values["level"] == nil else { throw usage(usageText) }
+                command = .access(.list, target: target)
+            default:
+                guard principals.count == 1 else { throw usage(usageText) }
+                let principal: ParaAirCloudAccessPrincipal
+                switch principals[0] {
+                case ("role", let role):
+                    guard ["members", "viewers"].contains(role) else { throw usage("--role is members or viewers") }
+                    principal = .role(role)
+                case ("credential", let id): principal = .credential(id)
+                case (_, let email):
+                    guard email.contains("@"), email.utf8.count <= 320 else { throw usage("--email requires an email address") }
+                    principal = .email(email)
+                }
+                if verb == "set" {
+                    guard let raw = options.values["level"], let level = ParaAirCloudAccessLevel(rawValue: raw) else {
+                        throw usage("--level requires none, read, create or write")
+                    }
+                    command = .access(.set(principal, level), target: target)
+                } else {
+                    guard options.values["level"] == nil else { throw usage(usageText) }
+                    command = .access(.remove(principal), target: target)
+                }
+            }
         case "uploads":
             let options = try parseOptions(commandArguments, switchNames: ["retry"])
             commandArguments = options.positionals
@@ -286,6 +405,36 @@ enum CLIParser {
             }
         }
         return profile
+    }
+
+    /// `PROFILE PATH`, `--profile NAME PATH`, or one path under a mounted drive. A first argument starting with "/" is a
+    /// mounted path (profile names never start with "/"). Without `pathRequired`, a profile alone means the drive's root.
+    private static func target(_ explicit: String?, positionals: inout [String], pathRequired: Bool = true, usageText: String) throws -> CLITarget {
+        if explicit == nil, let first = positionals.first, first.hasPrefix("/") {
+            positionals.removeFirst()
+            return .mounted(first)
+        }
+        let profile = try requiredProfile(explicit, positionals: &positionals)
+        guard !positionals.isEmpty || !pathRequired else { throw usage(usageText) }
+        let path = positionals.isEmpty ? "/" : positionals.removeFirst()
+        guard path.hasPrefix("/") else { throw usage("Drive paths start with /, as in /records/x.json") }
+        return .drive(profile: profile, path: path)
+    }
+
+    /// A ParaAir Cloud file version, `pv:` and a number, as `versions` lists them.
+    private static func fileVersion(_ value: String, option: String) throws -> String {
+        guard value.range(of: "^pv:[1-9][0-9]{0,15}$", options: .regularExpression) != nil else {
+            throw usage("\(option) requires a version such as pv:123 (see versions)")
+        }
+        return value
+    }
+
+    private static func onOff(_ value: String, option: String) throws -> Bool {
+        switch value {
+        case "on": return true
+        case "off": return false
+        default: throw usage("--\(option) requires on or off")
+        }
     }
 
     private static func noExtraArguments(_ arguments: [String], command: String) throws {
