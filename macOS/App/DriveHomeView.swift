@@ -65,7 +65,11 @@ extension MenuModel {
 
     func homeDetails() -> HomeDetails {
         let profile = profiles.first
-        return HomeDetails(driveIcon: profile.map { DriveAppearance(stateRoot: stateRoot).image($0) },
+        // A drive's own artwork when someone chose one; otherwise the header shows the bare mark,
+        // not the default Finder icon, whose charcoal tile reads as a dark box on the panel.
+        return HomeDetails(driveIcon: profile.flatMap { profile in
+                               (try? DriveAppearance(stateRoot: stateRoot).customPNG(profile)).flatMap { $0 }.flatMap(NSImage.init(data:))
+                           },
                            storageSummary: profile.map(connectionSummary),
                            mountPath: profile?.mountPoint,
                            stateFolder: stateRoot.path,

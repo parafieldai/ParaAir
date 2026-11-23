@@ -38,7 +38,11 @@ struct UISnapshots {
                "19-uploads-failing", "20-conflicts", "22-cloud-no-storage"].contains(name) {
             let view = MenuBarPanel(input: input, details: details(for: input),
                                     connectAutomatically: .constant(true), actions: HomeActions())
-            try render(view, size: nil, appearance: .aqua, to: output.appendingPathComponent("menu-\(name)-light.png"))
+            // Dark too for the states people see most: the menu bar panel follows the system appearance.
+            for appearance in [NSAppearance.Name.aqua, .darkAqua]
+            where appearance == .aqua || ["1-first-run", "5-connected", "6-connected-sign-in", "11-cloud-signed-out", "19-uploads-failing"].contains(name) {
+                try render(view, size: nil, appearance: appearance, to: output.appendingPathComponent("menu-\(name)-\(suffix(appearance)).png"))
+            }
         }
         try renderLoginItem(output: output)
         try renderReview(output: output)
