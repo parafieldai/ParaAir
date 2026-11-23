@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Files macOS writes onto every volume it mounts, for its own use. Finder keeps view
 /// settings in `.DS_Store`; extended attributes (quarantine, Finder tags, resource forks)
@@ -33,4 +34,18 @@ public enum Housekeeping {
     public static func staysLocal(_ path: String) -> Bool { isLocalOnly(path) || isRefused(path) }
     /// A remote entry that listings hide.
     static func hides(_ entry: FileEntry) -> Bool { staysLocal(entry.path) }
+
+    /// Makes FSEvents report `folder` (a drive path) as changed: creates the refresh marker in it through the volume
+    /// mounted at `mountPoint`, then removes it. The marker stays on this Mac. False when the folder isn't there.
+    @discardableResult
+    public static func touchRefreshMarker(in folder: String, mountPoint: String) -> Bool {
+        guard let folder = try? canonicalPath(folder), mountPoint.hasPrefix("/") else { return false }
+        let marker = (folder == "/" ? mountPoint : mountPoint + folder) + "/" + refreshName
+        func create() -> Int32 { Darwin.open(marker, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600) }
+        var descriptor = create()
+        if descriptor < 0, errno == EEXIST { _ = Darwin.unlink(marker); descriptor = create() }
+        guard descriptor >= 0 else { return false }
+        Darwin.close(descriptor)
+        return Darwin.unlink(marker) == 0
+    }
 }

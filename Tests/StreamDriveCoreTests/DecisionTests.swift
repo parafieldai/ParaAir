@@ -321,3 +321,62 @@ final class DecisionTests: XCTestCase {
         XCTAssertTrue(try drive.changesNeedingDecision().isEmpty)
     }
 }
+
+// MARK: Conflict copies and refused changes on any storage
+
+extension DecisionTests {
+    private func reopen(conflictCopies: Bool) throws {
+        drive = nil
+        drive = try Engine(backend: backend, stateDirectory: work.appendingPathComponent("state"), cacheLimitBytes: 1 << 20,
+                           minFreeBytes: 0, blockSize: 4096, maxJournalBytes: 1 << 20, conflictCopies: conflictCopies)
+    }
+
+    func testConflictCopiesSaveThisMacsChangeBesideTheFileWithoutMerging() throws {
+        try reopen(conflictCopies: true)
+        try seed("records/a.json", "{\n  \"name\": \"base\",\n  \"updatedAt\": 1\n}\n")
+        // Different lines changed on each side: a line merge would combine them; conflict copies never merge.
+        try drive.truncate("/records/a.json", size: 0)
+        _ = try drive.write("/records/a.json", offset: 0, data: Data("{\n  \"name\": \"mine\",\n  \"updatedAt\": 1\n}\n".utf8))
+        try seed("records/a.json", "{\n  \"name\": \"base\",\n  \"updatedAt\": 2\n}\n")
+        XCTAssertTrue(try drive.flushUploads().isEmpty)
+        let copy = "records/" + Engine.copyName("a.json", date: Date()) { _ in false }
+        XCTAssertEqual(try remoteText("records/a.json"), "{\n  \"name\": \"base\",\n  \"updatedAt\": 2\n}\n")
+        XCTAssertEqual(try remoteText(copy), "{\n  \"name\": \"mine\",\n  \"updatedAt\": 1\n}\n")
+        let info = try XCTUnwrap(try drive.conflictCopyInfo("/" + copy))
+        XCTAssertEqual(info.original, "/records/a.json"); XCTAssertNotNil(info.baseVersion); XCTAssertNotNil(info.theirsVersion)
+        XCTAssertNotEqual(info.baseVersion, info.theirsVersion)
+        // The record follows the copy when it is renamed, and goes when it is deleted.
+        try drive.move("/" + copy, to: "/records/merged.json")
+        XCTAssertNil(try drive.conflictCopyInfo("/" + copy))
+        XCTAssertEqual(try drive.conflictCopyInfo("/records/merged.json")?.original, "/records/a.json")
+        try drive.remove("/records/merged.json", directory: false)
+        XCTAssertNil(try drive.conflictCopyInfo("/records/merged.json"))
+    }
+
+    func testTwoMacsCreatingTheSameNewFileKeepBoth() throws {
+        try reopen(conflictCopies: true)
+        try FileManager.default.createDirectory(at: remote.appendingPathComponent("claims"), withIntermediateDirectories: true)
+        _ = try drive.create("/claims/job.txt", directory: false)
+        _ = try drive.write("/claims/job.txt", offset: 0, data: Data("mine".utf8))
+        try seed("claims/job.txt", "theirs")
+        XCTAssertTrue(try drive.flushUploads().isEmpty)
+        let copy = "claims/" + Engine.copyName("job.txt", date: Date()) { _ in false }
+        XCTAssertEqual(try remoteText("claims/job.txt"), "theirs"); XCTAssertEqual(try remoteText(copy), "mine")
+        XCTAssertNil(try drive.conflictCopyInfo("/" + copy)?.baseVersion, "a new file had no base")
+    }
+
+    func testAChangeRefusedToThisMemberWaitsForADecision() throws {
+        try seed("shared.txt", "theirs")
+        _ = try drive.write("/shared.txt", offset: 0, data: Data("MINE".utf8))
+        backend.commitError = DriveError(EPERM, "Your ParaAir Cloud access doesn’t allow this change", disposition: .attemptNotDispatched)
+        XCTAssertEqual(try drive.flushUploads().map(\.lastErrno), [EPERM])
+        XCTAssertEqual(try drive.changesNeedingDecision().map(\.path), ["/shared.txt"])
+        XCTAssertTrue(try drive.uploads().allSatisfy { !$0.isFailing(now: .max) })
+        backend.commitError = nil
+        let copy = try drive.keepMine("/shared.txt", as: "shared mine.txt")
+        XCTAssertTrue(try drive.flushUploads().isEmpty)
+        XCTAssertEqual(try remoteText("shared.txt"), "theirs"); XCTAssertEqual(try remoteText("shared mine.txt"), "MINErs")
+        XCTAssertEqual(try drive.conflictCopyInfo(copy.path)?.original, "/shared.txt")
+    }
+}
+

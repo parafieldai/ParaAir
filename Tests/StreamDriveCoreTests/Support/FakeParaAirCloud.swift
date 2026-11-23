@@ -155,6 +155,15 @@ final class FakeParaAirCloud: @unchecked Sendable {
     /// Checkout URLs a later checkout of the same workspace made unpayable (Stripe expires them, Paddle cancels them).
     private(set) var closedCheckoutURLs: [String] = []
     private var openCheckouts: [String: [String]] = [:]
+    /// The user of the request being answered (dispatch holds the lock), for authors of versions and changes.
+    private var requestUser: String?
+    private var feed: [FeedChange] = []
+    /// Changes before this cursor were pruned: a `since` below it answers `reset`.
+    private var feedPrunedThrough: Int64 = 0
+    /// Folder rules by "drive|principal|prefix" (principal: "email:…", "role:…" or "credential:…").
+    private var accessRules: [String: (principal: String, prefix: String, access: String)] = [:]
+    /// Conflict-copy records by node id.
+    private var conflictRecords: [Int64: (original: String, base: String?, theirs: String?, user: String?)] = [:]
 
     /// A workspace's subscription as the service's `billing_accounts` row would describe it.
     struct BillingAccount {
@@ -194,7 +203,10 @@ final class FakeParaAirCloud: @unchecked Sendable {
         let size: Int64; let mode: UInt32; let chunks: [(sha: String, size: Int)]; var supersededAt: Date?; var expiresAt: Date?
         /// Path at commit time and creation time: a committed-version entry describes them, even after a rename.
         var path: String = ""; var createdUs: Int64 = 0
+        /// The user whose request made it; nil for versions seeded as another device's.
+        var author: String? = nil
     }
+    private struct FeedChange { let id: Int64; let drive: String; let change: String; let kind: NodeKind; let path: String; let from: String?; let version: Int64?; let user: String? }
     private struct Upload {
         let id: String; let drive: String; let transaction: String; let path: String; let expectedVersion: String?
         let finalSize: Int64; let mode: UInt32; let chunks: [(sha: String, size: Int)]; let hash: String
@@ -295,6 +307,10 @@ final class FakeParaAirCloud: @unchecked Sendable {
         }
     }
     func addMember(workspaceID: String, userID: String, role: String) { locked { workspaces[workspaceID]?.members[userID] = role } }
+    /// Prunes the change feed up to now: older cursors answer `reset`.
+    func pruneChanges() { locked { feedPrunedThrough = nextID; feed = [] } }
+    /// Requests the fake answered on a route, by method and template.
+    func count(_ route: String) -> Int { locked { log.filter { $0.route == route }.count } }
     func setBilling(workspaceID: String, _ account: BillingAccount?) { locked { workspaces[workspaceID]?.billing = account } }
 
     /// The head content of a live file, assembled from its chunks.
@@ -336,6 +352,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
                                   path: path, createdUs: Self.nowUs())
             versions[version.id] = version
             nodes[nodeID]!.head = version.id; nodes[nodeID]!.size = Int64(data.count); nodes[nodeID]!.mtimeUs = Self.nowUs(); nodes[nodeID]!.mode = mode
+            noteChange(driveID, existing == nil ? "create" : "write", kind: .file, path: path, version: version.id, user: nil)
             return fileEntry(nodes[nodeID]!)
         }
     }
@@ -346,6 +363,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
             let id = makeID()
             nodes[id] = Node(id: id, drive: driveID, path: path, kind: .directory, mtimeUs: Self.nowUs(), mode: 0o755, head: nil, deletedAt: nil)
             workspaces[drives[driveID]!.workspace]!.nodeCount += 1
+            noteChange(driveID, "mkdir", kind: .directory, path: path, user: nil)
             return fileEntry(nodes[id]!)
         }
     }
@@ -439,6 +457,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
 
     private func authorizedRoute(route: String, parts: [String], query: [String: String], headers: [String: String], body: Data,
                                  user: (id: String, grant: String)) throws -> Reply {
+        requestUser = user.id
         switch route {
         case "GET /v1/me": return me(user)
         case "POST /v1/billing/checkout": return try billingCheckout(user: user.id, body: body, headers: headers)
@@ -500,6 +519,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
                 let id = makeID()
                 nodes[id] = Node(id: id, drive: driveID, path: path, kind: .directory, mtimeUs: Self.nowUs(), mode: 0o755, head: nil, deletedAt: nil)
                 workspaces[drive.workspace]!.nodeCount += 1
+                noteChange(driveID, "mkdir", kind: .directory, path: path, user: user.id)
                 return json(201, ["entry": entryJSON(nodes[id]!)])
             }
         case "POST /v1/drives/{d}/move":
@@ -542,6 +562,37 @@ final class FakeParaAirCloud: @unchecked Sendable {
             return json(200, ["state": "fenced"])
         case "GET /v1/drives/{d}/trash":
             return try trash(drive, query)
+        case "GET /v1/drives/{d}/versions":
+            return try versionList(drive, query)
+        case "POST /v1/drives/{d}/versions/restore":
+            try writable()
+            let request = try jsonBody(body, headers)
+            return try idempotent(scope: "d:" + driveID, headers: headers, body: body, path: "restore-version") {
+                try restoreVersion(drive, request)
+            }
+        case "GET /v1/drives/{d}/changes":
+            return try changeFeed(drive, query)
+        case "GET /v1/drives/{d}/access", "PUT /v1/drives/{d}/access", "DELETE /v1/drives/{d}/access":
+            guard role == "owner" || role == "admin" else { throw Fail(code: "forbidden") }
+            return try access(drive, method: route.hasPrefix("GET") ? "GET" : route.hasPrefix("PUT") ? "PUT" : "DELETE", query: query,
+                              body: route.hasPrefix("PUT") ? try jsonBody(body, headers) : [:])
+        case "PUT /v1/drives/{d}/conflicts":
+            try writable()
+            let request = try jsonBody(body, headers)
+            let path = try serverPath(request["path"] as? String)
+            guard let node = live(driveID, path), node.kind == .file else { throw Fail(code: "not_found") }
+            let original = try serverPath(request["original"] as? String)
+            func version(_ key: String) throws -> String? {
+                guard let value = request[key], !(value is NSNull) else { return nil }
+                guard let text = value as? String, text.range(of: "^pv:[1-9][0-9]{0,15}$", options: .regularExpression) != nil else { throw Fail(code: "invalid_version") }
+                return text
+            }
+            conflictRecords[node.id] = (original, try version("baseVersion"), try version("theirsVersion"), user.id)
+            return json(200, ["conflict": conflictJSON(node)])
+        case "GET /v1/drives/{d}/conflicts":
+            let path = try serverPath(query["path"])
+            guard let node = live(driveID, path), node.kind == .file, conflictRecords[node.id] != nil else { throw Fail(code: "not_found") }
+            return json(200, ["conflict": conflictJSON(node)])
         case "POST /v1/drives/{d}/trash/{n}/restore":
             try writable()
             let request = try jsonBody(body, headers)
@@ -1054,6 +1105,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
         }
         for node in descendants { nodes[node.id]!.path = to + node.path.dropFirst(from.count) }
         nodes[source.id]!.path = to
+        noteChange(drive.id, "move", kind: source.kind, path: to, from: from, version: source.head, user: requestUser)
         return json(200, ["entry": entryJSON(nodes[source.id]!)])
     }
 
@@ -1077,6 +1129,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
         case (.file, false):
             softDelete(node, workspace: drive.workspace)
         }
+        noteChange(drive.id, "delete", kind: node.kind, path: path, user: requestUser)
         return Reply(status: 204)
     }
 
@@ -1113,6 +1166,122 @@ final class FakeParaAirCloud: @unchecked Sendable {
         workspaces[drive.workspace]!.retained = max(0, workspace.retained - node.size)
         workspaces[drive.workspace]!.nodeCount += 1
         return json(200, ["entry": entryJSON(nodes[nodeID]!)])
+    }
+
+    // MARK: Shared editing
+
+    private func noteChange(_ drive: String, _ change: String, kind: NodeKind, path: String, from: String? = nil, version: Int64? = nil, user: String?) {
+        feed.append(FeedChange(id: makeID(), drive: drive, change: change, kind: kind, path: path, from: from, version: version, user: user))
+    }
+    private func authorJSON(_ user: String?) -> [String: Any] {
+        ["userId": user.map { $0 as Any } ?? NSNull(), "email": user.flatMap { users[$0]?.email }.map { $0 as Any } ?? NSNull()]
+    }
+
+    private func versionList(_ drive: Drive, _ query: [String: String]) throws -> Reply {
+        let path = try serverPath(query["path"])
+        guard let node = live(drive.id, path) else { throw Fail(code: "not_found") }
+        guard node.kind == .file else { throw Fail(code: "is_directory") }
+        let limit = Int(query["limit"] ?? "100") ?? 0, before = Int64(query["before"] ?? "") ?? Int64.max
+        guard (1...1000).contains(limit), before >= 1 else { throw Fail(code: "invalid_request") }
+        let earlier = Set(nodes.values.filter { $0.drive == drive.id && $0.path == path && $0.deletedAt != nil }.map(\.id))
+        let kept = versions.values.filter { ($0.node == node.id || earlier.contains($0.node)) && ($0.expiresAt ?? .distantFuture) > Date() && $0.id < before }
+            .sorted { $0.id > $1.id }
+        let page = Array(kept.prefix(limit))
+        return json(200, ["path": node.path, "versions": page.map { version -> [String: Any] in
+            ["version": "pv:\(version.id)", "size": version.size, "createdAt": Self.date(Date(timeIntervalSince1970: TimeInterval(version.createdUs) / 1_000_000)),
+             "author": authorJSON(version.author), "current": version.id == node.head,
+             "expiresAt": version.expiresAt.map { Self.date($0) as Any } ?? NSNull()]
+        }, "nextBefore": kept.count > limit ? page.last!.id as Any : NSNull()])
+    }
+
+    private func restoreVersion(_ drive: Drive, _ request: [String: Any]) throws -> Reply {
+        let path = try serverPath(request["path"] as? String)
+        func id(_ value: Any?) throws -> Int64? {
+            guard let value, !(value is NSNull) else { return nil }
+            guard let text = value as? String, text.range(of: "^pv:[1-9][0-9]{0,15}$", options: .regularExpression) != nil else { throw Fail(code: "invalid_version") }
+            return Int64(text.dropFirst(3))
+        }
+        guard let sourceID = try id(request["version"]) else { throw Fail(code: "invalid_version") }
+        let expected = try id(request["expectedVersion"])
+        guard let node = live(drive.id, path) else { throw Fail(code: "not_found") }
+        guard node.kind == .file else { throw Fail(code: "is_directory") }
+        if let expected, node.head != expected { throw Fail(code: "version_conflict") }
+        let earlier = Set(nodes.values.filter { $0.drive == drive.id && $0.path == path && $0.deletedAt != nil }.map(\.id))
+        guard let source = versions[sourceID], source.node == node.id || earlier.contains(source.node), (source.expiresAt ?? .distantFuture) > Date() else {
+            throw Fail(code: "version_not_found")
+        }
+        if source.id == node.head { return json(200, ["entry": entryJSON(node)]) }
+        if let head = node.head { versions[head]!.supersededAt = Date(); versions[head]!.expiresAt = Date().addingTimeInterval(TimeInterval(retentionDays) * 86400) }
+        let now = Self.nowUs()
+        let version = Version(id: makeID(), node: node.id, drive: drive.id, transaction: UUID().uuidString.lowercased(), manifestHash: source.manifestHash,
+                              size: source.size, mode: source.mode, chunks: source.chunks, supersededAt: nil, expiresAt: nil, path: path, createdUs: now,
+                              author: requestUser)
+        versions[version.id] = version
+        workspaces[drive.workspace]!.logical += source.size - node.size
+        nodes[node.id]!.head = version.id; nodes[node.id]!.size = source.size; nodes[node.id]!.mode = source.mode; nodes[node.id]!.mtimeUs = now
+        noteChange(drive.id, "write", kind: .file, path: path, version: version.id, user: requestUser)
+        return json(200, ["entry": entryJSON(nodes[node.id]!)])
+    }
+
+    private func changeFeed(_ drive: Drive, _ query: [String: String]) throws -> Reply {
+        let latest = max(feed.map(\.id).max() ?? 0, feedPrunedThrough)
+        guard let raw = query["since"] else { return json(200, ["changes": [], "cursor": latest, "more": false, "reset": false]) }
+        guard let since = Int64(raw), since >= 0 else { throw Fail(code: "invalid_request") }
+        let limit = Int(query["limit"] ?? "500") ?? 0
+        guard (1...1000).contains(limit) else { throw Fail(code: "invalid_request") }
+        if since < feedPrunedThrough { return json(200, ["changes": [], "cursor": latest, "more": false, "reset": true]) }
+        let after = feed.filter { $0.drive == drive.id && $0.id > since }
+        let page = Array(after.prefix(limit))
+        return json(200, ["changes": page.map { change -> [String: Any] in
+            var object: [String: Any] = ["cursor": change.id, "change": change.change, "kind": change.kind.rawValue, "path": change.path,
+                                         "version": change.version.map { "pv:\($0)" as Any } ?? NSNull(),
+                                         "at": Self.date(Date()), "author": authorJSON(change.user)]
+            if let from = change.from { object["fromPath"] = from }
+            if change.kind == .directory, change.change == "move" { object["rescan"] = true }
+            return object
+        }, "cursor": page.last?.id ?? since, "more": after.count > limit, "reset": false])
+    }
+
+    private func access(_ drive: Drive, method: String, query: [String: String], body: [String: Any]) throws -> Reply {
+        func ruleJSON(_ rule: (principal: String, prefix: String, access: String)) -> [String: Any] {
+            let parts = rule.principal.split(separator: ":", maxSplits: 1).map(String.init)
+            var object: [String: Any] = ["path": rule.prefix, "access": rule.access, "updatedAt": Self.date(Date())]
+            switch parts[0] {
+            case "role": object["role"] = parts[1]
+            case "credential": object["credential"] = parts[1]; object["name"] = "relay"
+            default:
+                object["email"] = parts[1]
+                object["userId"] = users.values.first { $0.email == parts[1] }.map { $0.id as Any } ?? NSNull()
+            }
+            return object
+        }
+        func principal(_ values: [String: Any]) throws -> String {
+            let named = ["email", "role", "credential"].compactMap { key in (values[key] as? String).map { key + ":" + $0 } }
+            guard named.count == 1 else { throw Fail(code: "invalid_request") }
+            if named[0].hasPrefix("role:"), !["role:members", "role:viewers"].contains(named[0]) { throw Fail(code: "invalid_request") }
+            return named[0]
+        }
+        switch method {
+        case "GET":
+            let rules = accessRules.filter { $0.key.hasPrefix(drive.id + "|") }.values.sorted { ($0.prefix, $0.principal) < ($1.prefix, $1.principal) }
+            return json(200, ["rules": rules.map(ruleJSON)])
+        case "PUT":
+            let who = try principal(body), prefix = try serverPath(body["path"] as? String)
+            guard let level = body["access"] as? String, ["none", "read", "create", "write"].contains(level) else { throw Fail(code: "invalid_request") }
+            let rule = (principal: who, prefix: prefix, access: level)
+            accessRules[drive.id + "|" + who + "|" + prefix] = rule
+            return json(200, ["rule": ruleJSON(rule)])
+        default:
+            let who = try principal(query), prefix = try serverPath(query["path"])
+            accessRules[drive.id + "|" + who + "|" + prefix] = nil
+            return Reply(status: 204)
+        }
+    }
+
+    private func conflictJSON(_ node: Node) -> [String: Any] {
+        let record = conflictRecords[node.id]!
+        return ["path": node.path, "original": record.original, "baseVersion": record.base.map { $0 as Any } ?? NSNull(),
+                "theirsVersion": record.theirs.map { $0 as Any } ?? NSNull(), "createdAt": Self.date(Date()), "author": authorJSON(record.user)]
     }
 
     // MARK: Read path
@@ -1310,7 +1479,8 @@ final class FakeParaAirCloud: @unchecked Sendable {
         let now = Self.nowUs()
         let version = Version(id: makeID(), node: nodeID, drive: drive.id, transaction: upload.transaction, manifestHash: upload.hash,
                               size: upload.finalSize, mode: upload.mode, chunks: upload.chunks, supersededAt: nil, expiresAt: nil,
-                              path: upload.path, createdUs: now)
+                              path: upload.path, createdUs: now, author: requestUser)
+        noteChange(drive.id, existing == nil ? "create" : "write", kind: .file, path: upload.path, version: version.id, user: requestUser)
         versions[version.id] = version
         nodes[nodeID]!.head = version.id; nodes[nodeID]!.size = upload.finalSize; nodes[nodeID]!.mode = upload.mode; nodes[nodeID]!.mtimeUs = now
         workspace.logical += delta; workspace.reserved = max(0, workspace.reserved - upload.reserved)

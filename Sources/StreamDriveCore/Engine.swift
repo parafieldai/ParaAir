@@ -27,6 +27,41 @@ public struct UploadRecord: Codable, Sendable {
     }
 }
 
+/// Where a conflict copy came from (Engine.conflictCopyInfo): the file it was saved beside (`original`), the version
+/// this Mac's change was based on (`baseVersion`, nil for a file new on this Mac) and the version in storage it lost to
+/// (`theirsVersion`, nil when unknown or deleted). `source` is "this-mac" for a copy saved here, "service" for the record
+/// another Mac sent to storage, which also names its `author`.
+public struct ConflictCopyInfo: Codable, Equatable, Sendable {
+    public var path: String
+    public var original: String
+    public var baseVersion: String?
+    public var theirsVersion: String?
+    public var createdAt: String?
+    public var author: ParaAirCloudAuthor?
+    public var source: String
+    public init(path: String, original: String, baseVersion: String?, theirsVersion: String?, createdAt: String?,
+                author: ParaAirCloudAuthor? = nil, source: String) {
+        self.path = path; self.original = original; self.baseVersion = baseVersion; self.theirsVersion = theirsVersion
+        self.createdAt = createdAt; self.author = author; self.source = source
+    }
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path); try container.encode(original, forKey: .original)
+        try container.encode(baseVersion, forKey: .baseVersion); try container.encode(theirsVersion, forKey: .theirsVersion)
+        try container.encode(createdAt, forKey: .createdAt); try container.encodeIfPresent(author, forKey: .author)
+        try container.encode(source, forKey: .source)
+    }
+}
+
+/// What one pass over a drive's change feed found (Engine.followChanges): the changes, the folders whose listings
+/// changed (to refresh in Finder), whether the feed was reset (everything may have changed) and the cursor reached.
+public struct RemoteChangeBatch: Sendable {
+    public var changes: [ParaAirCloudChange]
+    public var folders: [String]
+    public var reset: Bool
+    public var cursor: Int64
+}
+
 /// Sequential prefetch window; `maxBlocks == 0` disables readahead.
 public struct ReadaheadPolicy: Sendable, Equatable {
     public var maxBlocks: Int
@@ -216,6 +251,22 @@ private struct Block: Codable {
     var accessed: Int64
 }
 private struct Metadata: Codable { var entry: FileEntry; var verified: Int64 }
+/// A conflict copy this Mac saved (keepMine), stored as ("conflictcopy", copy path): the file it was saved beside, the
+/// version this Mac's change was based on and the version in storage it lost to. Once the copy is uploaded it is sent
+/// to storage that keeps such records (`settled` then), so other Macs can answer conflictCopyInfo too.
+private struct ConflictCopyRecord: Codable {
+    var path: String
+    var original: String
+    var baseVersion: String?
+    var theirsVersion: String?
+    /// Wall-clock nanoseconds.
+    var createdAt: Int64
+    var settled: Bool
+    var attempts: Int
+    var nextAttemptAt: Int64?
+}
+/// Where a follower of the change feed stopped, stored as ("feed", consumer).
+private struct FeedCursor: Codable { var cursor: Int64 }
 /// Stored as record ("index", "backup"). `notNeeded` once storage reports that the
 /// index is not local, so no further changes are tracked.
 private struct IndexBackupState: Codable {
@@ -310,19 +361,25 @@ public final class Engine {
     private var unrecordedTraffic = TransferMetrics()
     private var streams: [String: ReadStream] = [:]
     private var streamGenerations: UInt64 = 0
+    /// Conflicts whose automatic copy failed: when to try again (uptime) and how many attempts failed. Guarded by `memory`.
+    private var copyRetries: [String: (at: UInt64, failures: Int)] = [:]
+    /// A change that loses to another device's is saved beside the file as a conflict copy (saveConflictCopy) and
+    /// uploads, instead of waiting for a decision. Off by default; a drive's profile turns it on.
+    public let conflictCopies: Bool
     /// Sequential readahead; idle unless `tuning.readahead.maxBlocks > 0`.
     private let prefetchQueue = OperationQueue()
 
     public init(backend: StorageBackend, stateDirectory: URL,
                 cacheLimitBytes: Int64 = 1_073_741_824, minFreeBytes: Int64 = 5_368_709_120,
                 blockSize: Int = 1_048_576, maxJournalBytes: Int64 = 4_294_967_296,
-                publishingBackend: StorageBackend? = nil, tuning: EngineTuning = .byo) throws {
+                publishingBackend: StorageBackend? = nil, tuning: EngineTuning = .byo, conflictCopies: Bool = false) throws {
         guard stateDirectory.isFileURL, cacheLimitBytes >= 0, minFreeBytes >= 0,
               blockSize >= 4096, blockSize <= 8 * 1024 * 1024,
               maxJournalBytes >= 0 else { throw DriveError(EINVAL, "Invalid drive cache or journal configuration") }
         guard tuning.metadataLifetimeNanoseconds >= 0, tuning.readahead.maxBlocks >= 0,
               tuning.readahead.maxConcurrent >= 0 else { throw DriveError(EINVAL, "Invalid drive engine tuning") }
         self.backend = backend; publisher = publishingBackend ?? backend; root = stateDirectory; self.tuning = tuning
+        self.conflictCopies = conflictCopies
         prefetchQueue.name = "dev.streamdrive.engine.readahead"
         prefetchQueue.qualityOfService = .utility
         prefetchQueue.maxConcurrentOperationCount = max(1, tuning.readahead.maxConcurrent)
@@ -737,7 +794,7 @@ public final class Engine {
     /// the journal's sealed contents upload, its tail, so the writer never waits for an upload. `cleansUp` drops
     /// payloads the change left unused.
     private func withWritableJournal<T>(_ path: String, cleansUp: Bool = false, _ body: (inout Journal) throws -> T) throws -> T {
-        var drains = 0, missing = 0
+        var drains = 0, missing = 0, copies = 0
         while true {
             // A new journal's base comes from metadata refreshed outside the state lock.
             let fetched = try refreshMetadataIfNeeded(path, force: missing > 0)
@@ -790,7 +847,13 @@ public final class Engine {
             case .sealed:
                 // The writer never uploads. It waits only for an in-flight upload of
                 // this file, then settles a sealed journal through the commit fence.
-                try resolveSealed(path)
+                do { try resolveSealed(path) }
+                catch let error as DriveError where error.code == ESTALE && conflictCopies && copies < 2 {
+                    // Saved beside the file, the change that lost no longer blocks writing: this one starts on the
+                    // version in storage.
+                    copies += 1
+                    guard (try? saveConflictCopy(path)) != nil else { throw error }
+                }
             }
         }
     }
@@ -879,7 +942,14 @@ public final class Engine {
     }
 
     public func fsync(_ value: String) throws {
-        try syncOne(canonicalPath(value))
+        let path = try canonicalPath(value)
+        do { try syncOne(path) }
+        catch let error as DriveError where error.code == ESTALE && conflictCopies {
+            // The change lost to another device's: it is saved beside the file and uploads. The caller still learns
+            // that its file didn't.
+            if let copy = try? saveConflictCopy(path) { try? syncOne(copy.path) }
+            throw error
+        }
     }
     /// Returns remaining uploads, including conflicts; successful publications
     /// disappear from this list. Failures never discard acknowledged local data.
@@ -904,6 +974,8 @@ public final class Engine {
         if pressure { eligible.sort { $0.item.pendingLength > $1.item.pendingLength } }
         else { eligible.sort { $0.item.modified < $1.item.modified } }
         for candidate in eligible { do { try syncOne(candidate.item.path, modifiedNoLaterThan: candidate.cutoff) } catch {} }
+        if conflictCopies { saveConflictCopies(respectingBackoff: policy.respectsBackoff) }
+        try? shareConflictRecords()
         let remaining = try uploads()
         // Storage refused uploads as read-only: learn whether another Mac took the drive.
         if remaining.contains(where: { $0.lastErrno == EROFS }) { _ = try? ownedElsewhere(refresh: true) }
@@ -914,7 +986,7 @@ public final class Engine {
     private func drainOnePart() throws {
         let pending: [Journal] = try lock.withLock { try db.all("journal") }
         // Largest first; one that can't upload (refused, failing) leaves room to the next.
-        let candidates = pending.filter { $0.state != "conflict" && !Housekeeping.staysLocal($0.path) && $0.lastErrno != EROFS }
+        let candidates = pending.filter { $0.state != "conflict" && !Housekeeping.staysLocal($0.path) && $0.lastErrno != EROFS && $0.lastErrno != EPERM }
             .sorted { $0.pendingLength > $1.pendingLength }
         for candidate in candidates.prefix(8) {
             do { _ = try uploadOnce(candidate.path, modifiedNoLaterThan: .max); return } catch {}
@@ -1107,6 +1179,7 @@ public final class Engine {
             try backend.move(from, to: to)
             noteIndexChange()
             try rekeyLocalFiles(pending, from: from, to: to)
+            try rekeyConflictRecords(from: from, to: to)
             try db.clear("metadata"); try invalidateListings()
             // Cached content remains evictable; pin snapshots must be recreated.
             try invalidatePins(under: from); try invalidatePins(under: to)
@@ -1143,6 +1216,8 @@ public final class Engine {
             noteIndexChange()
             try db.transaction {
                 for item in pending where Housekeeping.staysLocal(item.path) && contains(path, item.path) { try db.delete("journal", item.path) }
+                let records: [ConflictCopyRecord] = try db.all("conflictcopy")
+                for record in records where contains(path, record.path) { try db.delete("conflictcopy", record.path) }
             }
             try recoverOrphans()
             try db.clear("metadata"); try invalidateListings(); try invalidatePins(under: path)
@@ -1176,6 +1251,19 @@ public final class Engine {
             }
         }
         try recoverOrphans()
+    }
+    /// Records of conflict copies follow a rename; those of copies a rename replaced go.
+    private func rekeyConflictRecords(from: String, to: String) throws {
+        let records: [ConflictCopyRecord] = try db.all("conflictcopy")
+        guard records.contains(where: { contains(from, $0.path) || contains(to, $0.path) }) else { return }
+        try db.transaction {
+            for record in records where contains(to, record.path) && !contains(from, record.path) { try db.delete("conflictcopy", record.path) }
+            for var record in records where contains(from, record.path) {
+                try db.delete("conflictcopy", record.path)
+                record.path = to + record.path.dropFirst(from.count)
+                try db.put("conflictcopy", record.path, record)
+            }
+        }
     }
     private func settleChanges(under paths: [String]) throws {
         let pending: [Journal] = try lock.withLock { try db.all("journal") }
@@ -1379,8 +1467,8 @@ public final class Engine {
     /// The file system type ParaAir volumes report (FSShortName in the extension's Info.plist).
     static let fileSystemName = "streamdrive"
 
-    /// Pending changes that never upload by themselves: conflicts, and changes storage
-    /// refuses from this Mac (EROFS). Each waits for keepMine, exportChange or keepTheirs.
+    /// Pending changes that never upload by themselves: conflicts, and changes storage refuses from this Mac (EROFS)
+    /// or to this member (EPERM). Each waits for keepMine, exportChange or keepTheirs.
     public func changesNeedingDecision() throws -> [UploadRecord] { try uploads().filter(\.needsDecision) }
 
     /// A name for this Mac's copy of `path` that nothing in its folder uses yet:
@@ -1424,10 +1512,14 @@ public final class Engine {
             throw DriveError(ENOENT, "The file’s folder no longer exists in storage. Export your copy instead.")
         }
         return try withDecision(path) { item in
-            guard item.state == "conflict" else {
+            // A change storage refused to this member (EPERM) may still be welcome as a new file, as in a folder where
+            // they may only create.
+            guard item.state == "conflict" || item.lastErrno == EPERM else {
                 throw DriveError(EROFS, "This drive doesn’t accept new files from this Mac. Export your copy instead.")
             }
             try fillFromBase(path, item)
+            // The version in storage the change lost to, recorded with the copy before its base is cleared.
+            let theirs = (try? backend.stat(path)).flatMap { $0.kind == .file ? $0.version : nil }
             return try lock.withLock {
                 guard let current: Journal = try db.get("journal", path), unchanged(current, since: item) else {
                     throw DriveError(EBUSY, "The file changed meanwhile, and its newer change is kept. Try again.")
@@ -1440,9 +1532,11 @@ public final class Engine {
                 copy.foldTail()
                 copy.sealed = false; copy.state = "pending"; copy.mayHaveApplied = false
                 copy.lastError = nil; copy.lastErrno = nil; copy.failures = nil; copy.failingSince = nil; copy.nextAttemptAt = nil
+                let record = ConflictCopyRecord(path: target, original: path, baseVersion: current.base?.version, theirsVersion: theirs,
+                                                createdAt: now(), settled: false, attempts: 0, nextAttemptAt: nil)
                 namespaceEpoch &+= 1
                 try db.transaction {
-                    try db.delete("journal", path); try db.put("journal", target, copy)
+                    try db.delete("journal", path); try db.put("journal", target, copy); try db.put("conflictcopy", target, record)
                     try db.delete("metadata", path); try invalidateListings()
                     try invalidatePins(under: path); try invalidatePins(under: target)
                 }
@@ -1519,6 +1613,174 @@ public final class Engine {
         try withDecision(path) { try discard(path, $0) }
     }
 
+    /// Saves this Mac's copy of a conflicted file (or of a change storage refused to this member, EPERM) beside it as
+    /// "<stem> (conflict YYYY-MM-DD[ n]).<ext>", as keepMine does: the copy uploads like any new file, the path shows
+    /// the version in storage, and conflictCopyInfo tells where the copy came from. No merging, whatever the file type.
+    @discardableResult
+    public func saveConflictCopy(_ value: String, date: Date = Date()) throws -> FileEntry {
+        let path = try canonicalPath(value)
+        var attempt = 0
+        while true {
+            attempt += 1
+            // Another copy may take the suggested name meanwhile; the next suggestion skips it.
+            do { return try keepMine(path, as: try suggestedCopyName(for: path, date: date)) }
+            catch let error as DriveError where error.code == EEXIST && attempt < 3 { continue }
+        }
+    }
+
+    /// With conflict copies on: every conflict is saved beside its file (saveConflictCopy) and the copy uploads at once.
+    /// A failed attempt waits 2 s, doubling up to 15 minutes, unless `respectingBackoff` is false.
+    private func saveConflictCopies(respectingBackoff: Bool) {
+        guard let pending = try? lock.withLock({ () -> [Journal] in try db.all("journal") }) else { return }
+        for item in pending where item.state == "conflict" && !Housekeeping.staysLocal(item.path) {
+            let uptime = DispatchTime.now().uptimeNanoseconds
+            if respectingBackoff, let retry = memory.withLock({ copyRetries[item.path] }), uptime < retry.at { continue }
+            do {
+                let copy = try saveConflictCopy(item.path)
+                memory.withLock { copyRetries[item.path] = nil }
+                try? syncOne(copy.path)
+            } catch {
+                memory.withLock {
+                    let failures = (copyRetries[item.path]?.failures ?? 0) + 1
+                    copyRetries[item.path] = (uptime + UInt64(min(900, 2 << min(failures - 1, 9))) * 1_000_000_000, failures)
+                }
+            }
+        }
+    }
+
+    /// Sends the records of conflict copies saved on this Mac to storage once the copy has uploaded. Storage without
+    /// such records settles them at once; so does a refusal that won't change (the copy is gone, or the service has no
+    /// such route). Other failures wait 30 s, doubling up to an hour. Settled records go after 90 days.
+    private func shareConflictRecords() throws {
+        let clock = now()
+        let (records, pending): ([ConflictCopyRecord], Set<String>) = try lock.withLock {
+            (try db.all("conflictcopy"), Set((try db.all("journal") as [Journal]).map(\.path)))
+        }
+        let expired = records.filter { $0.settled && clock - $0.createdAt > 90 * 86_400_000_000_000 }
+        let due = records.filter { !$0.settled && !pending.contains($0.path) && ($0.nextAttemptAt ?? 0) <= clock }
+        if !expired.isEmpty {
+            try lock.withLock { for record in expired { try db.delete("conflictcopy", record.path) } }
+        }
+        guard !due.isEmpty else { return }
+        let collaboration = try backend.collaboration()
+        for var record in due {
+            var settled = true
+            if let collaboration {
+                do {
+                    try collaboration.recordConflictCopy(ParaAirCloudConflictRecord(path: record.path, original: record.original,
+                                                                                     baseVersion: record.baseVersion, theirsVersion: record.theirsVersion))
+                } catch let error as DriveError where [ENOENT, ENOTDIR, EISDIR, EINVAL, EPROTO, EPERM, ENOTSUP].contains(error.code) {
+                } catch {
+                    settled = false
+                }
+            }
+            record.settled = settled
+            if !settled {
+                record.attempts += 1
+                record.nextAttemptAt = now() + min(3_600_000_000_000, Int64(30_000_000_000) << Int64(min(record.attempts - 1, 7)))
+            }
+            try lock.withLock {
+                guard let current: ConflictCopyRecord = try db.get("conflictcopy", record.path), current.createdAt == record.createdAt else { return }
+                try db.put("conflictcopy", record.path, record)
+            }
+        }
+    }
+
+    /// Where the conflict copy at `path` came from: this Mac's own record when it saved the copy, otherwise the record
+    /// storage keeps (another Mac saved it). Nil when the file isn't a known conflict copy.
+    public func conflictCopyInfo(_ value: String) throws -> ConflictCopyInfo? {
+        let path = try canonicalPath(value)
+        if let record: ConflictCopyRecord = try lock.withLock(timeout: 10, { try db.get("conflictcopy", path) }) {
+            let created = Date(timeIntervalSince1970: TimeInterval(record.createdAt) / 1_000_000_000)
+            return ConflictCopyInfo(path: path, original: record.original, baseVersion: record.baseVersion, theirsVersion: record.theirsVersion,
+                                    createdAt: ParaAirCloudJSON.formatDate(created), source: "this-mac")
+        }
+        guard let collaboration = try backend.collaboration(), let record = try collaboration.conflictCopy(at: path) else { return nil }
+        return ConflictCopyInfo(path: record.path, original: record.original, baseVersion: record.baseVersion, theirsVersion: record.theirsVersion,
+                                createdAt: record.createdAt, author: record.author, source: "service")
+    }
+
+    // MARK: Changes made on other devices
+
+    /// Drops what this Mac remembers about the paths a change feed names: their metadata (a folder's whole subtree
+    /// when it moved, was purged or must be rescanned), listings and pin completion, so the next stat or listing asks
+    /// storage instead of waiting out the metadata lifetime. `reset` forgets every path. Returns the folders whose
+    /// listings changed, parents first as they appear, for Finder to refresh.
+    @discardableResult
+    public func applyRemoteChanges(_ changes: [ParaAirCloudChange], reset: Bool = false) throws -> [String] {
+        var folders: [String] = [], seen = Set<String>()
+        func note(_ folder: String) { if !Housekeeping.staysLocal(folder), seen.insert(folder).inserted { folders.append(folder) } }
+        try lock.withLock(timeout: 10) {
+            namespaceEpoch &+= 1
+            try db.transaction {
+                if reset { try db.clear("metadata"); try invalidatePins(under: "/"); note("/") }
+                for change in changes {
+                    for value in [change.path, change.fromPath].compactMap({ $0 }) {
+                        guard let path = try? canonicalPath(value), !Housekeeping.staysLocal(path) else { continue }
+                        if change.kind == "directory" || change.rescan == true { try db.deleteSubtree("metadata", path) }
+                        else { try db.delete("metadata", path) }
+                        try invalidatePins(under: path)
+                        if path != "/" { note(parent(path)) }
+                        if change.kind == "directory", change.change != "delete", change.change != "purge", value == change.path { note(path) }
+                    }
+                }
+                try invalidateListings()
+            }
+        }
+        return folders
+    }
+
+    /// One page of the drive's change feed after `since` (nil: none, and the cursor to follow from), with what it names
+    /// dropped from this Mac's caches (applyRemoteChanges). ENOTSUP for storage without a feed.
+    public func readChanges(since: Int64?, limit: Int = 500) throws -> ParaAirCloudChangePage {
+        try pullChanges(since: since, limit: limit).page
+    }
+    private func pullChanges(since: Int64?, limit: Int) throws -> (page: ParaAirCloudChangePage, folders: [String]) {
+        guard let feed = try backend.collaboration() else {
+            throw DriveError(ENOTSUP, "Only ParaAir Cloud drives have a change feed")
+        }
+        let page = try feed.changes(since: since, limit: limit)
+        guard since != nil, page.reset || !page.changes.isEmpty else { return (page, []) }
+        return (page, try applyRemoteChanges(page.changes, reset: page.reset))
+    }
+
+    /// Follows the change feed for `consumer` from where it stopped last (the first time, from now on), up to
+    /// `maxPages` pages, and applies what it found. Nil for storage without a feed.
+    public func followChanges(consumer: String, maxPages: Int = 10) throws -> RemoteChangeBatch? {
+        guard try backend.collaboration() != nil else { return nil }
+        let saved: FeedCursor? = try lock.withLock(timeout: 10) { try db.get("feed", consumer) }
+        var cursor: Int64, changes: [ParaAirCloudChange] = [], folders: [String] = [], reset = false
+        if let start = saved?.cursor {
+            cursor = start
+            for _ in 0..<max(1, maxPages) {
+                let (page, named) = try pullChanges(since: cursor, limit: 500)
+                cursor = page.cursor
+                if page.reset { reset = true; changes = []; folders = named; break }
+                changes += page.changes
+                for folder in named where !folders.contains(folder) { folders.append(folder) }
+                if !page.more { break }
+            }
+        } else {
+            cursor = try pullChanges(since: nil, limit: 1).page.cursor
+        }
+        let reached = cursor
+        try lock.withLock(timeout: 10) { try db.put("feed", consumer, FeedCursor(cursor: reached)) }
+        return RemoteChangeBatch(changes: changes, folders: folders, reset: reset, cursor: reached)
+    }
+
+    /// Forgets what this Mac remembers about `path` after a change made in storage directly, such as a restored
+    /// version, so the next stat and read get the new contents.
+    public func noteStorageChanged(_ value: String) throws {
+        let path = try canonicalPath(value)
+        try applyRemoteChanges([ParaAirCloudChange(cursor: 1, change: "write", kind: "file", path: path, at: "", author: ParaAirCloudAuthor())])
+    }
+
+    /// A range of one stored version of a file (ParaAir Cloud `pv:` versions, from the version history), read from
+    /// storage without the cache.
+    public func readVersion(_ value: String, version: String, offset: Int64, length: Int) throws -> Data {
+        try backend.readSnapshot(canonicalPath(value), version: version, offset: offset, length: length)
+    }
+
     /// Runs `body` with `path`'s journal while holding its upload lock, so no upload or
     /// settling runs meanwhile. Only changes that need a decision qualify.
     private func withDecision<T>(_ path: String, _ body: (Journal) throws -> T) throws -> T {
@@ -1527,7 +1789,7 @@ public final class Engine {
             let pathLock = try uploadLock(for: path)
             return try pathLock.withLock {
                 guard let item: Journal = try lock.withLock({ try db.get("journal", path) }), !Housekeeping.staysLocal(path),
-                      item.state == "conflict" || item.lastErrno == EROFS else {
+                      item.state == "conflict" || item.lastErrno == EROFS || item.lastErrno == EPERM else {
                     throw DriveError(ENOENT, "This file has no change waiting for a decision")
                 }
                 let result = try body(item)

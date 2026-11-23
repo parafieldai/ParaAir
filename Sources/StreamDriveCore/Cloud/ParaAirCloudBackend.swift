@@ -170,6 +170,17 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
         lock.lock(); closed = true; manifests = [:]; manifestOrder = []; token = nil; lock.unlock()
     }
 
+    public func collaboration() throws -> DriveCollaboration? { self }
+
+    /// A write the drive's folder rules or the member's role refuse (403 `forbidden`) is a refused change that waits
+    /// for a decision, like one on a read-only drive (EPERM, `UploadRecord.needsDecision`), not a sign-in problem (EACCES).
+    static let refusedWriteMessage = "Your ParaAir Cloud access doesn’t allow this change"
+    static func writeError(_ error: ParaAirCloudCallError) -> DriveError {
+        guard error.code == .forbidden else { return error.drive }
+        let suffix = error.requestID.flatMap(ParaAirCloudErrorMap.validRequestID).map { " (request \($0))" } ?? ""
+        return DriveError(EPERM, refusedWriteMessage + suffix, disposition: error.drive.disposition)
+    }
+
     // MARK: Reads
 
     @discardableResult
@@ -269,7 +280,7 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
     /// transport failure of the commit POST itself stays `.ambiguous`.
     private func publish(_ commit: FileCommit, api: ParaAirCloudAPI) throws -> FileEntry {
         func notDispatched(_ error: Error) -> DriveError {
-            let drive = (error as? ParaAirCloudCallError)?.drive ?? (error as? DriveError) ?? DriveError(EIO, "ParaAir Cloud upload failed")
+            let drive = (error as? ParaAirCloudCallError).map(Self.writeError) ?? (error as? DriveError) ?? DriveError(EIO, "ParaAir Cloud upload failed")
             return drive.disposition == .transactionAbsent ? drive : drive.with(.attemptNotDispatched)
         }
         let transaction = commit.transactionID.lowercased()
@@ -336,7 +347,7 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
                         if let replayed = try reserve() { return replayed }
                         continue
                     }
-                    throw error.drive
+                    throw Self.writeError(error)
                 }
             }
         } catch let error as DriveError where opened && error.disposition == .attemptNotDispatched {
@@ -429,5 +440,17 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
             }
         }
         if let failure { throw failure }
+    }
+}
+
+extension ParaAirCloudBackend: DriveCollaboration {
+    public func changes(since: Int64?, limit: Int) throws -> ParaAirCloudChangePage {
+        try api().changes(driveID: driveID, since: since, limit: limit)
+    }
+    public func recordConflictCopy(_ record: ParaAirCloudConflictRecord) throws {
+        try api().recordConflictCopy(driveID: driveID, record)
+    }
+    public func conflictCopy(at path: String) throws -> ParaAirCloudConflictRecord? {
+        try api().conflictCopy(driveID: driveID, path: canonicalPath(path))
     }
 }

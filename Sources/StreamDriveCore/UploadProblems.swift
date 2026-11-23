@@ -16,9 +16,10 @@ public struct UploadFailurePolicy: Sendable, Equatable {
 
 public extension UploadRecord {
     /// A change that never uploads by itself and waits for a decision: the file changed in
-    /// storage (a conflict), or storage refuses changes from this Mac (EROFS: another Mac
-    /// owns the drive, or a read-only ParaAir Cloud plan).
-    var needsDecision: Bool { state == "conflict" || lastErrno == EROFS }
+    /// storage (a conflict), storage refuses changes from this Mac (EROFS: another Mac
+    /// owns the drive, or a read-only ParaAir Cloud plan), or storage refuses them to this
+    /// member (EPERM: the ParaAir Cloud role or folder rules don't allow the change).
+    var needsDecision: Bool { state == "conflict" || lastErrno == EROFS || lastErrno == EPERM }
 
     /// Uploads of this file keep failing. ParaAir keeps retrying; the change stays on this Mac.
     /// Network errors count only by duration: retries come fast, so a short drop would
@@ -66,7 +67,9 @@ public enum UploadFailureReason {
         switch code {
         case _ where unreachable.contains(code):
             return cloud ? "ParaAir Cloud can’t be reached" : "your storage can’t be reached"
-        case EACCES, EPERM:
+        case EPERM:
+            return cloud ? "your ParaAir Cloud access doesn’t allow these changes" : "your storage refused access; its key may have been revoked"
+        case EACCES:
             return cloud ? "ParaAir Cloud needs you to sign in again" : "your storage refused access; its key may have been revoked"
         case ENOENT, ENXIO:
             return cloud ? "this drive no longer exists in ParaAir Cloud" : "the bucket, or the drive’s folder in it, is missing"

@@ -482,3 +482,131 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
     }
     static func hex<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 { digest.map { String(format: "%02x", $0) }.joined() }
 }
+
+// MARK: Shared editing: version history, change feed, folder access and conflict copies (cloud README)
+
+extension ParaAirCloudAPI {
+    /// `GET /v1/drives/{d}/versions`: one page of the versions kept for a file, newest first.
+    public func versions(driveID: String, path: String, before: Int64?, limit: Int = 100) throws -> ParaAirCloudVersionPage {
+        try unwrap {
+            guard (1...1000).contains(limit), before.map({ $0 >= 1 }) ?? true else { throw invalidRequest() }
+            var query = [URLQueryItem(name: "path", value: path), URLQueryItem(name: "limit", value: String(limit))]
+            if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
+            let call = Call(method: "GET", path: "/v1/drives/\(try checkedDrive(driveID))/versions", route: "GET /v1/drives/{d}/versions",
+                            query: query)
+            let page = try decode(ParaAirCloudVersionPage.self, perform(call))
+            guard page.isValid(path: path, limit: limit) else { throw malformed() }
+            return page
+        }
+    }
+
+    /// `POST /v1/drives/{d}/versions/restore`: makes `version` the file's current contents again, as a new version. With
+    /// `expectedVersion`, a file changed since then is refused (ESTALE); a version no longer kept answers ENOENT.
+    public func restoreVersion(driveID: String, path: String, version: String, expectedVersion: String?, idempotencyKey: UUID) throws -> FileEntry {
+        struct Request: Encodable { var path: String; var version: String; var expectedVersion: String? }
+        struct Body: Decodable { var entry: WireEntry }
+        return try unwrap {
+            guard ParaAirCloudIDs.isFileVersion(version), expectedVersion.map(ParaAirCloudIDs.isFileVersion) ?? true else { throw invalidRequest() }
+            let call = Call(method: "POST", path: "/v1/drives/\(try checkedDrive(driveID))/versions/restore", route: "POST /v1/drives/{d}/versions/restore",
+                            body: try ParaAirCloudJSON.encoder().encode(Request(path: path, version: version, expectedVersion: expectedVersion)),
+                            idempotencyKey: idempotencyKey)
+            do { return try decode(Body.self, perform(call)).entry.fileEntry(expectingPath: path) }
+            catch let error as ParaAirCloudCallError where error.code == .versionNotFound {
+                throw ParaAirCloudCallError(drive: DriveError(ENOENT, "That version is no longer kept", disposition: error.drive.disposition), code: error.code)
+            }
+        }
+    }
+
+    /// `GET /v1/drives/{d}/changes`: without `since`, no changes and the cursor to follow from; with it, the changes after it.
+    public func changes(driveID: String, since: Int64?, limit: Int = 500) throws -> ParaAirCloudChangePage {
+        try unwrap {
+            guard (1...1000).contains(limit), since.map({ $0 >= 0 }) ?? true else { throw invalidRequest() }
+            var query = [URLQueryItem(name: "limit", value: String(limit))]
+            if let since { query.insert(URLQueryItem(name: "since", value: String(since)), at: 0) }
+            let call = Call(method: "GET", path: "/v1/drives/\(try checkedDrive(driveID))/changes", route: "GET /v1/drives/{d}/changes",
+                            query: query)
+            let page = try decode(ParaAirCloudChangePage.self, perform(call))
+            var previous = since ?? 0
+            for change in page.changes {
+                guard change.isValid, change.cursor > previous else { throw malformed() }
+                previous = change.cursor
+            }
+            guard page.changes.count <= limit, page.cursor >= 0, page.reset || page.cursor >= previous,
+                  !(page.reset && !page.changes.isEmpty) else { throw malformed() }
+            return page
+        }
+    }
+
+    /// `GET /v1/drives/{d}/access`: every folder rule of the drive (owners and admins only).
+    public func accessRules(driveID: String) throws -> [ParaAirCloudAccessRule] {
+        struct Body: Decodable { var rules: [ParaAirCloudAccessRule] }
+        return try unwrap {
+            let rules = try decode(Body.self, perform(Call(method: "GET", path: "/v1/drives/\(try checkedDrive(driveID))/access",
+                                                            route: "GET /v1/drives/{d}/access"))).rules
+            guard rules.allSatisfy(\.isValid) else { throw malformed() }
+            return rules
+        }
+    }
+
+    /// `PUT /v1/drives/{d}/access`: gives `principal` the level `access` at `path` and its contents.
+    public func setAccess(driveID: String, principal: ParaAirCloudAccessPrincipal, path: String, access: ParaAirCloudAccessLevel) throws -> ParaAirCloudAccessRule {
+        struct Body: Decodable { var rule: ParaAirCloudAccessRule }
+        return try unwrap {
+            let field = principal.field
+            let call = Call(method: "PUT", path: "/v1/drives/\(try checkedDrive(driveID))/access", route: "PUT /v1/drives/{d}/access",
+                            body: try json([field.name: field.value, "path": path, "access": access.rawValue]))
+            let rule = try decode(Body.self, perform(call)).rule
+            guard rule.isValid else { throw malformed() }
+            return rule
+        }
+    }
+
+    /// `DELETE /v1/drives/{d}/access`: removes `principal`'s rule at `path`; a missing rule is not an error.
+    public func removeAccess(driveID: String, principal: ParaAirCloudAccessPrincipal, path: String) throws {
+        try unwrap {
+            let field = principal.field
+            let call = Call(method: "DELETE", path: "/v1/drives/\(try checkedDrive(driveID))/access", route: "DELETE /v1/drives/{d}/access",
+                            query: [URLQueryItem(name: field.name, value: field.value), URLQueryItem(name: "path", value: path)])
+            _ = try perform(call)
+        }
+    }
+
+    /// `PUT /v1/drives/{d}/conflicts`: records where the conflict copy at `record.path` came from, for every Mac.
+    public func recordConflictCopy(driveID: String, _ record: ParaAirCloudConflictRecord) throws {
+        struct Request: Encodable {
+            var path: String; var original: String; var baseVersion: String?; var theirsVersion: String?
+            enum CodingKeys: String, CodingKey { case path, original, baseVersion, theirsVersion }
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                try container.encode(path, forKey: .path); try container.encode(original, forKey: .original)
+                try container.encode(baseVersion, forKey: .baseVersion); try container.encode(theirsVersion, forKey: .theirsVersion)
+            }
+        }
+        try unwrap {
+            // Only ParaAir Cloud versions mean something to the service.
+            let request = Request(path: record.path, original: record.original,
+                                  baseVersion: record.baseVersion.flatMap { ParaAirCloudIDs.isFileVersion($0) ? $0 : nil },
+                                  theirsVersion: record.theirsVersion.flatMap { ParaAirCloudIDs.isFileVersion($0) ? $0 : nil })
+            let call = Call(method: "PUT", path: "/v1/drives/\(try checkedDrive(driveID))/conflicts", route: "PUT /v1/drives/{d}/conflicts",
+                            body: try ParaAirCloudJSON.encoder().encode(request))
+            _ = try perform(call)
+        }
+    }
+
+    /// `GET /v1/drives/{d}/conflicts?path=`: the record of the conflict copy at `path`, or nil when it isn't one (or the
+    /// service keeps no such records).
+    public func conflictCopy(driveID: String, path: String) throws -> ParaAirCloudConflictRecord? {
+        struct Body: Decodable { var conflict: ParaAirCloudConflictRecord }
+        do {
+            return try unwrap {
+                let call = Call(method: "GET", path: "/v1/drives/\(try checkedDrive(driveID))/conflicts", route: "GET /v1/drives/{d}/conflicts",
+                                query: [URLQueryItem(name: "path", value: path)])
+                let record = try decode(Body.self, perform(call)).conflict
+                guard record.isValid else { throw malformed() }
+                return record
+            }
+        } catch let error as DriveError where error.code == ENOENT {
+            return nil
+        }
+    }
+}

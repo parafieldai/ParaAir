@@ -72,6 +72,14 @@ final class Database {
         defer { sqlite3_finalize(stmt) }; bind(kind, at: 1, to: stmt); bind(key, at: 2, to: stmt)
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw DriveError(EIO, "Cannot update drive state") }
     }
+    /// Deletes `kind` records keyed `path` or anything under it ("/" is everything).
+    func deleteSubtree(_ kind: String, _ path: String) throws {
+        if path == "/" { return try clear(kind) }
+        let stmt = try prepare("DELETE FROM records WHERE kind=? AND (key=? OR substr(key,1,length(?)+1)=?||'/')")
+        defer { sqlite3_finalize(stmt) }
+        bind(kind, at: 1, to: stmt); bind(path, at: 2, to: stmt); bind(path, at: 3, to: stmt); bind(path, at: 4, to: stmt)
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw DriveError(EIO, "Cannot update drive state") }
+    }
     func clear(_ kind: String) throws {
         let stmt = try prepare("DELETE FROM records WHERE kind=?")
         defer { sqlite3_finalize(stmt) }; bind(kind, at: 1, to: stmt)

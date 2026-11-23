@@ -29,6 +29,9 @@ public struct DriveProfile: Codable, Equatable, Sendable {
     /// The drive's workspace, saved when the drive is attached or created, so the app shows that workspace's plan and
     /// billing even when the drive can no longer be looked up. Older profiles have none; the app then looks it up.
     public var cloudWorkspaceID: String?
+    /// A change that loses to another device's is saved beside the file as "<stem> (conflict YYYY-MM-DD[ n]).<ext>" and
+    /// uploads, instead of waiting for a decision (Engine.saveConflictCopy). Nil (off) in older profiles.
+    public var conflictCopies: Bool?
 
     public init(name: String, backend: DriveBackendKind = .juicefs, metadataURL: String? = nil,
                 localRoot: String? = nil, libraryPath: String? = nil, mountPoint: String? = nil,
@@ -404,7 +407,7 @@ public extension Engine {
                           cacheLimitBytes: profile.cacheLimitBytes, minFreeBytes: profile.minFreeBytes,
                           blockSize: profile.blockSize, maxJournalBytes: profile.maxJournalBytes,
                           publishingBackend: profile.backend == .paraairCloud ? backend : LazyProfileBackend(makeBackend),
-                          tuning: profile.backend == .paraairCloud ? .paraairCloud : .byo)
+                          tuning: profile.backend == .paraairCloud ? .paraairCloud : .byo, conflictCopies: profile.conflictCopies ?? false)
     }
 }
 
@@ -455,6 +458,7 @@ private final class LazyProfileBackend: StorageBackend {
     func backupIndex(replacing previous: String?) throws -> String? { try withBackend { try $0.backupIndex(replacing: previous) } }
     /// Only from a connected backend: asking must never open a connection.
     func ownership(refresh: Bool) throws -> StorageOwnership? { try lock.withLock { connected }?.ownership(refresh: refresh) }
+    func collaboration() throws -> DriveCollaboration? { try withBackend { try $0.collaboration() } }
     func close() throws {
         lock.lock(); closed = true; let backend = connected; connected = nil; lock.unlock()
         try backend?.close()

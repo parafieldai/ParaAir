@@ -174,4 +174,19 @@ final class HousekeepingTests: XCTestCase {
         XCTAssertEqual(try drive.status().pins.first?.fileCount, 1)
         assertStorageNeverSawHousekeeping()
     }
+
+    func testRefreshMarkerIsCreatedAndRemovedInTheNamedFolder() throws {
+        let mount = FileManager.default.temporaryDirectory.appendingPathComponent("refresh-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: mount) }
+        try FileManager.default.createDirectory(at: mount.appendingPathComponent("records/2026"), withIntermediateDirectories: true)
+        // A marker left behind by an interrupted refresh is replaced, then removed.
+        try Data().write(to: mount.appendingPathComponent("records/" + Housekeeping.refreshName))
+        XCTAssertTrue(Housekeeping.touchRefreshMarker(in: "/records", mountPoint: mount.path))
+        XCTAssertTrue(Housekeeping.touchRefreshMarker(in: "/", mountPoint: mount.path))
+        XCTAssertTrue(Housekeeping.touchRefreshMarker(in: "/records/2026", mountPoint: mount.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: mount.appendingPathComponent("records").path), ["2026"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: mount.path), ["records"])
+        XCTAssertFalse(Housekeeping.touchRefreshMarker(in: "/gone", mountPoint: mount.path))
+        XCTAssertFalse(Housekeeping.touchRefreshMarker(in: "/../x", mountPoint: mount.path))
+    }
 }

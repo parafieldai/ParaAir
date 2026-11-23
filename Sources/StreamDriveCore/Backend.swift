@@ -99,6 +99,19 @@ public protocol StorageBackend: AnyObject {
     /// its record says now. Never opens a connection. Nil when storage has no owners or
     /// isn't connected.
     func ownership(refresh: Bool) throws -> StorageOwnership?
+    /// What a shared drive offers several Macs editing it (ParaAir Cloud): its change feed and conflict-copy records.
+    /// Nil for storage without them.
+    func collaboration() throws -> DriveCollaboration?
+}
+
+/// Shared-editing services of a drive's storage, beyond files (cloud README: "Change feed", "Conflict copies").
+public protocol DriveCollaboration: AnyObject {
+    /// The drive's change feed after `since` (nil: none, and the cursor to follow from).
+    func changes(since: Int64?, limit: Int) throws -> ParaAirCloudChangePage
+    /// Records where a conflict copy came from, so other Macs can tell.
+    func recordConflictCopy(_ record: ParaAirCloudConflictRecord) throws
+    /// The record of the conflict copy at `path`, or nil when it isn't one.
+    func conflictCopy(at path: String) throws -> ParaAirCloudConflictRecord?
 }
 
 /// One Mac writes a drive at a time; a Mac that recovered the drive owns it.
@@ -121,6 +134,7 @@ public extension StorageBackend {
     func capacity() throws -> VolumeCapacity? { nil }
     func backupIndex(replacing previous: String?) throws -> String? { nil }
     func ownership(refresh: Bool) throws -> StorageOwnership? { nil }
+    func collaboration() throws -> DriveCollaboration? { nil }
 }
 
 public struct DriveError: Error, LocalizedError, Sendable {
