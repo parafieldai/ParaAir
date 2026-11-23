@@ -145,5 +145,32 @@ final class CloudAccountStoreTests: XCTestCase {
             XCTAssertEqual(($0 as? DriveError)?.message, "Invalid ParaAir Cloud request (method)")
         }
     }
+
+    func testPathsAndQueriesAreCheckedByteForByteLikeBefore() throws {
+        // The old rules, with CharacterSet, as a reference: the byte checks must agree with them everywhere.
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~/")
+        var generator = SystemRandomNumberGenerator()
+        let alphabet = Array("abcXYZ09-._~/ +&=?#%é ü中😀\u{0}\u{7f}\"'<>")
+        for _ in 0..<2000 {
+            let value = String((0..<Int.random(in: 0...24, using: &generator)).map { _ in alphabet.randomElement(using: &generator)! })
+            XCTAssertEqual(ParaAirCloudHTTP.encodeComponent(value), value.addingPercentEncoding(withAllowedCharacters: allowed)!, value)
+            let path = "/" + value
+            let old = path.hasPrefix("/") && !path.hasPrefix("//") && path.unicodeScalars.allSatisfy(allowed.contains) && !path.contains("/../")
+            // The byte rules also refuse a path ending in "/..", which the old ones let through.
+            XCTAssertEqual(ParaAirCloudHTTP.pathProblem(path) == nil, old && !path.hasSuffix("/.."), path)
+        }
+        XCTAssertNil(ParaAirCloudHTTP.pathProblem("/v1/me"))
+        XCTAssertNil(ParaAirCloudHTTP.pathProblem("/v1/drives/3f0c2a7e-6b1d-4e0a-9c2f-1d2e3f4a5b6c/stat"))
+        XCTAssertEqual(ParaAirCloudHTTP.pathProblem("v1/me"), "path doesn't start with / (5 bytes)")
+        XCTAssertEqual(ParaAirCloudHTTP.pathProblem("//v1/me"), "path starts with //")
+        XCTAssertEqual(ParaAirCloudHTTP.pathProblem("/v1/m e"), "path byte 5 of 7 is 0x20")
+        XCTAssertEqual(ParaAirCloudHTTP.pathProblem("/v1/../me"), "path has /../")
+        XCTAssertEqual(ParaAirCloudHTTP.pathProblem("/v1/.."), "path has /../")
+        let http = try ParaAirCloudHTTP(baseURL: URL(string: "https://refused.cloud.invalid")!, policy: .init(allowsLoopbackHTTP: false))
+        defer { http.invalidate() }
+        XCTAssertThrowsError(try http.sendSync(.init(method: "GET", path: "/v1/m e", route: "GET /v1/me"), bearer: nil)) {
+            XCTAssertEqual(($0 as? DriveError)?.message, "Invalid ParaAir Cloud request (path byte 5 of 7 is 0x20)")
+        }
+    }
 }
 
