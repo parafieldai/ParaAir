@@ -238,6 +238,10 @@ struct HomePresentation: Equatable {
             let text = cloud ? UploadNotices.readOnlyPlan(activity.blockedElsewhere) : UploadNotices.elsewhere(activity.blockedElsewhere, owner: owner)
             notices.append(.init(id: "upload-elsewhere", text: text, tone: .attention, action: review.action, actionTitle: review.title))
         }
+        if activity.blockedAccess > 0 {
+            notices.append(.init(id: "upload-access", text: UploadNotices.forbidden(activity.blockedAccess), tone: .attention,
+                                 action: review.action, actionTitle: review.title))
+        }
         // Refused access is already the status when storage access is interrupted; those files just wait.
         let failingShown = activity.failure.map { !(accessIssue && ($0.errno == EACCES || $0.errno == EPERM)) } ?? false
         if failingShown, let failure = activity.failure, activity.failing > 0 {
@@ -309,6 +313,11 @@ enum UploadNotices {
         let changes = count == 1 ? "1 change" : "\(count) changes"
         return "\(changes) made here won’t upload while your ParaAir Cloud plan is read-only. "
             + (count == 1 ? "It stays on this Mac." : "They stay on this Mac.")
+    }
+    static func forbidden(_ count: Int) -> String {
+        let changes = count == 1 ? "1 change" : "\(count) changes"
+        return "\(changes) made here won’t upload: your access to \(count == 1 ? "that folder" : "those folders") doesn’t allow \(count == 1 ? "it" : "them"). "
+            + "Save \(count == 1 ? "it" : "them") as new files, export or discard."
     }
     /// Uploads that keep failing. `now` adds how long the oldest change has waited.
     static func failing(_ failure: UploadFailureSummary, cloud: Bool, now: Date?) -> String {

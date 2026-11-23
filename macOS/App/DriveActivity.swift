@@ -16,6 +16,8 @@ struct UploadActivity: Equatable, Sendable {
     var conflicts = 0
     /// Refused by storage (EROFS): another Mac took over the drive, or the ParaAir Cloud plan is read-only.
     var blockedElsewhere = 0
+    /// Refused to this member (EPERM): their ParaAir Cloud role or the drive's folder rules don't allow the change.
+    var blockedAccess = 0
     /// Any other failure, retried with the next attempt.
     var failedOther = 0
     /// Files whose uploads keep failing (UploadFailurePolicy); counted here and nowhere else.
@@ -41,6 +43,7 @@ struct UploadActivity: Equatable, Sendable {
         for upload in uploads {
             if upload.state == "conflict" { conflicts += 1 }
             else if upload.lastErrno == EROFS { blockedElsewhere += 1 }
+            else if upload.lastErrno == EPERM { blockedAccess += 1 }
             else if !ownNotice(upload), upload.isFailing(now: clock, policy: policy) { failing += 1 }
             else if upload.lastErrno == EDQUOT { blockedQuota += 1 }
             else if upload.lastErrno == EACCES { blockedAuth += 1 }
@@ -52,7 +55,7 @@ struct UploadActivity: Equatable, Sendable {
         decisions.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
-    var total: Int { waiting + blockedQuota + blockedAuth + blockedElsewhere + conflicts + failedOther + failing }
+    var total: Int { waiting + blockedQuota + blockedAuth + blockedElsewhere + blockedAccess + conflicts + failedOther + failing }
 }
 
 /// One change that can't upload by itself, as the review sheet lists it.
@@ -62,6 +65,8 @@ struct PendingDecision: Equatable, Sendable, Identifiable {
         case conflict
         /// Storage refuses changes from this Mac: another Mac took over the drive, or (`cloud`) the plan is read-only.
         case refused(cloud: Bool)
+        /// Storage refuses the change to this member: their role or the folder's rules don't allow it.
+        case forbidden
     }
     var path: String
     var kind: Kind
@@ -80,7 +85,8 @@ struct PendingDecision: Equatable, Sendable, Identifiable {
         self.path = path; self.kind = kind; self.size = size; self.modified = modified
     }
     init(_ upload: UploadRecord, cloud: Bool) {
-        self.init(path: upload.path, kind: upload.state == "conflict" ? .conflict : .refused(cloud: cloud), size: upload.logicalSize,
+        self.init(path: upload.path, kind: upload.state == "conflict" ? .conflict : upload.lastErrno == EPERM ? .forbidden : .refused(cloud: cloud),
+                  size: upload.logicalSize,
                   modified: upload.modifiedNanoseconds.map { Date(timeIntervalSince1970: TimeInterval($0) / 1_000_000_000) })
     }
 }
@@ -173,7 +179,7 @@ final class DriveActivityMonitor: ObservableObject {
             let previous = activity
             activity = next
             if previous != next {
-                log.notice("activity waiting=\(next.waiting) quota=\(next.blockedQuota) auth=\(next.blockedAuth) conflicts=\(next.conflicts) refused=\(next.blockedElsewhere) other=\(next.failedOther) failing=\(next.failing) errno=\(next.failure?.errno ?? 0) bytes=\(next.pendingBytes)")
+                log.notice("activity waiting=\(next.waiting) quota=\(next.blockedQuota) auth=\(next.blockedAuth) conflicts=\(next.conflicts) refused=\(next.blockedElsewhere) access=\(next.blockedAccess) other=\(next.failedOther) failing=\(next.failing) errno=\(next.failure?.errno ?? 0) bytes=\(next.pendingBytes)")
             }
             if let previous { announceTransitions(from: previous, to: next, cloud: target.profile.backend == .paraairCloud) }
         case .failure(let error):

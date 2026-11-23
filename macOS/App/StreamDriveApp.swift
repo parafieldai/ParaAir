@@ -92,6 +92,8 @@ final class MenuModel: ObservableObject {
     /// The selected folder's ParaAir Cloud account, shared with Storage Settings.
     @Published private(set) var cloudAccount: CloudAccountModel
     let activity = DriveActivityMonitor()
+    /// Other devices' changes reach Finder and FSEvents watchers through refresh markers.
+    let changeFeed = ChangeFeedMonitor()
     let loginItem = LoginItemModel(service: SystemLoginItemService())
     @Published private(set) var uploadActivity: UploadActivity?
     @Published private(set) var driveNotices: DriveNotices?
@@ -663,6 +665,7 @@ final class MenuModel: ObservableObject {
         // A waiting switch keeps the sign-in it is for on screen until it happens.
         if pendingAdoption == nil { cloudAccount.reload() }
         activity.watch(stateRoot: stateRoot, profile: profiles.first)
+        changeFeed.watch(stateRoot: stateRoot, profiles: profiles)
         readyConnection = profiles.isEmpty
             ? (try? ConnectionStore(root: stateRoot).list())?.first { $0.state == .storageReady } : nil
         mounted = Set(ParaAirVolumes.mountedPaths())
