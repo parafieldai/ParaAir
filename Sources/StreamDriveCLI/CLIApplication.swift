@@ -429,6 +429,9 @@ final class CLIApplication {
                 return try render(CredentialRevoked(workspaceId: workspace, id: id, revoked: true), invocation: invocation,
                                   text: "Revoked \(id). Its token no longer works and its folder rules are deleted.\n")
             }
+        case .members(let action, let accountID, let workspaceID):
+            let found = try signedInAccount(accountID, roots: knownRoots(explicit: invocation.stateDirectory))
+            return try members(action, workspaceID: workspaceID, api: accountAPI(root: found.root, accountID: accountID), invocation: invocation)
         case .mount(let name, let override, let wait):
             var profile = try store.load(name)
             guard !mounted(profile) else { throw DriveError(EBUSY, "This profile is already mounted; unmount it before choosing another mount point") }
@@ -863,6 +866,46 @@ final class CLIApplication {
         return integer * 1_048_576
     }
     private func humanBytes(_ value: Int64) -> String { ByteCountFormatter.string(fromByteCount: value, countStyle: .binary) }
+    /// `members`: a workspace's members, managed by its owners and admins with their own sign-in (cloud README, "Members").
+    /// role and remove find the member by email in the list first, since the service names members by user id.
+    private func members(_ action: CLIMembersAction, workspaceID: String, api: ParaAirCloudAPI, invocation: CLIInvocation) throws -> CLIExecution {
+        func member(_ email: String) throws -> ParaAirCloudWorkspaceMember {
+            let wanted = email.trimmingCharacters(in: .whitespaces).lowercased()
+            guard let found = try api.members(workspaceID: workspaceID).members.first(where: { $0.email.lowercased() == wanted }) else {
+                throw CLIOutcomeError(outcome: .notFound, message: "\(displayName(email)) isn’t a member of this workspace (see members list)")
+            }
+            return found
+        }
+        /// A member who left between the list and the change is "not found" too.
+        func change<T>(_ body: () throws -> T) throws -> T {
+            do { return try body() }
+            catch let error as DriveError where error.code == ENOENT { throw CLIOutcomeError(outcome: .notFound, message: error.message) }
+        }
+        switch action {
+        case .list:
+            let list = try api.members(workspaceID: workspaceID)
+            let rows = list.members.map { "\($0.userId)\t\($0.role)\t\($0.status)\t\(displayName($0.email))" }
+            let seats = "\(displayName(list.workspace.name)): \(list.workspace.seatsUsed) of \(list.workspace.seats) seat\(list.workspace.seats == 1 ? "" : "s") used\n"
+            return try render(list, invocation: invocation, text: seats + rows.map { $0 + "\n" }.joined())
+        case .add(let email, let role):
+            let result = try api.addMember(workspaceID: workspaceID, email: email, role: role)
+            let name = displayName(result.member.email)
+            let text = !result.added ? "\(name) is already a member (\(result.member.role)).\n"
+                : result.member.status == "invited" ? "Added \(name) as \(result.member.role). Nothing was emailed: they can sign in to ParaAir with this address now.\n"
+                : "Added \(name) as \(result.member.role).\n"
+            return try render(MemberAdded(member: result.member, added: result.added), invocation: invocation, text: text)
+        case .role(let email, let role):
+            let target = try member(email)
+            let updated = try change { try api.setMemberRole(workspaceID: workspaceID, userID: target.userId, role: role) }
+            return try render(MemberChanged(member: updated), invocation: invocation, text: "\(displayName(updated.email)) is now \(updated.role).\n")
+        case .remove(let email):
+            let target = try member(email)
+            try change { try api.removeMember(workspaceID: workspaceID, userID: target.userId) }
+            return try render(MemberRemoved(userId: target.userId, email: target.email, removed: true), invocation: invocation,
+                              text: "Removed \(displayName(target.email)) from the workspace.\n")
+        }
+    }
+
     private func displayName(_ value: String) -> String { value.replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\r", with: "\\r").replacingOccurrences(of: "\t", with: "\\t") }
     private func render<T: Encodable>(_ value: T, invocation: CLIInvocation, text: String) throws -> CLIExecution { success(invocation.json ? try json(value) : text) }
     private func success(_ text: String) -> CLIExecution { CLIExecution(stdout: text, stderr: "", exitCode: 0) }
@@ -917,6 +960,9 @@ private struct AccessRemoved: Encodable { var path: String; var principal: [Stri
 private struct CredentialCreated: Encodable { var workspaceId: String; var credential: ParaAirCloudServiceCredential; var token: String }
 private struct CredentialList: Encodable { var workspaceId: String; var credentials: [ParaAirCloudServiceCredential] }
 private struct CredentialRevoked: Encodable { var workspaceId: String; var id: String; var revoked: Bool }
+private struct MemberAdded: Encodable { var member: ParaAirCloudWorkspaceMember; var added: Bool }
+private struct MemberChanged: Encodable { var member: ParaAirCloudWorkspaceMember }
+private struct MemberRemoved: Encodable { var userId: String; var email: String; var removed: Bool }
 private struct FeedCursor: Encodable { var cursor: Int64 }
 /// `extension-settings`: the extension's state afterwards, and whether System Settings was opened.
 private struct ExtensionSettingsResult: Encodable { var state: String; var opened: Bool }

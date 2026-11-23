@@ -29,16 +29,25 @@ private final class CLICloudStub: URLProtocol {
     /// Well formed, but for another credential than the reply names: a malformed reply.
     static let otherToken = "pcs_cred_01JDKQ2T5V7WXYZ0123456789B.Zz9yX8wV7uT6sR5qP4oN3mL2kJ1iH0gF_-eDcBaQwEr"
     private static let lock = NSLock()
-    private static var logged: [(path: String, body: Data)] = []
+    private static var logged: [(path: String, body: Data, method: String)] = []
     /// What GET /v1/drives lists (names only; the drive above is the one whose details exist).
     private static var listed: [(id: String, name: String)] = [(drive, "ParaAir Cloud")]
-    static var requests: [(path: String, body: Data)] { lock.lock(); defer { lock.unlock() }; return logged }
+    static var requests: [(path: String, body: Data, method: String)] { lock.lock(); defer { lock.unlock() }; return logged }
+    /// The workspace's members (GET/POST /v1/workspaces/{ws}/members, PATCH/DELETE .../{userId}); 3 seats.
+    static let ownerID = "usr_0123456789ABCDEFGHJKMNPQRS", adminID = "usr_1123456789ABCDEFGHJKMNPQRS"
+    /// A workspace whose members the account may not manage (403), and one it isn't in (404).
+    static let forbiddenWorkspace = "ws_ZZZZZZZZZZZZZZZZZZZZZZZZZZ", otherWorkspace = "ws_YYYYYYYYYYYYYYYYYYYYYYYYYY"
+    private static let initialMembers: [[String: String]] = [
+        ["userId": ownerID, "email": "cli@example.test", "role": "owner", "addedAt": "2026-11-23T10:00:00.000Z", "status": "active"],
+        ["userId": adminID, "email": "ann@example.test", "role": "admin", "addedAt": "2026-11-23T10:00:00.000Z", "status": "invited"],
+    ]
+    private static var memberRows = initialMembers
     /// Not valid UTF-8, so cat-version must pass bytes through untouched.
     static let versionBytes = Data([0x7b, 0x22, 0x76, 0x22, 0x3a, 0x31, 0x7d, 0x0a, 0x00, 0xff, 0xfe])
     static var versionHash: String { SHA256.hash(data: versionBytes).map { String(format: "%02x", $0) }.joined() }
     /// Whether the "throttled" create was already answered 429 once.
     private static var throttled = false
-    static func reset() { lock.lock(); logged = []; listed = [(drive, "ParaAir Cloud")]; throttled = false; lock.unlock() }
+    static func reset() { lock.lock(); logged = []; listed = [(drive, "ParaAir Cloud")]; throttled = false; memberRows = initialMembers; lock.unlock() }
     static func list(_ drives: [(id: String, name: String)]) { lock.lock(); listed = drives; lock.unlock() }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == host }
@@ -51,12 +60,21 @@ private final class CLICloudStub: URLProtocol {
             while stream.hasBytesAvailable { let count = stream.read(&buffer, maxLength: buffer.count); if count <= 0 { break }; body.append(buffer, count: count) }
         }
         let path = request.url!.path
-        Self.lock.lock(); Self.logged.append((path + (request.url!.query(percentEncoded: true).map { "?" + $0 } ?? ""), body)); Self.lock.unlock()
+        Self.lock.lock(); Self.logged.append((path + (request.url!.query(percentEncoded: true).map { "?" + $0 } ?? ""), body, request.httpMethod ?? "GET")); Self.lock.unlock()
         if path.hasPrefix("/v1/w/") {
             // The one chunk of version pv:9001 (cat-version).
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
                                                                   headerFields: ["Content-Type": "application/octet-stream"])!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Self.versionBytes)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        if path.hasPrefix("/v1/workspaces/"), path.contains("/members") {
+            let (status, object) = Self.members(path: path, method: request.httpMethod ?? "GET", body: body)
+            let data = try! JSONSerialization.data(withJSONObject: object)
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+                                                                  headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)
             return
         }
@@ -175,6 +193,46 @@ private final class CLICloudStub: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+
+    /// The members routes, with the service's seat (3) and last-owner rules.
+    private static func members(path: String, method: String, body: Data) -> (Int, Any) {
+        func error(_ status: Int, _ code: String) -> (Int, Any) { (status, ["error": ["code": code, "message": "x", "requestId": "req_TEST"]]) }
+        let base = "/v1/workspaces/\(workspace)/members"
+        if path.hasPrefix("/v1/workspaces/\(forbiddenWorkspace)/") { return error(403, "forbidden") }
+        guard path == base || path.hasPrefix(base + "/") else { return error(404, "workspace_not_found") }
+        lock.lock(); defer { lock.unlock() }
+        let fields = (try? JSONSerialization.jsonObject(with: body) as? [String: String]) ?? [:]
+        let owners = memberRows.filter { $0["role"] == "owner" }.count
+        if path == base, method == "GET" {
+            return (200, ["workspace": ["id": workspace, "name": "Studio", "kind": "team", "plan": "team", "seats": 3, "seatsUsed": memberRows.count] as [String: Any],
+                          "members": memberRows])
+        }
+        if path == base, method == "POST" {
+            let email = (fields["email"] ?? "").trimmingCharacters(in: .whitespaces).lowercased(), role = fields["role"] ?? "member"
+            if let existing = memberRows.first(where: { $0["email"] == email }) {
+                return existing["role"] == role ? (200, ["member": existing]) : error(409, "already_exists")
+            }
+            guard memberRows.count < 3 else { return error(409, "busy") }
+            let row = ["userId": String(format: "usr_%026d", memberRows.count + 7), "email": email, "role": role,
+                       "addedAt": "2026-11-24T10:00:00.000Z", "status": "invited"]
+            memberRows.append(row)
+            return (201, ["member": row])
+        }
+        let userID = String(path.dropFirst(base.count + 1))
+        guard let index = memberRows.firstIndex(where: { $0["userId"] == userID }) else { return error(404, "not_found") }
+        let lastOwner = memberRows[index]["role"] == "owner" && owners == 1
+        switch method {
+        case "PATCH":
+            guard !(lastOwner && fields["role"] != "owner") else { return error(409, "busy") }
+            memberRows[index]["role"] = fields["role"]
+            return (200, ["member": memberRows[index]])
+        case "DELETE":
+            guard !lastOwner else { return error(409, "busy") }
+            memberRows.remove(at: index)
+            return (204, [String: Any]())
+        default: return error(405, "invalid_request")
+        }
+    }
 }
 
 final class CLIApplicationTests: XCTestCase {
@@ -891,6 +949,75 @@ extension CLIApplicationTests {
 }
 
 extension CLIApplicationTests {
+    func testMembersListAddRoleAndRemove() throws {
+        let fixture = try cloudFixture()
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path], dependencies: fixture.dependencies, system: FakeSystem().system)
+        let base = ["--cloud-account", fixture.account.id, "--workspace", CLICloudStub.workspace]
+        let route = "/v1/workspaces/\(CLICloudStub.workspace)/members"
+        func last() -> (path: String, method: String, body: [String: String]?) {
+            let request = CLICloudStub.requests.last!
+            return (request.path, request.method, try? JSONSerialization.jsonObject(with: request.body) as? [String: String])
+        }
+
+        let listed = app.run(["members", "list"] + base + ["--json"])
+        XCTAssertEqual(listed.exitCode, 0, listed.stdout + listed.stderr)
+        XCTAssertEqual((try object(listed)["workspace"] as? [String: Any])?["seats"] as? Int, 3)
+        XCTAssertEqual((try object(listed)["members"] as? [[String: Any]])?.map { $0["email"] as? String }, ["cli@example.test", "ann@example.test"])
+        XCTAssertEqual(app.run(["members", "list"] + base).stdout, """
+            Studio: 2 of 3 seats used
+            \(CLICloudStub.ownerID)\towner\tactive\tcli@example.test
+            \(CLICloudStub.adminID)\tadmin\tinvited\tann@example.test
+
+            """)
+
+        // add: a new address is a member at once, with role member unless --role; a retry answers "already".
+        let added = app.run(["members", "add"] + base + ["--email", "New@Example.test", "--json"])
+        XCTAssertEqual(added.exitCode, 0, added.stdout + added.stderr)
+        XCTAssertEqual(try object(added)["added"] as? Bool, true)
+        XCTAssertEqual((try object(added)["member"] as? [String: Any])?["status"] as? String, "invited")
+        XCTAssertEqual(last().path, route); XCTAssertEqual(last().method, "POST")
+        XCTAssertEqual(last().body, ["email": "New@Example.test", "role": "member"])
+        XCTAssertEqual(app.run(["members", "add"] + base + ["--email", "new@example.test"]).stdout, "new@example.test is already a member (member).\n")
+        let otherRole = app.run(["members", "add"] + base + ["--email", "new@example.test", "--role", "viewer"])
+        XCTAssertEqual(otherRole.exitCode, 1); XCTAssertTrue(otherRole.stderr.contains("already a member with another role"), otherRole.stderr)
+        let full = app.run(["members", "add"] + base + ["--email", "fourth@example.test", "--role", "admin"])
+        XCTAssertEqual(full.exitCode, 1); XCTAssertTrue(full.stderr.contains("no free seat"), full.stderr)
+
+        // role and remove find the member by email, then call by user id.
+        let changed = app.run(["members", "role"] + base + ["--email", "ANN@example.test", "--role", "viewer", "--json"])
+        XCTAssertEqual(changed.exitCode, 0, changed.stdout + changed.stderr)
+        XCTAssertEqual((try object(changed)["member"] as? [String: Any])?["role"] as? String, "viewer")
+        XCTAssertEqual(last().path, "\(route)/\(CLICloudStub.adminID)"); XCTAssertEqual(last().method, "PATCH"); XCTAssertEqual(last().body, ["role": "viewer"])
+        let lastOwner = app.run(["members", "role"] + base + ["--email", "cli@example.test", "--role", "admin"])
+        XCTAssertEqual(lastOwner.exitCode, 1); XCTAssertTrue(lastOwner.stderr.contains("needs an owner"), lastOwner.stderr)
+        XCTAssertEqual(app.run(["members", "remove"] + base + ["--email", "cli@example.test"]).exitCode, 1)
+
+        let removed = app.run(["members", "remove"] + base + ["--email", "new@example.test", "--json"])
+        XCTAssertEqual(removed.exitCode, 0, removed.stdout + removed.stderr)
+        XCTAssertEqual(try object(removed)["removed"] as? Bool, true)
+        XCTAssertEqual(last().method, "DELETE"); XCTAssertTrue(last().path.hasPrefix(route + "/usr_"), last().path)
+        let sent = CLICloudStub.requests.count
+        let gone = app.run(["members", "remove"] + base + ["--email", "new@example.test", "--json"])
+        XCTAssertEqual(gone.exitCode, 17); XCTAssertEqual(try object(gone)["code"] as? String, "not_found")
+        XCTAssertEqual(CLICloudStub.requests.count, sent + 1, "only the list; nothing to delete")
+
+        // Not an owner or admin there: 12; a workspace the account isn't in: 14; an account not signed in here: 11.
+        let forbidden = app.run(["members", "list", "--cloud-account", fixture.account.id, "--workspace", CLICloudStub.forbiddenWorkspace, "--json"])
+        XCTAssertEqual(forbidden.exitCode, 12); XCTAssertEqual(try object(forbidden)["code"] as? String, "forbidden")
+        XCTAssertEqual(app.run(["members", "list", "--cloud-account", fixture.account.id, "--workspace", CLICloudStub.otherWorkspace]).exitCode, 14)
+        XCTAssertEqual(app.run(["members", "list", "--cloud-account", "6b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e", "--workspace", CLICloudStub.workspace]).exitCode, 11)
+
+        for usage in [["members"], ["members", "invite"] + base, ["members", "list", "--cloud-account", fixture.account.id],
+                      ["members", "list", "--workspace", CLICloudStub.workspace], ["members", "list"] + base + ["--email", "a@example.test"],
+                      ["members", "add"] + base, ["members", "add"] + base + ["--email", "no-at-sign"],
+                      ["members", "add"] + base + ["--email", "a@example.test", "--role", "boss"],
+                      ["members", "role"] + base + ["--email", "a@example.test"], ["members", "remove"] + base + ["--email", "a@example.test", "--role", "viewer"],
+                      ["members", "list", "--cloud-account", fixture.account.id, "--workspace", "ws_lower"], ["members", "list"] + base + ["extra"]] {
+            XCTAssertEqual(app.run(usage).exitCode, 2, usage.joined(separator: " "))
+        }
+        XCTAssertTrue(app.run(["help", "members"]).stdout.contains("paraair members add"))
+    }
+
     func testASecondDriveGetsAStateFolderOfItsOwnSharingTheSignIn() throws {
         let fixture = try cloudFixture(), fake = FakeSystem()
         let home = try temporaryDirectory()

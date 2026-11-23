@@ -222,6 +222,22 @@ paraair credentials revoke --cloud-account ID --workspace WS --id cred_… --jso
 
 Exit codes: 11 the account isn't signed in on this Mac, 12 not an owner or admin of the workspace, 14 the account isn't in that workspace, 17 the workspace has no credential with that id.
 
+### Team members
+
+Owners and admins of a ParaAir Cloud workspace add, re-role and remove its members with their own sign-in; the service's operator isn't involved. `WS` is a drive's `workspaceId` from `cloud-drives`. All take `--json`.
+
+```sh
+paraair members list --cloud-account ID --workspace WS --json
+paraair members add --cloud-account ID --workspace WS --email person@example.com --role member --json
+paraair members role --cloud-account ID --workspace WS --email person@example.com --role admin --json
+paraair members remove --cloud-account ID --workspace WS --email person@example.com --json
+```
+
+- `list` → `{workspace: {id, name, kind, plan, seats, seatsUsed}, members: [{userId, email, role, addedAt, status}]}`. `status` is `active` (signed in since being added), `invited` (not yet) or `disabled`.
+- `add` → `{member, added}`: the person is a member at once, as `member` unless `--role` says otherwise. An address without an account gets one and can then sign in with it. Nothing is emailed, so tell them. `added` is false when they already were a member with that role; with another role it exits 1 (use `role`). It also exits 1 when no seat is free.
+- `role` → `{member}`; `remove` → `{userId, email, removed}`. Both find the member by email and exit 17 (`not_found`) when there is none. A removed member loses access to the workspace's drives on their next request.
+- Only owners make owners. Admins can't change or remove an owner, and members and viewers can't manage members (exit 12). The last owner can't be demoted or removed (exit 1). A workspace the account isn't in exits 14.
+
 ## Storage, cache and write semantics
 
 ```mermaid

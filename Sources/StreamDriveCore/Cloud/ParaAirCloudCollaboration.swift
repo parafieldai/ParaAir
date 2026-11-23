@@ -237,3 +237,35 @@ extension ParaAirCloudIDs {
     /// A file version id, `pv:` and a positive integer below 2^53.
     static func isFileVersion(_ value: String) -> Bool { value.range(of: "^pv:[1-9][0-9]{0,15}$", options: .regularExpression) != nil }
 }
+
+/// A workspace role (cloud README, "Members"). Only owners make owners; owners and admins manage members.
+public enum ParaAirCloudMemberRole: String, Codable, CaseIterable, Sendable { case owner, admin, member, viewer }
+
+/// One member of a workspace (`GET /v1/workspaces/{ws}/members`). `status` is "active" (signed in since being added),
+/// "invited" (not yet) or "disabled" (by the operator).
+public struct ParaAirCloudWorkspaceMember: Codable, Equatable, Sendable {
+    public var userId: String
+    public var email: String
+    public var role: String
+    public var addedAt: String
+    public var status: String
+
+    var isValid: Bool {
+        ParaAirCloudIDs.isUserID(userId) && email.contains("@") && email.utf8.count <= 320 && ParaAirCloudMemberRole(rawValue: role) != nil
+            && ParaAirCloudJSON.parseDate(addedAt) != nil && !status.isEmpty && status.utf8.count <= 32
+    }
+}
+
+/// A workspace's members and the seats they use (owners and admins only).
+public struct ParaAirCloudMemberList: Codable, Equatable, Sendable {
+    public struct Workspace: Codable, Equatable, Sendable {
+        public var id: String
+        public var name: String
+        public var kind: String
+        public var plan: String
+        public var seats: Int
+        public var seatsUsed: Int
+    }
+    public var workspace: Workspace
+    public var members: [ParaAirCloudWorkspaceMember]
+}

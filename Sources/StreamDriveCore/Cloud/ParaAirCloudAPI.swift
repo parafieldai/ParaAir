@@ -678,3 +678,74 @@ extension ParaAirCloudAPI {
         }
     }
 }
+
+// MARK: Workspace members (cloud README, "Members"): owners and admins run their team with their own sign-in
+
+extension ParaAirCloudAPI {
+    /// `GET /v1/workspaces/{ws}/members`: the workspace's members and its seats.
+    public func members(workspaceID: String) throws -> ParaAirCloudMemberList {
+        try unwrap {
+            let call = Call(method: "GET", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/members", route: "GET /v1/workspaces/{ws}/members")
+            let list = try decode(ParaAirCloudMemberList.self, memberCall(call, busy: nil))
+            guard list.workspace.id == workspaceID, list.members.allSatisfy(\.isValid) else { throw malformed() }
+            return list
+        }
+    }
+
+    /// `POST /v1/workspaces/{ws}/members`: adds `email` with `role`. An address without an account gets one and can then
+    /// sign in; nothing is emailed. `added` is false when the address already was a member with that role (a retry).
+    public func addMember(workspaceID: String, email: String, role: ParaAirCloudMemberRole) throws -> (member: ParaAirCloudWorkspaceMember, added: Bool) {
+        struct Body: Decodable { var member: ParaAirCloudWorkspaceMember }
+        return try unwrap {
+            let call = Call(method: "POST", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/members", route: "POST /v1/workspaces/{ws}/members",
+                            body: try json(["email": email, "role": role.rawValue]))
+            let response = try memberCall(call, busy: "The workspace has no free seat. An owner can add seats to its plan")
+            let member = try decode(Body.self, response).member
+            guard member.isValid else { throw malformed() }
+            return (member, response.status == 201)
+        }
+    }
+
+    /// `PATCH /v1/workspaces/{ws}/members/{userId}`: changes a member's role.
+    public func setMemberRole(workspaceID: String, userID: String, role: ParaAirCloudMemberRole) throws -> ParaAirCloudWorkspaceMember {
+        struct Body: Decodable { var member: ParaAirCloudWorkspaceMember }
+        return try unwrap {
+            let call = Call(method: "PATCH", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/members/\(try checkedUser(userID))",
+                            route: "PATCH /v1/workspaces/{ws}/members/{userId}", body: try json(["role": role.rawValue]))
+            let member = try decode(Body.self, memberCall(call, busy: Self.lastOwner)).member
+            guard member.isValid, member.userId == userID else { throw malformed() }
+            return member
+        }
+    }
+
+    /// `DELETE /v1/workspaces/{ws}/members/{userId}`: removes a member; their access ends on their next request.
+    public func removeMember(workspaceID: String, userID: String) throws {
+        try unwrap {
+            let call = Call(method: "DELETE", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/members/\(try checkedUser(userID))",
+                            route: "DELETE /v1/workspaces/{ws}/members/{userId}")
+            _ = try memberCall(call, busy: Self.lastOwner)
+        }
+    }
+
+    private static let lastOwner = "A workspace needs an owner: make someone else an owner first"
+
+    /// `perform`, with member wording for the codes whose file wording would mislead here.
+    private func memberCall(_ call: Call, busy: String?) throws -> ParaAirCloudHTTP.Response {
+        do { return try perform(call) }
+        catch let error as ParaAirCloudCallError {
+            let text: String
+            switch error.code {
+            case .busy? where busy != nil: text = busy!
+            case .alreadyExists?: text = "That address is already a member with another role; change the role instead"
+            case .notFound?: text = "That person isn’t a member of the workspace"
+            default: throw error
+            }
+            throw ParaAirCloudCallError(drive: DriveError(error.drive.code, text, disposition: error.drive.disposition), code: error.code)
+        }
+    }
+
+    private func checkedUser(_ id: String) throws -> String {
+        guard ParaAirCloudIDs.isUserID(id) else { throw invalidRequest() }
+        return id
+    }
+}

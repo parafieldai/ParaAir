@@ -49,6 +49,7 @@ enum CLICommand: Equatable {
     case changes(target: CLITarget, follow: Bool, since: Int64?, intervalSeconds: Int?)
     case access(CLIAccessAction, target: CLITarget)
     case credentials(CLICredentialAction, account: String, workspace: String)
+    case members(CLIMembersAction, account: String, workspace: String)
 }
 
 /// A path in a drive: a profile and a drive path (`PROFILE /records/x.json`), or a path under a mounted ParaAir drive
@@ -70,6 +71,14 @@ enum CLICredentialAction: Equatable {
     case create(name: String)
     case list
     case revoke(id: String)
+}
+
+/// What `members` does with a workspace's members (owners and admins, with their own sign-in).
+enum CLIMembersAction: Equatable {
+    case list
+    case add(email: String, role: ParaAirCloudMemberRole)
+    case role(email: String, role: ParaAirCloudMemberRole)
+    case remove(email: String)
 }
 
 /// How `resolve` settles a change that needs a decision.
@@ -377,6 +386,37 @@ enum CLIParser {
                 action = .revoke(id: try credentialID(id, option: "--id"))
             }
             command = .credentials(action, account: account, workspace: workspace)
+        case "members":
+            let usageText = "Usage: paraair members list|add|role|remove --cloud-account ID --workspace WS [--email E] [--role owner|admin|member|viewer]"
+            guard let verb = commandArguments.first, ["list", "add", "role", "remove"].contains(verb) else { throw usage(usageText) }
+            let options = try parseOptions(Array(commandArguments.dropFirst()), valueNames: ["cloud-account", "workspace", "email", "role"])
+            try noExtraArguments(options.positionals, command: "members " + verb)
+            guard let account = options.values["cloud-account"], let workspace = options.values["workspace"] else { throw usage(usageText) }
+            guard UUID(uuidString: account) != nil, account == account.lowercased() else { throw usage("--cloud-account requires a lowercase identifier") }
+            guard workspace.range(of: "^ws_[0-9A-Z]{26}$", options: .regularExpression) != nil else {
+                throw usage("--workspace requires a workspace id such as ws_01J… (see cloud-drives)")
+            }
+            let email = try options.values["email"].map { value -> String in
+                guard value.contains("@"), value.utf8.count <= 320 else { throw usage("--email requires an email address") }
+                return value
+            }
+            let role = try options.values["role"].map { value -> ParaAirCloudMemberRole in
+                guard let role = ParaAirCloudMemberRole(rawValue: value) else { throw usage("--role is owner, admin, member or viewer") }
+                return role
+            }
+            let action: CLIMembersAction
+            switch (verb, email, role) {
+            case ("list", nil, nil): action = .list
+            case ("add", let email?, _): action = .add(email: email, role: role ?? .member)
+            case ("role", let email?, let role?): action = .role(email: email, role: role)
+            case ("remove", let email?, nil): action = .remove(email: email)
+            default:
+                throw usage(verb == "list" ? "Usage: paraair members list --cloud-account ID --workspace WS"
+                    : verb == "add" ? "Usage: paraair members add --cloud-account ID --workspace WS --email E [--role owner|admin|member|viewer]"
+                    : verb == "role" ? "Usage: paraair members role --cloud-account ID --workspace WS --email E --role owner|admin|member|viewer"
+                    : "Usage: paraair members remove --cloud-account ID --workspace WS --email E")
+            }
+            command = .members(action, account: account, workspace: workspace)
         case "uploads":
             let options = try parseOptions(commandArguments, switchNames: ["retry"])
             commandArguments = options.positionals

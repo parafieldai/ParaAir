@@ -147,6 +147,21 @@ enum CLIHelp {
             At most 20 active credentials per workspace. Exit 14 when the account isn't in the workspace, 17 when the
             workspace has no credential with that id.
             """ + "\n"
+        case "members":
+            return """
+            Usage: paraair members list --cloud-account ID --workspace WS [--json]
+                   paraair members add --cloud-account ID --workspace WS --email E [--role owner|admin|member|viewer] [--json]
+                   paraair members role --cloud-account ID --workspace WS --email E --role owner|admin|member|viewer [--json]
+                   paraair members remove --cloud-account ID --workspace WS --email E [--json]
+            A ParaAir Cloud workspace's members, for its owners and admins (exit 12 otherwise; 14 when the account
+            isn't in the workspace). WS is the workspaceId cloud-drives shows. list prints the seats used, then
+            user id, role, status and email per member; status is active (signed in since being added), invited
+            (not yet) or disabled. add makes a member right away (role member unless --role); an address without an
+            account gets one and can sign in with it. Nothing is emailed, so tell the person. A new member needs a
+            free seat. Only owners make owners; admins can't change or remove an owner, and the last owner can't be
+            demoted or removed. role and remove find the member by email (exit 17 when they aren't one). A removed
+            member loses access to the workspace's drives at once.
+            """ + "\n"
         case "conflicts", "resolve":
             return """
             Usage: paraair conflicts PROFILE [--json]
@@ -201,6 +216,8 @@ enum CLIHelp {
               access list|set|remove TARGET ...   A drive's folder rules (owners and admins)
               credentials create|list|revoke --cloud-account ID --workspace WS
                                                   A workspace's service credentials (owners and admins)
+              members list|add|role|remove --cloud-account ID --workspace WS ...
+                                                  A workspace's members (owners and admins)
               trash PROFILE                       List deleted ParaAir Cloud files that can be restored
               restore PROFILE NODE_ID [--to PATH] Restore a deleted ParaAir Cloud file
               stored-drives --connection ID       List drives backed up in a connection's bucket
@@ -221,9 +238,9 @@ enum CLIHelp {
             Exit codes: 0 success, 1 operation failed, 2 usage error, 3 uploads remain after retry, 10 the app isn't
             installed, 11 not signed in to ParaAir Cloud, 12 the account's role doesn't allow it, 13 the File System
             Extension isn't turned on, 14 no such ParaAir Cloud drive or workspace, 15 the path isn't on a mounted
-            ParaAir drive, 16 the file changed since the expected version, 17 no such file, version, conflict copy or
-            service credential. With --json an error prints {"error", "exitCode", "code"}; code is failed, usage,
-            app_not_installed, not_signed_in, forbidden, extension_disabled, drive_not_found, not_mounted,
+            ParaAir drive, 16 the file changed since the expected version, 17 no such file, version, conflict copy,
+            service credential or member. With --json an error prints {"error", "exitCode", "code"}; code is failed,
+            usage, app_not_installed, not_signed_in, forbidden, extension_disabled, drive_not_found, not_mounted,
             version_conflict or not_found.
             """ + "\n"
         }
