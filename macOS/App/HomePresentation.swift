@@ -13,6 +13,10 @@ struct HomeInputs: Equatable {
     var renewalError: String?
     var extensionState: FinderExtensionState = .unchecked
     var checkingExtension = false
+    /// The person came back from System Settings, or chose Check Again, and the extension is still off.
+    var extensionStillOff = false
+    /// Other copies of ParaAir on this Mac that LaunchServices knows about (OtherAppCopies.present).
+    var otherCopies: [String] = []
     var mounted = false
     var mounting = false
     var creatingDrive = false
@@ -68,6 +72,8 @@ struct HomePresentation: Equatable {
         case reviewChanges
         /// Opens the ParaAir Cloud plan sheet (a workspace with no storage yet).
         case choosePlan
+        /// Shows the other copies of ParaAir in Finder, so the person can keep only the installed one.
+        case showOtherCopies
     }
     enum StepState: Equatable { case done, current, upcoming }
 
@@ -107,14 +113,25 @@ struct HomePresentation: Equatable {
     static func make(_ input: HomeInputs) -> HomePresentation {
         let drive = input.driveName ?? "your drive"
         let storageOK = input.hasDrive && input.credentialCheckFinished && input.connectionIssue == nil
+        // Known to be off: FSKit answered and ParaAir isn't on. Turning it on comes first in setup, because nothing
+        // else depends on it and it is the one step that happens outside ParaAir.
+        let extensionOff = input.extensionState != .enabled && input.extensionState != .unchecked
         var result: HomePresentation
 
-        if !input.hasDrive {
-            if input.creatingDrive {
-                result = .init(status: .init(title: "Creating your drive…",
-                                             detail: "ParaAir is preparing the drive on this Mac.", tone: .working),
-                               primary: .init(action: .createDrive, title: "Creating…", enabled: false, busy: true))
-            } else if let connection = input.readyConnectionName {
+        if !input.mounted && !input.mounting && input.creatingDrive {
+            result = .init(status: .init(title: "Creating your drive…",
+                                         detail: "ParaAir is preparing the drive on this Mac.", tone: .working),
+                           primary: .init(action: .createDrive, title: "Creating…", enabled: false, busy: true))
+        } else if !input.mounted && !input.mounting && input.checkingExtension && input.extensionState == .unchecked {
+            result = .init(status: .init(title: "Checking System Settings…",
+                                         detail: "Looking for ParaAir’s file system extension.", tone: .working),
+                           primary: .init(action: .openSystemSettings, title: "Open System Settings", enabled: false, busy: true))
+        } else if !input.mounted && !input.mounting && extensionOff {
+            result = .init(status: extensionStatus(input.extensionState, stillOff: input.extensionStillOff),
+                           primary: .init(action: .openSystemSettings, title: "Open System Settings"),
+                           offersCheckAgain: true)
+        } else if !input.hasDrive {
+            if let connection = input.readyConnectionName {
                 result = .init(status: .init(title: "Storage added",
                                              detail: "\(connection) is ready. Create a drive to see it in Finder.", tone: .neutral),
                                primary: .init(action: .createDrive, title: "Create Drive…"))
@@ -171,12 +188,12 @@ struct HomePresentation: Equatable {
         } else if let issue = input.connectionIssue {
             result = .init(status: .init(title: "Storage access needed", detail: issue, tone: .problem),
                            primary: .init(action: .signInAgain, title: "Sign In Again…"))
-        } else if input.checkingExtension {
+        } else if input.checkingExtension && input.extensionState != .enabled {
             result = .init(status: .init(title: "Checking System Settings…",
                                          detail: "Looking for ParaAir’s file system extension.", tone: .working),
                            primary: .init(action: .openSystemSettings, title: "Open System Settings", enabled: false, busy: true))
         } else if input.extensionState != .enabled {
-            result = .init(status: extensionStatus(input.extensionState),
+            result = .init(status: extensionStatus(input.extensionState, stillOff: false),
                            primary: .init(action: .openSystemSettings, title: "Open System Settings"),
                            offersCheckAgain: true)
         } else {
@@ -188,22 +205,24 @@ struct HomePresentation: Equatable {
         if !input.mounted {
             let storageDone = storageOK || (!input.hasDrive && input.readyConnectionName != nil)
             let enabled = input.extensionState == .enabled
+            // One action per step, in the order setup happens: the switch in System Settings, storage, the drive, Finder.
             result.steps = [
-                .init(id: 1, title: "Add your storage",
+                .init(id: 1, title: "Turn on ParaAir in System Settings",
+                      detail: "General → Login Items & Extensions → By Category → File System Extensions.",
+                      state: enabled ? .done : .current),
+                .init(id: 2, title: "Add your storage",
                       detail: input.hasDrive && input.credentialCheckFinished && input.connectionIssue != nil
                           ? "Sign in again in Storage Settings." : "ParaAir Cloud, Cloudflare R2 or another S3-compatible bucket.",
-                      state: storageDone ? .done : (input.hasDrive && !input.credentialCheckFinished ? .upcoming : .current)),
-                .init(id: 2, title: "Create your drive", detail: "Name it however you like.",
-                      state: input.hasDrive ? .done : (storageDone ? .current : .upcoming)),
-                .init(id: 3, title: "Turn on ParaAir in System Settings",
-                      detail: "General → Login Items & Extensions → By Category → File System Extensions.",
-                      state: enabled ? .done : (storageOK ? .current : .upcoming)),
+                      state: storageDone ? .done : (enabled && !(input.hasDrive && !input.credentialCheckFinished) ? .current : .upcoming)),
+                .init(id: 3, title: "Create your drive", detail: "Name it however you like.",
+                      state: input.hasDrive ? .done : (enabled && storageDone ? .current : .upcoming)),
                 .init(id: 4, title: "Open it in Finder", detail: "It appears under Locations, like any drive.",
-                      state: input.mounted ? .done : (storageOK && enabled ? .current : .upcoming)),
+                      state: enabled && storageOK ? .current : .upcoming),
             ]
         }
 
         if let error = input.error { result.notices.append(.init(id: "error", text: error, tone: .problem)) }
+        if let copies = otherCopiesNotice(input.otherCopies) { result.notices.append(copies) }
         if let message = input.mountMessage { result.notices.append(.init(id: "mount", text: message, tone: .attention)) }
         if let notice = input.folderNotice { result.notices.append(.init(id: "folder", text: notice, tone: .attention)) }
         if let renewal = input.renewalError, input.connectionIssue == nil {
@@ -225,6 +244,16 @@ struct HomePresentation: Equatable {
             result.notices.append(.init(id: "index-backup", text: problem, tone: .attention))
         }
         return result
+    }
+
+    /// Another registered copy can make macOS use its extension instead of this one's.
+    private static func otherCopiesNotice(_ copies: [String]) -> Notice? {
+        guard let first = copies.first else { return nil }
+        let folder = ((first as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath
+        let text = copies.count == 1
+            ? "Another copy of ParaAir is in \(folder). Keep only the one in Applications so macOS turns on the right one."
+            : "\(copies.count) other copies of ParaAir are on this Mac. Keep only the one in Applications so macOS turns on the right one."
+        return .init(id: "other-copies", text: text, tone: .attention, action: .showOtherCopies, actionTitle: "Show in Finder")
     }
 
     /// Problems first. Quota and sign-in wording is specific to ParaAir Cloud. Files waiting
@@ -264,21 +293,28 @@ struct HomePresentation: Equatable {
         return notices
     }
 
-    private static func extensionStatus(_ state: FinderExtensionState) -> Status {
+    /// `stillOff`: the person went to System Settings from here and came back with the switch off. The usual cause on
+    /// macOS 27.2 is the switch in ParaAir's ⓘ sheet, which flips back (ExtensionSetupGuidance).
+    private static func extensionStatus(_ state: FinderExtensionState, stillOff: Bool) -> Status {
         switch state {
+        case .disabled where stillOff:
+            return .init(title: "That switch didn’t save",
+                         detail: "Use the File System Extensions list under By Category. The switch in ParaAir’s ⓘ sheet "
+                             + "turns itself off. Still off there too? Quit and reopen ParaAir, then try again.",
+                         tone: .attention)
         case .disabled:
             return .init(title: "Turn on ParaAir in System Settings",
-                         detail: "macOS asks once. Switch on ParaAir in the File System Extensions list, then come back here. "
-                             + "The switch in ParaAir’s own extension sheet doesn’t stay on.",
+                         detail: "Choose By Category, then File System Extensions, and switch on ParaAir in that list. "
+                             + ExtensionSetupGuidance.sheetWarning,
                          tone: .attention)
         case .notDiscovered:
             return .init(title: "macOS hasn’t listed ParaAir yet",
-                         detail: "Open File System Extensions in System Settings (Login Items & Extensions, By Category). "
-                             + "If ParaAir is missing, reinstall the app and check again.",
+                         detail: "Quit and reopen ParaAir. If it’s still missing from File System Extensions, "
+                             + "reinstall ParaAir from its disk image.",
                          tone: .attention)
         case .ambiguous:
             return .init(title: "Another copy of ParaAir is installed",
-                         detail: "Keep only one copy of ParaAir on this Mac, then check again.", tone: .attention)
+                         detail: "macOS sees more than one ParaAir. Keep only the one in Applications, then check again.", tone: .attention)
         case .failed:
             return .init(title: "System Settings didn’t answer",
                          detail: "macOS didn’t report the extension’s status. Check again in a moment.", tone: .attention)

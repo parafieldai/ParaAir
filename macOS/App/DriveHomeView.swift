@@ -48,6 +48,8 @@ extension MenuModel {
             renewalError: renewalError,
             extensionState: extensionState,
             checkingExtension: checkingExtension,
+            extensionStillOff: extensionStillOff,
+            otherCopies: otherAppCopies,
             mounted: profile.map(isMounted) ?? false,
             mounting: mounting,
             creatingDrive: creatingDrive,
@@ -99,9 +101,15 @@ extension MenuModel {
                 case .choosePlan:
                     show("storage-settings")
                     self.cloudAccount.perform(.choosePlan)
+                case .showOtherCopies: self.showOtherCopies()
                 }
             },
-            checkAgain: { [weak self] in if let profile { self?.continueSetup(profile) } },
+            // Check Again asks FSKit again; with a drive it also resumes mounting once every gate is open.
+            checkAgain: { [weak self] in
+                guard let self else { return }
+                if let profile { self.continueSetup(profile) }
+                if self.extensionState != .enabled { Task { await self.checkExtensionAgain() } }
+            },
             showHome: { show("connections") },
             openStorageSettings: { show("storage-settings") },
             editAppearance: { [weak self] in

@@ -150,6 +150,8 @@ enum CLIHelp {
 
               connections                         List public saved connection references
               setup-status                        App, File System Extension, accounts and drives, for setup by another app
+              extension-settings [--wait SECONDS] Open System Settings at File System Extensions (By Category); --wait
+                                                  until ParaAir is switched on there
               cloud-sign-in [--wait SECONDS]      Open ParaAir's ParaAir Cloud sign-in; --wait until an account is signed in
               cloud-accounts                      List ParaAir Cloud accounts signed in with the app
               cloud-drives --cloud-account ID     List the account's ParaAir Cloud drives (id, workspace, name, role)

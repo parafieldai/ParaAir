@@ -449,6 +449,8 @@ final class CLIApplicationTests: XCTestCase {
 private final class FakeSystem {
     var installed = true, running = false, extensionState = "enabled"
     var folders: [String] = []
+    var otherCopies: [String] = []
+    var settingsOpened = 0
     var opened: [URL] = []
     var mounted: [MountedVolume] = []
     var sleeps = 0
@@ -459,6 +461,8 @@ private final class FakeSystem {
                   isRunning: { [unowned self] _ in running },
                   extensionState: { [unowned self] _, _ in extensionState },
                   appStateFolders: { [unowned self] _ in folders },
+                  otherAppCopies: { [unowned self] _, _ in otherCopies },
+                  openExtensionSettings: { [unowned self] in settingsOpened += 1 },
                   openURL: { [unowned self] _, url in opened.append(url); onOpen?(url) },
                   mountedVolumes: { [unowned self] in mounted },
                   sleep: { [unowned self] _ in sleeps += 1; onSleep?(sleeps) })
@@ -619,6 +623,56 @@ extension CLIApplicationTests {
         XCTAssertEqual(app.run(["mount", "fixture"]).exitCode, 13)
         fake.installed = false
         XCTAssertEqual(app.run(["mount", "fixture"]).exitCode, 10)
+    }
+
+    func testExtensionSettingsOpensTheListThatWorksAndWaitsForTheSwitch() throws {
+        let root = try temporaryDirectory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let fake = FakeSystem()
+        addTeardownBlock { _ = fake }
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": root.path], system: fake.system)
+        // Already on: nothing opens.
+        let on = app.run(["extension-settings", "--json"])
+        XCTAssertEqual(on.exitCode, 0, on.stderr); XCTAssertEqual(try object(on)["state"] as? String, "enabled")
+        XCTAssertEqual(try object(on)["opened"] as? Bool, false); XCTAssertEqual(fake.settingsOpened, 0)
+        // Off: opens System Settings once and names the list, not the ⓘ sheet.
+        fake.extensionState = "disabled"
+        let opened = app.run(["extension-settings"])
+        XCTAssertEqual(opened.exitCode, 0); XCTAssertEqual(fake.settingsOpened, 1)
+        XCTAssertTrue(opened.stdout.contains("By Category → File System Extensions") && opened.stdout.contains("ⓘ sheet"), opened.stdout)
+        // --wait returns once the person switches it on.
+        fake.onSleep = { count in if count == 3 { fake.extensionState = "enabled" } }
+        let waited = app.run(["extension-settings", "--wait", "30", "--json"])
+        XCTAssertEqual(waited.exitCode, 0, waited.stderr); XCTAssertEqual(try object(waited)["state"] as? String, "enabled")
+        XCTAssertEqual(try object(waited)["opened"] as? Bool, true); XCTAssertEqual(fake.sleeps, 3)
+        // A switch that never stays on times out with the extension_disabled outcome and the guidance.
+        fake.extensionState = "disabled"; fake.onSleep = nil; fake.sleeps = 0
+        let timedOut = app.run(["extension-settings", "--wait", "2", "--json"])
+        XCTAssertEqual(timedOut.exitCode, 13); XCTAssertEqual(try object(timedOut)["code"] as? String, "extension_disabled")
+        XCTAssertTrue((try object(timedOut)["error"] as? String)?.contains("By Category") == true)
+        XCTAssertEqual(app.run(["extension-settings", "extra"]).exitCode, 2)
+        fake.installed = false
+        XCTAssertEqual(app.run(["extension-settings"]).exitCode, 10)
+    }
+
+    func testSetupStatusNamesOtherCopiesAndTheSwitchToUse() throws {
+        let root = try temporaryDirectory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let fake = FakeSystem()
+        addTeardownBlock { _ = fake }
+        fake.extensionState = "disabled"
+        fake.otherCopies = ["/Users/maya/Downloads/ParaAir.app"]
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": root.path], system: fake.system)
+        let json = try object(app.run(["setup-status", "--json"]))
+        let ext = try XCTUnwrap(json["extension"] as? [String: Any])
+        XCTAssertEqual(ext["state"] as? String, "disabled")
+        XCTAssertEqual(ext["otherCopies"] as? [String], ["/Users/maya/Downloads/ParaAir.app"])
+        let text = app.run(["setup-status"]).stdout
+        XCTAssertTrue(text.contains(ExtensionSetupGuidance.turnOn) && text.contains("Other copy of ParaAir"), text)
+        fake.extensionState = "enabled"; fake.otherCopies = []
+        let clean = try object(app.run(["setup-status", "--json"]))
+        XCTAssertEqual((clean["extension"] as? [String: Any])?["otherCopies"] as? [String], [])
+        XCTAssertFalse(app.run(["setup-status"]).stdout.contains("By Category"))
     }
 
     func testJSONErrorsCarryAStableCode() throws {

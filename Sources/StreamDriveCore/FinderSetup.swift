@@ -23,6 +23,39 @@ public enum FinderExtensionState: Equatable, Sendable {
     }
 }
 
+/// Where the File System Extension switch that works lives, in the words the app, the CLI and integrators share.
+/// On macOS 27.2 only the File System Extensions list (By Category) writes FSKit's enabled list
+/// (`group.com.apple.fskit.settings/enabledModules.plist`). The switch in the app's own ⓘ sheet records an election
+/// and flips back (docs/ci-cd.md, "Where FSKit enablement lives").
+public enum ExtensionSetupGuidance {
+    public static let location = "System Settings → General → Login Items & Extensions → By Category → File System Extensions"
+    public static let sheetWarning = "The switch in ParaAir’s own ⓘ sheet doesn’t stay on."
+    /// The one-line instruction for a disabled extension.
+    public static let turnOn = "Turn on ParaAir in \(location). \(sheetWarning)"
+}
+
+/// The other copies of the app that LaunchServices knows about. A record whose app is gone is stale and can be
+/// forgotten; a copy that still exists can make macOS pick the wrong file system extension, so the person decides.
+public struct OtherAppCopies: Equatable, Sendable {
+    public var present: [String]
+    public var missing: [String]
+
+    public init(present: [String] = [], missing: [String] = []) { self.present = present; self.missing = missing }
+
+    public var isEmpty: Bool { present.isEmpty && missing.isEmpty }
+
+    /// `registered` and `current` are app bundle paths; trailing slashes and `.`/`..` are ignored, duplicates folded.
+    public static func sort(registered: [String], current: String, exists: (String) -> Bool) -> OtherAppCopies {
+        func normal(_ path: String) -> String { URL(fileURLWithPath: path).standardizedFileURL.path }
+        let own = normal(current)
+        var seen: Set<String> = [own], result = OtherAppCopies()
+        for path in registered.map(normal) where seen.insert(path).inserted {
+            if exists(path) { result.present.append(path) } else { result.missing.append(path) }
+        }
+        return result
+    }
+}
+
 /// Every gate an automatic mount waits on, so the take decision and its log
 /// line read one value. `description` carries no paths or identifiers.
 public struct AutoMountReadiness: Equatable, Sendable, CustomStringConvertible {

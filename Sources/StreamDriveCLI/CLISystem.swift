@@ -57,6 +57,10 @@ struct CLISystem {
     var extensionState: (_ appPath: String, _ bundleID: String?) -> String
     /// State folders the app remembers (its `selectedStateRoot` and `knownStateRoots` settings).
     var appStateFolders: (_ bundleID: String) -> [String]
+    /// Other copies of the app LaunchServices has registered that still exist (OtherAppCopies.present).
+    var otherAppCopies: (_ appPath: String, _ bundleID: String?) -> [String] = { _, _ in [] }
+    /// Opens System Settings at the File System Extensions list (ExtensionSetupGuidance.location).
+    var openExtensionSettings: () throws -> Void = {}
     var openURL: (_ appPath: String, _ url: URL) throws -> Void
     var mountedVolumes: () -> [MountedVolume]
     var sleep: (_ seconds: TimeInterval) -> Void
@@ -83,6 +87,20 @@ struct CLISystem {
         appStateFolders: { bundleID in
             guard let defaults = UserDefaults(suiteName: bundleID) else { return [] }
             return [defaults.string(forKey: "selectedStateRoot")].compactMap { $0 } + (defaults.stringArray(forKey: "knownStateRoots") ?? [])
+        },
+        otherAppCopies: { appPath, bundleID in
+            guard let bundleID else { return [] }
+            let registered = NSWorkspace.shared.urlsForApplications(withBundleIdentifier: bundleID).map(\.path)
+            return OtherAppCopies.sort(registered: registered, current: appPath, exists: { FileManager.default.fileExists(atPath: $0) }).present
+        },
+        openExtensionSettings: {
+            #if canImport(FSKit)
+            if #available(macOS 27.0, *), FSClient.shared.openFileSystemExtensionsSettings() { return }
+            #endif
+            let output = try SystemCommands.run(executable: "/usr/bin/open", arguments: ["x-apple.systempreferences:com.apple.LoginItems-Settings.extension"])
+            guard output.exitCode == 0 else {
+                throw DriveError(EIO, "macOS couldn’t open System Settings (exit \(output.exitCode)). Open \(ExtensionSetupGuidance.location) yourself")
+            }
         },
         openURL: { appPath, url in
             let output = try SystemCommands.run(executable: "/usr/bin/open", arguments: ["-a", appPath, url.absoluteString])

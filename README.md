@@ -1,6 +1,6 @@
 # ParaAir
 
-Last updated: 2026-10-18
+Last updated: 2026-11-24
 
 A development implementation of a CLI-first streaming drive for macOS 26+, with cloud object storage as the primary deployment and self-hosted NAS storage as an optional backend. A Swift FSKit extension presents the filesystem to Finder. A pinned JuiceFS engine supplies managed metadata and object storage. Reads fetch touched blocks, writes first enter a durable local journal, and explicit pinning downloads offline content.
 
@@ -34,7 +34,16 @@ The product uses Glide, confirmed by the user on October 9: an abstract flight m
 
 **Drive appearance…** changes the visible Finder name and chooses a local custom PNG/JPEG/HEIC/TIFF image, or restores the default polygon product icon. Names with spaces and Unicode are supported; the stable profile/storage identity is retained. The new name appears in the sidebar immediately and becomes the volume name on the next mount. The signed build's name change was verified in Finder and restored to ParaAir. The default/custom icon is visible in ParaAir, but Finder currently keeps its generic document sidebar icon on this mount; supplying an IconRef through the deprecated Favorites API did not change it. Custom image files are resized to 256 pixels and saved in local state, with no icon upload to the bucket.
 
-Open ParaAir, enable its file system extension in **System Settings → General → Login Items & Extensions → By Category → File System Extensions**, then connect storage and choose **Create drive**. The app includes the mount helper and attempts to mount the new drive. **Mount when ParaAir opens**, enabled by default, controls mounting the saved drive on later app launches. macOS requires the extension approval; creating a connection does not bypass it.
+Open ParaAir and follow its four setup steps, one action each: turn ParaAir on in System Settings, add storage, create the drive, open it in Finder.
+
+- **Turning ParaAir on comes first.** It's the only step outside ParaAir, and nothing else depends on it.
+  - **Open System Settings** opens **General → Login Items & Extensions → By Category → File System Extensions**; switch on ParaAir in that list.
+  - The switch in ParaAir's own ⓘ sheet records a choice but never turns the extension on (macOS 27.2, see `docs/ci-cd.md`), so both the app and the CLI warn against it.
+  - After opening System Settings, ParaAir checks every 2 seconds for 5 minutes and moves to the next step by itself.
+  - If the person comes back with the switch still off, or chooses **Check Again** while it is still off, it says **That switch didn’t save** and points at the By Category list.
+- **Other copies.** ParaAir forgets LaunchServices records of copies that no longer exist. Copies that still exist (a download or a backup) are listed with **Show in Finder**, because macOS can turn on the wrong copy's extension.
+- **Mounting.** The app includes the mount helper and attempts to mount the new drive. **Mount when ParaAir opens**, enabled by default, controls mounting the saved drive on later app launches. macOS requires the extension approval; creating a connection does not bypass it.
+- **For other apps.** `paraair setup-status` reports the same states, plus `extension.otherCopies`. `paraair extension-settings [--wait SECONDS]` opens the same list and can wait until ParaAir is switched on; it exits 13 `extension_disabled` if the wait runs out.
 
 **Install defaults.** Opened from the disk image or a quarantined download (which macOS runs from a translocated read-only path), ParaAir copies itself to `/Applications/ParaAir.app`, or `~/Applications` when `/Applications` isn't writable, clears the download quarantine on the copy, opens the copy and quits. This runs before renewal or the extension check. A newer copy, or the same version already open, at the destination is opened instead; an older copy goes to the Trash. When that older copy is open, ParaAir asks "ParaAir <old> is open. Quit it and install <new>?" (**Install** or **Not Now**), asks it to quit and waits up to 10 seconds, never forcing it; a copy that stays open is left alone with instructions to quit it from its menu. Any other location, including developer builds under `.build`, never moves; a failed move shows an alert with **Show in Finder**. The first launch from an Applications folder registers ParaAir once as a login item (`SMAppService.mainApp`, recorded as `loginItemDefaultApplied`). **Open ParaAir at login**, beside **Connect the drive when ParaAir opens**, shows the live status, and turning it off is never undone. Decisions log to `subsystem == "dev.streamdrive.app" AND category == "install"`. Unit tests and offscreen snapshots cover the decisions and toggle; the real move and registration still need a signed DMG run.
 

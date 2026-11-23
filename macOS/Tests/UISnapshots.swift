@@ -80,7 +80,10 @@ struct UISnapshots {
         drive.mountPath = "/Volumes/Client Footage"
 
         var firstRun = base; firstRun.extensionState = .unchecked
-        var ready = base; ready.readyConnectionName = "Cloudflare R2"; ready.extensionState = .disabled
+        var ready = base; ready.readyConnectionName = "Cloudflare R2"
+        var turnOnFirst = base; turnOnFirst.extensionState = .disabled
+        var stillOff = turnOnFirst; stillOff.extensionStillOff = true
+        stillOff.otherCopies = ["/Users/maya/Downloads/ParaAir.app"]
         var turnOn = drive; turnOn.extensionState = .disabled
         var checking = drive; checking.credentialCheckFinished = false
         var connected = drive; connected.mounted = true
@@ -162,7 +165,8 @@ struct UISnapshots {
                 ("15-cloud-read-only", readOnly), ("16-cloud-pending-deletion", pendingDeletion),
                 ("17-owned-elsewhere", ownedElsewhere), ("18-index-backup-failing", backupFailing),
                 ("19-uploads-failing", uploadsFailing), ("20-conflicts", conflicts), ("21-cloud-read-only-changes", refusedByPlan),
-                ("22-cloud-no-storage", noStorage), ("23-cloud-trial", trial)]
+                ("22-cloud-no-storage", noStorage), ("23-cloud-trial", trial), ("24-turn-on-first", turnOnFirst),
+                ("25-still-off", stillOff)]
     }()
 
     static let fixtureNow = Date(timeIntervalSince1970: 2_000_000_000)
@@ -1026,10 +1030,35 @@ struct UISnapshots {
         expect(first.steps.first?.state == .current, "first run starts at step 1")
         let ready = HomePresentation.make(scenarios["2-storage-ready"]!)
         expect(ready.primary.action == .createDrive, "saved storage without a drive offers Create Drive")
-        expect(ready.steps.map(\.state) == [.done, .current, .upcoming, .upcoming], "ready storage marks step 2 current")
+        expect(ready.steps.map(\.state) == [.done, .done, .current, .upcoming], "ready storage marks the drive step current")
         let turnOn = HomePresentation.make(scenarios["3-turn-on"]!)
         expect(turnOn.primary.action == .openSystemSettings && turnOn.offersCheckAgain, "disabled extension opens System Settings")
-        expect(turnOn.steps.map(\.state) == [.done, .done, .current, .upcoming], "extension step is current")
+        expect(turnOn.steps.map(\.state) == [.current, .done, .done, .upcoming], "extension step is current")
+        let turnOnFirst = HomePresentation.make(scenarios["24-turn-on-first"]!)
+        expect(turnOnFirst.primary.action == .openSystemSettings && turnOnFirst.offersCheckAgain,
+               "a new Mac turns ParaAir on before anything else")
+        expect(turnOnFirst.steps.map(\.state) == [.current, .upcoming, .upcoming, .upcoming], "setup starts with the switch")
+        expect(turnOnFirst.status.detail.contains("By Category") && turnOnFirst.status.detail.contains("ⓘ sheet doesn’t stay on"),
+               "the switch step names the list that works and warns about the sheet")
+        var storageWithSwitchOff = scenarios["2-storage-ready"]!; storageWithSwitchOff.extensionState = .disabled
+        expect(HomePresentation.make(storageWithSwitchOff).primary.action == .openSystemSettings,
+               "saved storage still waits for the switch first")
+        var firstCheck = scenarios["1-first-run"]!; firstCheck.checkingExtension = true
+        let checkingFirst = HomePresentation.make(firstCheck)
+        expect(checkingFirst.primary.busy && !checkingFirst.primary.enabled, "the first extension check shows as checking, not as storage setup")
+        var recheck = scenarios["24-turn-on-first"]!; recheck.checkingExtension = true
+        expect(HomePresentation.make(recheck).status.title == turnOnFirst.status.title,
+               "re-checking a switch that's off doesn't flicker to a checking state")
+        let stillOff = HomePresentation.make(scenarios["25-still-off"]!)
+        expect(stillOff.status.title == "That switch didn’t save" && stillOff.status.detail.contains("By Category")
+               && stillOff.status.detail.contains("ⓘ sheet")
+               && stillOff.status.detail.contains("Quit and reopen ParaAir"), "coming back with the switch off explains the usual cause")
+        expect(stillOff.notices.contains { $0.id == "other-copies" && $0.action == .showOtherCopies && $0.actionTitle == "Show in Finder"
+                                           && ($0.text.contains("~/Downloads") || $0.text.contains("/Users/maya/Downloads")) },
+               "another copy of ParaAir is named with a way to find it")
+        var mountedWithCopy = scenarios["5-connected"]!; mountedWithCopy.otherCopies = ["/a/ParaAir.app", "/b/ParaAir.app"]
+        expect(HomePresentation.make(mountedWithCopy).notices.contains { $0.id == "other-copies" && $0.text.hasPrefix("2 other copies") },
+               "several other copies are counted")
         let checking = HomePresentation.make(scenarios["4-checking"]!)
         expect(!checking.primary.enabled && checking.primary.busy, "checking storage disables the action")
         let connected = HomePresentation.make(scenarios["5-connected"]!)
@@ -1041,7 +1070,7 @@ struct UISnapshots {
         expect(mountedIssue.status.tone == .attention, "mounted drive with expired access is not shown as healthy")
         let issue = HomePresentation.make(scenarios["7-sign-in-needed"]!)
         expect(issue.primary.action == .signInAgain && issue.status.tone == .problem, "unmounted drive with expired access")
-        expect(issue.steps.first?.state == .current, "expired access returns to step 1")
+        expect(issue.steps.map(\.state) == [.done, .current, .done, .upcoming], "expired access returns to the storage step")
         let connecting = HomePresentation.make(scenarios["8-connecting"]!)
         expect(connecting.primary.busy && connecting.notices.contains { $0.id == "mount" }, "connecting shows progress and message")
         var renewal = scenarios["5-connected"]!
@@ -1068,7 +1097,8 @@ struct UISnapshots {
         expect(first.status.detail == "Sign in to ParaAir Cloud or connect your own storage bucket. ParaAir sets up the drive, its cache and Finder.",
                "first run offers ParaAir Cloud or your own bucket")
         expect(first.primary.title == "Set Up Storage…", "first run button is Set Up Storage…")
-        expect(first.steps.first?.detail == "ParaAir Cloud, Cloudflare R2 or another S3-compatible bucket.", "step 1 names ParaAir Cloud")
+        expect(first.steps.first { $0.title == "Add your storage" }?.detail == "ParaAir Cloud, Cloudflare R2 or another S3-compatible bucket.",
+               "the storage step names ParaAir Cloud")
 
         let ready = HomePresentation.make(scenarios["9-cloud-ready"]!)
         expect(ready.primary.action == .openInFinder && ready.status.tone == .good, "a mounted cloud drive is connected")

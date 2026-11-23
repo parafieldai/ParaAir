@@ -89,6 +89,27 @@ final class CLIApplication {
         case .setupStatus:
             let value = setupStatus(explicit: invocation.stateDirectory)
             return try render(value, invocation: invocation, text: setupStatusText(value))
+        case .extensionSettings(let wait):
+            let app = try installedApp()
+            let enabled = ExtensionSettingsResult(state: "enabled", opened: false)
+            if system.extensionState(app.path, app.bundleID) == "enabled" {
+                return try render(enabled, invocation: invocation, text: "ParaAir’s File System Extension is on.\n")
+            }
+            try system.openExtensionSettings()
+            guard let wait else {
+                let state = system.extensionState(app.path, app.bundleID)
+                return try render(ExtensionSettingsResult(state: state, opened: true), invocation: invocation,
+                                  text: "Opened System Settings. \(ExtensionSetupGuidance.turnOn)\n")
+            }
+            for _ in 0..<wait {
+                system.sleep(1)
+                if system.extensionState(app.path, app.bundleID) == "enabled" {
+                    return try render(ExtensionSettingsResult(state: "enabled", opened: true), invocation: invocation,
+                                      text: "ParaAir’s File System Extension is on.\n")
+                }
+            }
+            throw CLIOutcomeError(outcome: .extensionDisabled,
+                                  message: "ParaAir wasn’t turned on within \(wait) seconds. \(ExtensionSetupGuidance.turnOn)")
         case .trash(let name):
             let profile = try cloudProfile(name, store: store)
             let api = try cloudAPI(profile, root: stateRoot)
@@ -504,12 +525,15 @@ final class CLIApplication {
                                            knownToApp: appFolders.contains(root.standardizedFileURL.path))
             }
         }
-        return SetupStatus(app: app, extension: .init(state: state), accounts: accountItems(roots), profiles: profiles)
+        let others = info == nil ? [] : system.otherAppCopies(appPath, info?.bundleID)
+        return SetupStatus(app: app, extension: .init(state: state, otherCopies: others), accounts: accountItems(roots), profiles: profiles)
     }
 
     private func setupStatusText(_ value: SetupStatus) -> String {
         var lines = ["App: " + (value.app.installed ? "installed\(value.app.version.map { " " + $0 } ?? "")\(value.app.running ? ", running" : ", not running")" : "not installed"),
                      "File System Extension: \(value.extension.state)"]
+        if value.app.installed, value.extension.state != "enabled" { lines.append("  " + ExtensionSetupGuidance.turnOn) }
+        lines += value.extension.otherCopies.map { "Other copy of ParaAir: \(displayName($0)) (keep only the one in Applications)" }
         lines += value.accounts.map { "Account: \(displayName($0.email)) (\($0.state)) \($0.id)" }
         lines += value.profiles.map { "Drive: \($0.profile) \($0.mounted ? "mounted at " + displayName($0.mountPoint ?? "") : "not mounted")\($0.healthy ? ", healthy" : "")" }
         return lines.joined(separator: "\n") + "\n"
@@ -526,7 +550,7 @@ final class CLIApplication {
         let state = system.extensionState(app.path, app.bundleID)
         guard state != "disabled", state != "notDiscovered" else {
             throw CLIOutcomeError(outcome: .extensionDisabled,
-                                  message: "Turn on ParaAir in System Settings → General → Login Items & Extensions → File System Extensions")
+                                  message: ExtensionSetupGuidance.turnOn)
         }
         guard !system.mountedVolumes().contains(where: { $0.mountPoint == point }) else {
             throw DriveError(EBUSY, "Another volume is already mounted at \(point)")
@@ -546,7 +570,7 @@ final class CLIApplication {
         }
         guard isUp() else {
             if system.extensionState(app.path, app.bundleID) == "disabled" {
-                throw CLIOutcomeError(outcome: .extensionDisabled, message: "Turn on ParaAir in System Settings → General → Login Items & Extensions → File System Extensions")
+                throw CLIOutcomeError(outcome: .extensionDisabled, message: ExtensionSetupGuidance.turnOn)
             }
             throw DriveError(ETIMEDOUT, "ParaAir didn’t finish mounting '\(profile.name)' within \(waitSeconds) seconds. Open ParaAir to see why")
         }
@@ -813,7 +837,9 @@ private struct CloudDriveItem: Encodable { var id: String; var workspaceId: Stri
 /// `setup-status --json`: everything another app needs to walk a person through ParaAir setup. Read locally, no network.
 struct SetupStatus: Encodable {
     struct App: Encodable { var installed: Bool; var path: String?; var running: Bool; var version: String?; var build: String? }
-    struct Extension: Encodable { var state: String }
+    /// `otherCopies`: other registered copies of the app that still exist. macOS can pick the wrong copy's extension,
+    /// so a setup guide asks the person to keep only the installed one.
+    struct Extension: Encodable { var state: String; var otherCopies: [String] = [] }
     struct Account: Encodable { var id: String; var email: String; var issuer: String; var state: String; var stateDirectory: String; var workspaceIds: [String] }
     struct Profile: Encodable {
         var profile: String; var stateDirectory: String; var backend: String
@@ -847,6 +873,8 @@ private struct AccessList: Encodable { var path: String; var rules: [ParaAirClou
 private struct AccessSet: Encodable { var rule: ParaAirCloudAccessRule }
 private struct AccessRemoved: Encodable { var path: String; var principal: [String: String]; var removed: Bool }
 private struct FeedCursor: Encodable { var cursor: Int64 }
+/// `extension-settings`: the extension's state afterwards, and whether System Settings was opened.
+private struct ExtensionSettingsResult: Encodable { var state: String; var opened: Bool }
 private struct FeedStart: Encodable { var following: Bool; var cursor: Int64 }
 private struct FeedReset: Encodable { var reset: Bool; var cursor: Int64 }
 private struct DoctorCheck: Encodable { var name: String; var state: String; var detail: String }

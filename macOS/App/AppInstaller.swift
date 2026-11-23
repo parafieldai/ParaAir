@@ -197,7 +197,8 @@ enum AppInstaller {
 
     /// Removes LaunchServices' and PlugInKit's records of a copy that is not the installed app.
     /// Bounded and best effort: a failure only leaves the record macOS would have kept anyway.
-    private static func unregister(_ copy: URL) {
+    /// Also used for records whose copy no longer exists (MenuModel.refreshOtherCopies).
+    nonisolated static func unregister(_ copy: URL) {
         let tools: [(String, [String])] = [
             ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", ["-u", copy.path]),
             ("/usr/bin/pluginkit", ["-r", copy.appendingPathComponent("Contents/Extensions/StreamDriveFS.appex").path]),

@@ -34,6 +34,7 @@ enum CLICommand: Equatable {
     case cloudDrives(account: String)
     case cloudSignIn(waitSeconds: Int?)
     case setupStatus
+    case extensionSettings(waitSeconds: Int?)
     case trash(profile: String)
     case restore(profile: String, nodeID: Int64, to: String?)
     case storedDrives(connection: String, library: String?)
@@ -194,6 +195,10 @@ enum CLIParser {
         case "setup-status":
             try noExtraArguments(commandArguments, command: name)
             command = .setupStatus
+        case "extension-settings":
+            let options = try parseOptions(commandArguments, valueNames: ["wait"])
+            try noExtraArguments(options.positionals, command: name)
+            command = .extensionSettings(waitSeconds: try options.values["wait"].map(seconds))
         case "trash":
             let options = try parseOptions(commandArguments)
             commandArguments = options.positionals

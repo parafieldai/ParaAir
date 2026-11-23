@@ -23,6 +23,24 @@ final class FinderSetupTests: XCTestCase {
         XCTAssertEqual(resolve([module(), module(enabled: false)]), .ambiguous)
     }
 
+    func testOtherCopiesSplitStaleRecordsFromCopiesThatStillExist() {
+        let onDisk: Set<String> = ["/Applications/ParaAir.app", "/Users/maya/Downloads/ParaAir.app"]
+        let copies = OtherAppCopies.sort(
+            registered: ["/Applications/ParaAir.app/", "/Users/maya/Downloads/ParaAir.app", "/private/tmp/x/unzipped/ParaAir.app",
+                         "/Users/maya/Downloads/./ParaAir.app", "/Applications/../Applications/ParaAir.app"],
+            current: "/Applications/ParaAir.app", exists: onDisk.contains)
+        XCTAssertEqual(copies.present, ["/Users/maya/Downloads/ParaAir.app"])
+        XCTAssertEqual(copies.missing, ["/private/tmp/x/unzipped/ParaAir.app"])
+        XCTAssertTrue(OtherAppCopies.sort(registered: ["/Applications/ParaAir.app"], current: "/Applications/ParaAir.app/",
+                                          exists: { _ in true }).isEmpty)
+    }
+
+    func testGuidanceNamesTheListThatWorksAndWarnsAboutTheSheet() {
+        XCTAssertTrue(ExtensionSetupGuidance.turnOn.contains("By Category → File System Extensions"))
+        XCTAssertTrue(ExtensionSetupGuidance.turnOn.contains("ⓘ sheet doesn’t stay on"))
+        XCTAssertFalse(ExtensionSetupGuidance.turnOn.contains("—"))
+    }
+
     func testOverlappingRefreshesWaitForOneDiscoveryAndBothSeeItsResult() async {
         let source = SuspendedFinderInventory()
         let coordinator = makeCoordinator { try await source.fetch() }
