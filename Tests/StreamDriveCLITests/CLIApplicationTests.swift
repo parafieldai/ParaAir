@@ -532,6 +532,11 @@ extension CLIApplicationTests {
         XCTAssertEqual(timedOut.exitCode, 1); XCTAssertEqual(try object(timedOut)["code"] as? String, "failed")
         XCTAssertEqual(fake.sleeps, 2)
         XCTAssertEqual(app.run(["mount", "fixture", "--mount-point", "/Volumes/other"]).exitCode, 2)
+        // The app's own mount helper never asks the app back (they would loop): without a mount point it is a usage error.
+        let helper = CLIApplication(environment: ["STREAMDRIVE_HOME": state.path, "PARAAIR_MOUNT_ROUTE": "direct"], system: fake.system)
+        fake.opened = []
+        XCTAssertEqual(helper.run(["mount", "fixture"]).exitCode, 2)
+        XCTAssertTrue(fake.opened.isEmpty)
         fake.extensionState = "disabled"
         XCTAssertEqual(app.run(["mount", "fixture"]).exitCode, 13)
         fake.installed = false

@@ -252,12 +252,13 @@ final class CLIApplication {
                 throw DriveError(ENOTSUP, "This Finder filesystem extension requires macOS 26 or later")
             }
             // Without a mount point, or under /Volumes (which only macOS can create folders in), the app mounts the drive
-            // through FSKit at /Volumes/<profile>, as its own Connect button does.
+            // through FSKit at /Volumes/<profile>, as its own Connect button does. The app's own mount helper (this CLI,
+            // run with PARAAIR_MOUNT_ROUTE=direct where FSKit's native mount isn't available) never asks the app back.
             let wanted = override.map(absolutePath) ?? profile.mountPoint
-            if wanted == nil || wanted!.hasPrefix("/Volumes/") {
+            if environment["PARAAIR_MOUNT_ROUTE"] != "direct", wanted == nil || wanted!.hasPrefix("/Volumes/") {
                 return try mountThroughApp(profile, stateRoot: stateRoot, requested: wanted, waitSeconds: wait ?? 90, invocation: invocation)
             }
-            let requested = wanted!
+            guard let requested = wanted else { throw CLIUsageError(message: "Set --mount-point when connecting or mounting this profile") }
             let point = try prepareMountPoint(requested, stateRoot: stateRoot, profile: profile)
             let output = try SystemCommands.run(executable: "/sbin/mount", arguments: MountController.mountArguments(profile: name, stateRoot: stateRoot.path, mountPoint: point))
             guard output.exitCode == 0 else {
