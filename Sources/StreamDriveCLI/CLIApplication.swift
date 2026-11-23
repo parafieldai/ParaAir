@@ -842,6 +842,10 @@ private struct CloudDriveItem: Encodable { var id: String; var workspaceId: Stri
 
 /// `setup-status --json`: everything another app needs to walk a person through ParaAir setup. Read locally, no network.
 struct SetupStatus: Encodable {
+    /// The published CLI contract this build follows (contract/paraair-cli-v1). Within a version only fields, commands
+    /// and codes are added; a rename or removal is a new version. Integrations gate on this, not on the app's build.
+    static let currentContractVersion = 1
+    var contractVersion = SetupStatus.currentContractVersion
     struct App: Encodable { var installed: Bool; var path: String?; var running: Bool; var version: String?; var build: String? }
     /// `otherCopies`: other registered copies of the app that still exist. macOS can pick the wrong copy's extension,
     /// so a setup guide asks the person to keep only the installed one.

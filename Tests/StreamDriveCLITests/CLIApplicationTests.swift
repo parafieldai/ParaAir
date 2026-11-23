@@ -514,6 +514,22 @@ extension CLIApplicationTests {
         XCTAssertTrue(fake.opened.isEmpty, "setup-status never opens the app")
     }
 
+    /// Integrations gate on the published contract (contract/paraair-cli-v1), so setup-status reports its version as a
+    /// number whether or not the app is installed and before any account or drive exists.
+    func testSetupStatusReportsTheCLIContractVersion() throws {
+        let root = try temporaryDirectory(), fake = FakeSystem()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": root.path], system: fake.system)
+        let installed = try object(app.run(["setup-status", "--json"]))
+        XCTAssertEqual(installed["contractVersion"] as? Int, 1)
+        XCTAssertEqual((installed["accounts"] as? [[String: Any]])?.count, 0)
+        fake.installed = false
+        let missing = app.run(["setup-status", "--json"])
+        XCTAssertEqual(missing.exitCode, 0)
+        XCTAssertEqual(try object(missing)["contractVersion"] as? Int, 1)
+        XCTAssertTrue(missing.stdout.contains("\"contractVersion\" : 1"), missing.stdout)
+    }
+
     func testCloudSignInOpensTheAppAndWaitsForAnAccount() throws {
         let fixture = try cloudFixture(), fake = FakeSystem()
         let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path], dependencies: fixture.dependencies, system: fake.system)
