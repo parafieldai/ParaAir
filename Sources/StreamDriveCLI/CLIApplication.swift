@@ -354,7 +354,7 @@ final class CLIApplication {
         let appPath = absolutePath(Self.applicationPath(environment: environment))
         let info = system.appInfo(appPath)
         let app = SetupStatus.App(installed: info != nil, path: info == nil ? nil : appPath,
-                                  running: info?.bundleID.map(system.isRunning) ?? false, version: info?.version)
+                                  running: info?.bundleID.map(system.isRunning) ?? false, version: info?.version, build: info?.build)
         let state = info == nil ? "notDiscovered" : system.extensionState(appPath, info?.bundleID)
         let roots = knownRoots(explicit: explicit)
         let profiles = roots.flatMap { root -> [SetupStatus.Profile] in
@@ -557,7 +557,7 @@ private struct CloudDriveItem: Encodable { var id: String; var workspaceId: Stri
 
 /// `setup-status --json`: everything another app needs to walk a person through ParaAir setup. Read locally, no network.
 struct SetupStatus: Encodable {
-    struct App: Encodable { var installed: Bool; var path: String?; var running: Bool; var version: String? }
+    struct App: Encodable { var installed: Bool; var path: String?; var running: Bool; var version: String?; var build: String? }
     struct Extension: Encodable { var state: String }
     struct Account: Encodable { var id: String; var email: String; var issuer: String; var state: String; var stateDirectory: String; var workspaceIds: [String] }
     struct Profile: Encodable {

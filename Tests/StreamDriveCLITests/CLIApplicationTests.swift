@@ -391,7 +391,7 @@ private final class FakeSystem {
     var onOpen: ((URL) -> Void)?
     var onSleep: ((Int) -> Void)?
     var system: CLISystem {
-        CLISystem(appInfo: { [unowned self] _ in installed ? .init(bundleID: "dev.streamdrive.app", version: "0.2.0") : nil },
+        CLISystem(appInfo: { [unowned self] _ in installed ? .init(bundleID: "dev.streamdrive.app", version: "0.2.0", build: "42") : nil },
                   isRunning: { [unowned self] _ in running },
                   extensionState: { [unowned self] _, _ in extensionState },
                   appStateFolders: { [unowned self] _ in folders },
@@ -417,7 +417,7 @@ extension CLIApplicationTests {
         let value = try object(result)
         let appInfo = try XCTUnwrap(value["app"] as? [String: Any])
         XCTAssertEqual(appInfo["installed"] as? Bool, true); XCTAssertEqual(appInfo["running"] as? Bool, true)
-        XCTAssertEqual(appInfo["version"] as? String, "0.2.0"); XCTAssertNotNil(appInfo["path"])
+        XCTAssertEqual(appInfo["version"] as? String, "0.2.0"); XCTAssertEqual(appInfo["build"] as? String, "42"); XCTAssertNotNil(appInfo["path"])
         XCTAssertEqual((value["extension"] as? [String: Any])?["state"] as? String, "enabled")
         let accounts = try XCTUnwrap(value["accounts"] as? [[String: Any]])
         XCTAssertEqual(accounts.count, 1)
