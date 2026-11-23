@@ -401,6 +401,34 @@ final class CLIApplication {
                 return try render(AccessRemoved(path: folder, principal: [field.name: field.value], removed: true), invocation: invocation,
                                   text: "Removed the rule for \(displayName(field.value)) at \(displayName(folder)).\n")
             }
+        case .credentials(let action, let accountID, let workspace):
+            let found = try signedInAccount(accountID, roots: knownRoots(explicit: invocation.stateDirectory))
+            let api = try accountAPI(root: found.root, accountID: accountID)
+            switch action {
+            case .create(let name):
+                // The token goes to standard output once, in this reply only; nothing here keeps or logs it.
+                let created = try credentialCall { try api.createCredential(workspaceID: workspace, name: name) }
+                let id = created.credential.id
+                let text = "Created service credential \(id) (\(displayName(created.credential.name))) in \(workspace).\n"
+                    + "Its token is the next line. Store it now in the backend's secret store: it can't be shown again and ParaAir keeps no copy.\n"
+                    + created.token + "\n"
+                    + "It sees nothing yet. Give it one folder, for example:\n"
+                    + "  paraair access set PROFILE /admin/finance --credential \(id) --level write\n"
+                return try render(CredentialCreated(workspaceId: workspace, credential: created.credential, token: created.token),
+                                  invocation: invocation, text: text)
+            case .list:
+                let credentials = try credentialCall { try api.credentials(workspaceID: workspace) }
+                let text = credentials.map { credential in
+                    let state = credential.revokedAt.map { "revoked " + $0 } ?? "active"
+                    return "\(credential.id)\t\(state)\t\(credential.lastUsedAt.map { "last used " + $0 } ?? "never used")\t\(displayName(credential.name))"
+                }.joined(separator: "\n")
+                return try render(CredentialList(workspaceId: workspace, credentials: credentials), invocation: invocation,
+                                  text: text.isEmpty ? "This workspace has no service credentials.\n" : text + "\n")
+            case .revoke(let id):
+                try credentialCall { try api.revokeCredential(workspaceID: workspace, credentialID: id) }
+                return try render(CredentialRevoked(workspaceId: workspace, id: id, revoked: true), invocation: invocation,
+                                  text: "Revoked \(id). Its token no longer works and its folder rules are deleted.\n")
+            }
         case .mount(let name, let override, let wait):
             var profile = try store.load(name)
             guard !mounted(profile) else { throw DriveError(EBUSY, "This profile is already mounted; unmount it before choosing another mount point") }
@@ -678,6 +706,14 @@ final class CLIApplication {
         [EIO, EAGAIN, EBUSY, ENETDOWN, ENETUNREACH, EHOSTUNREACH, ECONNRESET, ECONNREFUSED, ETIMEDOUT, ENOTCONN].contains(error.code)
     }
 
+    /// A credential the workspace doesn't have is exit 17; a workspace the account isn't in stays 14, as for drives.
+    private func credentialCall<T>(_ body: () throws -> T) throws -> T {
+        do { return try body() }
+        catch let error as DriveError where error.code == ENOENT && ParaAirCloudOutcome.of(error) == nil {
+            throw CLIOutcomeError(outcome: .notFound, message: error.message)
+        }
+    }
+
     private func within(_ path: String, _ folder: String) -> Bool { folder == "/" || path == folder || path.hasPrefix(folder + "/") }
     private func principalText(_ rule: ParaAirCloudAccessRule) -> String {
         if let role = rule.role { return "role:" + role }
@@ -878,6 +914,9 @@ private struct RestoreVersionResult: Encodable { var path: String; var restoredV
 private struct AccessList: Encodable { var path: String; var rules: [ParaAirCloudAccessRule] }
 private struct AccessSet: Encodable { var rule: ParaAirCloudAccessRule }
 private struct AccessRemoved: Encodable { var path: String; var principal: [String: String]; var removed: Bool }
+private struct CredentialCreated: Encodable { var workspaceId: String; var credential: ParaAirCloudServiceCredential; var token: String }
+private struct CredentialList: Encodable { var workspaceId: String; var credentials: [ParaAirCloudServiceCredential] }
+private struct CredentialRevoked: Encodable { var workspaceId: String; var id: String; var revoked: Bool }
 private struct FeedCursor: Encodable { var cursor: Int64 }
 /// `extension-settings`: the extension's state afterwards, and whether System Settings was opened.
 private struct ExtensionSettingsResult: Encodable { var state: String; var opened: Bool }

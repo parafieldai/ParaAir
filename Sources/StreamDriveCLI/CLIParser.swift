@@ -48,6 +48,7 @@ enum CLICommand: Equatable {
     case conflictInfo(target: CLITarget)
     case changes(target: CLITarget, follow: Bool, since: Int64?, intervalSeconds: Int?)
     case access(CLIAccessAction, target: CLITarget)
+    case credentials(CLICredentialAction, account: String, workspace: String)
 }
 
 /// A path in a drive: a profile and a drive path (`PROFILE /records/x.json`), or a path under a mounted ParaAir drive
@@ -62,6 +63,13 @@ enum CLIAccessAction: Equatable {
     case list
     case set(ParaAirCloudAccessPrincipal, ParaAirCloudAccessLevel)
     case remove(ParaAirCloudAccessPrincipal)
+}
+
+/// What `credentials` does with a workspace's service credentials.
+enum CLICredentialAction: Equatable {
+    case create(name: String)
+    case list
+    case revoke(id: String)
 }
 
 /// How `resolve` settles a change that needs a decision.
@@ -328,7 +336,7 @@ enum CLIParser {
                 case ("role", let role):
                     guard ["members", "viewers"].contains(role) else { throw usage("--role is members or viewers") }
                     principal = .role(role)
-                case ("credential", let id): principal = .credential(id)
+                case ("credential", let id): principal = .credential(try credentialID(id, option: "--credential"))
                 case (_, let email):
                     guard email.contains("@"), email.utf8.count <= 320 else { throw usage("--email requires an email address") }
                     principal = .email(email)
@@ -343,6 +351,32 @@ enum CLIParser {
                     command = .access(.remove(principal), target: target)
                 }
             }
+        case "credentials":
+            let usageText = "Usage: paraair credentials create|list|revoke --cloud-account ID --workspace WS [--name NAME | --id CREDENTIAL_ID]"
+            guard let verb = commandArguments.first, ["create", "list", "revoke"].contains(verb) else { throw usage(usageText) }
+            let options = try parseOptions(Array(commandArguments.dropFirst()), valueNames: ["cloud-account", "workspace", "name", "id"])
+            try noExtraArguments(options.positionals, command: "credentials " + verb)
+            let verbUsage = verb == "create" ? "Usage: paraair credentials create --cloud-account ID --workspace WS --name NAME"
+                : verb == "list" ? "Usage: paraair credentials list --cloud-account ID --workspace WS"
+                : "Usage: paraair credentials revoke --cloud-account ID --workspace WS --id CREDENTIAL_ID"
+            guard let account = options.values["cloud-account"], let workspace = options.values["workspace"] else { throw usage(verbUsage) }
+            guard UUID(uuidString: account) != nil, account == account.lowercased() else { throw usage("--cloud-account requires a lowercase identifier") }
+            guard workspace.range(of: "^ws_[0-9A-Z]{26}$", options: .regularExpression) != nil else {
+                throw usage("--workspace requires a workspace id such as ws_01J… (see cloud-drives)")
+            }
+            let action: CLICredentialAction
+            switch verb {
+            case "create":
+                guard let name = options.values["name"], options.values["id"] == nil else { throw usage(verbUsage) }
+                action = .create(name: try credentialName(name))
+            case "list":
+                guard options.values["name"] == nil, options.values["id"] == nil else { throw usage(verbUsage) }
+                action = .list
+            default:
+                guard let id = options.values["id"], options.values["name"] == nil else { throw usage(verbUsage) }
+                action = .revoke(id: try credentialID(id, option: "--id"))
+            }
+            command = .credentials(action, account: account, workspace: workspace)
         case "uploads":
             let options = try parseOptions(commandArguments, switchNames: ["retry"])
             commandArguments = options.positionals
@@ -439,6 +473,25 @@ enum CLIParser {
             throw usage("\(option) requires a version such as pv:123 (see versions)")
         }
         return value
+    }
+
+    /// A service credential id, `cred_` and 26 characters. A token passed by mistake is refused without repeating it.
+    private static func credentialID(_ value: String, option: String) throws -> String {
+        if value.hasPrefix("pcs_") { throw usage("\(option) takes the credential's id (cred_…), not its token") }
+        guard value.range(of: "^cred_[0-9A-HJKMNP-TV-Z]{26}$", options: .regularExpression) != nil else {
+            throw usage("\(option) requires a credential id such as cred_01J… (see credentials list)")
+        }
+        return value
+    }
+
+    /// Credential names: 1 to 100 characters after trimming, no control or format characters (the service's rule).
+    private static func credentialName(_ value: String) throws -> String {
+        let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.utf16.count <= 100,
+              !name.unicodeScalars.contains(where: { [.control, .format].contains($0.properties.generalCategory) }) else {
+            throw usage("--name requires 1 to 100 characters, without control characters")
+        }
+        return name
     }
 
     private static func onOff(_ value: String, option: String) throws -> Bool {

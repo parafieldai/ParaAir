@@ -23,6 +23,11 @@ private final class CLICloudStub: URLProtocol {
     static let host = "cli-test.cloud.invalid"
     static let drive = "3f0c2a7e-6b1d-4e0a-9c2f-1d2e3f4a5b6c"
     static let workspace = "ws_0123456789ABCDEFGHJKMNPQRS"
+    /// The service credential the stub makes, and its token, which must reach standard output once and nowhere else.
+    static let credential = "cred_01JDKQ2T5V7WXYZ0123456789A"
+    static let token = "pcs_\(credential).Kq7xR2mZ9vT4wB8nL1cF6hJ3pD0sG5yA_-eUoIiNtMk"
+    /// Well formed, but for another credential than the reply names: a malformed reply.
+    static let otherToken = "pcs_cred_01JDKQ2T5V7WXYZ0123456789B.Zz9yX8wV7uT6sR5qP4oN3mL2kJ1iH0gF_-eDcBaQwEr"
     private static let lock = NSLock()
     private static var logged: [(path: String, body: Data)] = []
     /// What GET /v1/drives lists (names only; the drive above is the one whose details exist).
@@ -115,8 +120,9 @@ private final class CLICloudStub: URLProtocol {
             switch request.httpMethod {
             case "PUT":
                 let fields = (try? JSONSerialization.jsonObject(with: body) as? [String: String]) ?? [:]
-                object = ["rule": ["role": fields["role"] ?? "members", "path": fields["path"] ?? "/", "access": fields["access"] ?? "read",
-                                   "updatedAt": "2026-11-23T10:00:00.000Z"]]
+                let principal: [String: Any] = fields["credential"].map { ["credential": $0, "name": "finance collector"] } ?? ["role": fields["role"] ?? "members"]
+                object = ["rule": principal.merging(["path": fields["path"] ?? "/", "access": fields["access"] ?? "read",
+                                                     "updatedAt": "2026-11-23T10:00:00.000Z"]) { $1 }]
             case "DELETE": status = 204; object = [String: Any]()
             default:
                 object = ["rules": [["role": "members", "path": "/claims", "access": "create", "updatedAt": "2026-11-23T10:00:00.000Z"],
@@ -127,9 +133,29 @@ private final class CLICloudStub: URLProtocol {
             object = ["conflict": ["path": "/records/x (conflict 2026-11-23).json", "original": "/records/x.json", "baseVersion": "pv:7",
                                    "theirsVersion": "pv:8", "createdAt": "2026-11-23T10:00:00.000Z",
                                    "author": ["userId": "usr_0123456789ABCDEFGHJKMNPQRS", "email": "other@example.test"]]]
+        case "/v1/workspaces/\(Self.workspace)/credentials":
+            let made: [String: Any] = ["id": Self.credential, "name": "finance collector", "createdAt": "2026-11-24T01:00:00.000Z",
+                                       "createdBy": "cli@example.test", "lastUsedAt": NSNull(), "revokedAt": NSNull()]
+            guard request.httpMethod == "POST" else {
+                object = ["credentials": [["id": "cred_01JD0000000000000000000000", "name": "old relay", "createdAt": "2026-11-01T01:00:00.000Z",
+                                           "createdBy": NSNull(), "lastUsedAt": "2026-11-20T08:00:00.000Z", "revokedAt": "2026-11-21T08:00:00.000Z"], made]]
+                break
+            }
+            switch (try? JSONSerialization.jsonObject(with: body) as? [String: String])?["name"] {
+            case "full":  // The service's message is never shown, even if it held a token.
+                status = 409; object = ["error": ["code": "busy", "message": Self.token, "requestId": "req_TEST"]]
+            case "member": status = 403; object = ["error": ["code": "forbidden", "message": "x", "requestId": "req_TEST"]]
+            case "flaky": status = 500; object = ["error": ["code": "internal", "message": Self.token, "requestId": "req_TEST"]]
+            case "bad reply": status = 201; object = ["credential": made, "token": Self.otherToken]
+            default: status = 201; object = ["credential": made, "token": Self.token]
+            }
+        case "/v1/workspaces/\(Self.workspace)/credentials/\(Self.credential)":
+            status = 204; object = [String: Any]()
         default:
             status = 404
-            object = ["error": ["code": path.hasPrefix("/v1/drives/") ? "drive_not_found" : "not_found", "message": "x", "requestId": "req_TEST"]]
+            let code = path.hasPrefix("/v1/drives/") ? "drive_not_found"
+                : path.hasPrefix("/v1/workspaces/\(Self.workspace)/") ? "not_found" : path.hasPrefix("/v1/workspaces/") ? "workspace_not_found" : "not_found"
+            object = ["error": ["code": code, "message": "x", "requestId": "req_TEST"]]
         }
         let data = try! JSONSerialization.data(withJSONObject: object)
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
@@ -886,6 +912,147 @@ extension CLIApplicationTests {
         XCTAssertEqual(missing.exitCode, 14)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: CloudDriveSetup.cloudDrivesFolder(home: home).path).count, 1)
         XCTAssertEqual(app.run(["connect", "x", "--new-state-folder"]).exitCode, 2)
+    }
+}
+
+// MARK: Service credentials: create, grant one folder, list, revoke
+
+extension CLIApplicationTests {
+    func testParsesCredentialCommands() throws {
+        let account = "7d4c2b1a-0e9f-4a8b-9c7d-6e5f4a3b2c1d", ws = CLICloudStub.workspace, id = CLICloudStub.credential
+        let base = ["--cloud-account", account, "--workspace", ws]
+        XCTAssertEqual(try CLIParser.parse(["credentials", "create"] + base + ["--name", "  finance collector "]).command,
+                       .credentials(.create(name: "finance collector"), account: account, workspace: ws))
+        XCTAssertEqual(try CLIParser.parse(["credentials", "list"] + base + ["--json"]).command, .credentials(.list, account: account, workspace: ws))
+        XCTAssertEqual(try CLIParser.parse(["credentials", "revoke"] + base + ["--id", id]).command,
+                       .credentials(.revoke(id: id), account: account, workspace: ws))
+        XCTAssertEqual(try CLIParser.parse(["access", "set", "ParaOS", "/admin/finance", "--credential", id, "--level", "write"]).command,
+                       .access(.set(.credential(id), .write), target: .drive(profile: "ParaOS", path: "/admin/finance")))
+        for bad in [["credentials"], ["credentials", "rotate"] + base, ["credentials", "list", "--cloud-account", account],
+                    ["credentials", "list", "--workspace", ws], ["credentials", "list"] + base + ["--name", "x"],
+                    ["credentials", "list", "--cloud-account", account.uppercased(), "--workspace", ws],
+                    ["credentials", "list", "--cloud-account", account, "--workspace", "ws_short"],
+                    ["credentials", "create"] + base, ["credentials", "create"] + base + ["--name", "   "],
+                    ["credentials", "create"] + base + ["--name", "bell\u{7}"], ["credentials", "create"] + base + ["--name", String(repeating: "n", count: 101)],
+                    ["credentials", "create"] + base + ["--name", "x", "--id", id], ["credentials", "revoke"] + base,
+                    ["credentials", "revoke"] + base + ["--id", "cred_relay"], ["credentials", "list"] + base + ["extra"],
+                    ["access", "set", "ParaOS", "/a", "--credential", "relay", "--level", "read"]] {
+            XCTAssertThrowsError(try CLIParser.parse(bad), bad.joined(separator: " "))
+        }
+    }
+
+    func testCredentialRecipeCreateGrantListRevoke() throws {
+        let (app, root, _, _) = try mountedCloud()
+        let account = try XCTUnwrap(CloudAccountStore(root: root).list().accounts.first?.id)
+        let base = ["--cloud-account", account, "--workspace", CLICloudStub.workspace]
+        let token = CLICloudStub.token, id = CLICloudStub.credential
+        func count(_ text: String) -> Int { text.components(separatedBy: token).count - 1 }
+
+        let made = app.run(["credentials", "create"] + base + ["--name", "finance collector"])
+        XCTAssertEqual(made.exitCode, 0, made.stdout + made.stderr)
+        XCTAssertEqual(count(made.stdout), 1, "the token is printed exactly once"); XCTAssertEqual(made.stderr, "")
+        XCTAssertTrue(made.stdout.contains("\n" + token + "\n"), "on a line of its own")
+        XCTAssertTrue(made.stdout.contains("can't be shown again"), made.stdout)
+        XCTAssertTrue(made.stdout.contains("access set PROFILE /admin/finance --credential \(id) --level write"), made.stdout)
+        let posted = try XCTUnwrap(CLICloudStub.requests.last)
+        XCTAssertEqual(posted.path, "/v1/workspaces/\(CLICloudStub.workspace)/credentials")
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: posted.body) as? [String: String], ["name": "finance collector"])
+
+        let json = app.run(["credentials", "create"] + base + ["--name", "finance collector", "--json"])
+        XCTAssertEqual(json.exitCode, 0, json.stdout + json.stderr); XCTAssertEqual(count(json.stdout), 1); XCTAssertEqual(json.stderr, "")
+        let created = try object(json)
+        XCTAssertEqual(created["token"] as? String, token); XCTAssertEqual(created["workspaceId"] as? String, CLICloudStub.workspace)
+        let credential = try XCTUnwrap(created["credential"] as? [String: Any])
+        XCTAssertEqual(credential["id"] as? String, id); XCTAssertEqual(credential["name"] as? String, "finance collector")
+        XCTAssertTrue(credential["revokedAt"] is NSNull); XCTAssertTrue(credential["lastUsedAt"] is NSNull)
+
+        // Nothing on this Mac keeps the token: no file in the state folder holds it.
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey])?.compactMap { $0 as? URL } ?? []
+        XCTAssertFalse(files.isEmpty)
+        for file in files where (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+            XCTAssertNil(try Data(contentsOf: file).range(of: Data(token.utf8)), file.path)
+            XCTAssertNil(try Data(contentsOf: file).range(of: Data(token.split(separator: ".")[1].utf8)), file.path)
+        }
+
+        // Grant one folder, write or create, through the existing folder rules.
+        for level in ["write", "create"] {
+            let grant = app.run(["access", "set", "ParaOS", "/admin/finance", "--credential", id, "--level", level, "--json"])
+            XCTAssertEqual(grant.exitCode, 0, grant.stdout + grant.stderr)
+            let rule = try XCTUnwrap(try object(grant)["rule"] as? [String: Any])
+            XCTAssertEqual(rule["credential"] as? String, id); XCTAssertEqual(rule["access"] as? String, level)
+            XCTAssertEqual(try JSONSerialization.jsonObject(with: try XCTUnwrap(CLICloudStub.requests.last?.body)) as? [String: String],
+                           ["credential": id, "path": "/admin/finance", "access": level])
+        }
+        let granted = app.run(["access", "set", "/Volumes/ParaOS/admin/finance", "--credential", id, "--level", "write"])
+        XCTAssertEqual(granted.stdout, "credential:\(id) (finance collector) now has write access at /admin/finance.\n")
+
+        let list = app.run(["credentials", "list"] + base + ["--json"])
+        XCTAssertEqual(list.exitCode, 0, list.stdout + list.stderr); XCTAssertEqual(count(list.stdout), 0)
+        let listed = try XCTUnwrap(try object(list)["credentials"] as? [[String: Any]])
+        XCTAssertEqual(listed.map { $0["id"] as? String }, ["cred_01JD0000000000000000000000", id])
+        XCTAssertNil(listed[1]["token"]); XCTAssertEqual(listed[0]["revokedAt"] as? String, "2026-11-21T08:00:00.000Z")
+        XCTAssertEqual(app.run(["credentials", "list"] + base).stdout,
+                       "cred_01JD0000000000000000000000\trevoked 2026-11-21T08:00:00.000Z\tlast used 2026-11-20T08:00:00.000Z\told relay\n"
+                       + "\(id)\tactive\tnever used\tfinance collector\n")
+
+        let revoked = app.run(["credentials", "revoke"] + base + ["--id", id, "--json"])
+        XCTAssertEqual(revoked.exitCode, 0, revoked.stdout + revoked.stderr)
+        XCTAssertEqual(try object(revoked)["revoked"] as? Bool, true); XCTAssertEqual(try object(revoked)["id"] as? String, id)
+        XCTAssertEqual(CLICloudStub.requests.last?.path, "/v1/workspaces/\(CLICloudStub.workspace)/credentials/\(id)")
+        XCTAssertEqual(app.run(["credentials", "revoke"] + base + ["--id", id]).stdout,
+                       "Revoked \(id). Its token no longer works and its folder rules are deleted.\n")
+    }
+
+    func testCredentialFailuresNeverShowTheToken() throws {
+        let (app, root, _, _) = try mountedCloud()
+        let account = try XCTUnwrap(CloudAccountStore(root: root).list().accounts.first?.id)
+        let base = ["--cloud-account", account, "--workspace", CLICloudStub.workspace]
+        func create(_ name: String, json: Bool = false) -> CLIExecution {
+            app.run(["credentials", "create"] + base + ["--name", name] + (json ? ["--json"] : []))
+        }
+        func clean(_ result: CLIExecution, _ label: String, file: StaticString = #filePath, line: UInt = #line) {
+            for token in [CLICloudStub.token, CLICloudStub.otherToken] {
+                XCTAssertFalse((result.stdout + result.stderr).contains(token), label, file: file, line: line)
+                XCTAssertFalse((result.stdout + result.stderr).contains(String(token.split(separator: ".")[1])), label, file: file, line: line)
+            }
+        }
+        // The service's own message (here holding a token) is never shown; the limit has its own text.
+        for json in [false, true] {
+            let full = create("full", json: json)
+            XCTAssertEqual(full.exitCode, 1); clean(full, "busy")
+            XCTAssertTrue((full.stdout + full.stderr).contains("20 active service credentials"), full.stdout + full.stderr)
+        }
+        // A reply whose token doesn't belong to its credential is refused, and the token isn't repeated.
+        let malformed = create("bad reply", json: true)
+        XCTAssertEqual(malformed.exitCode, 1); clean(malformed, "malformed")
+        XCTAssertEqual(try object(malformed)["code"] as? String, "failed")
+        XCTAssertTrue((try object(malformed)["error"] as? String ?? "").hasPrefix("ParaAir Cloud returned a malformed response"), malformed.stdout)
+        // Sent once: no retry that could make a second credential, and the error says to check the list.
+        let before = CLICloudStub.requests.count
+        let flaky = create("flaky")
+        XCTAssertEqual(flaky.exitCode, 1); clean(flaky, "unavailable")
+        XCTAssertEqual(CLICloudStub.requests.count, before + 1)
+        XCTAssertTrue(flaky.stderr.contains("may have been made: run credentials list"), flaky.stderr)
+
+        XCTAssertEqual(create("member").exitCode, 12)
+        let elsewhere = app.run(["credentials", "list", "--cloud-account", account, "--workspace", "ws_ZZZZZZZZZZZZZZZZZZZZZZZZZZ", "--json"])
+        XCTAssertEqual(elsewhere.exitCode, 14); XCTAssertEqual(try object(elsewhere)["code"] as? String, "drive_not_found")
+        let unknown = app.run(["credentials", "revoke"] + base + ["--id", "cred_01JDKQ2T5V7WXYZ0123456789B", "--json"])
+        XCTAssertEqual(unknown.exitCode, 17); XCTAssertEqual(try object(unknown)["code"] as? String, "not_found")
+        let notSignedIn = app.run(["credentials", "list", "--cloud-account", "7d4c2b1a-0e9f-4a8b-9c7d-6e5f4a3b2c1d", "--workspace", CLICloudStub.workspace])
+        XCTAssertEqual(notSignedIn.exitCode, 11)
+
+        // A token pasted where an id or name belongs is refused without repeating it.
+        let requests = CLICloudStub.requests.count
+        for arguments in [["access", "set", "ParaOS", "/admin/finance", "--credential", CLICloudStub.token, "--level", "write"],
+                          ["access", "remove", "ParaOS", "/admin/finance", "--credential", CLICloudStub.token, "--json"],
+                          ["credentials", "revoke"] + base + ["--id", CLICloudStub.token],
+                          ["credentials", "list"] + base + [CLICloudStub.token],
+                          ["credentials", "create"] + base + ["--name", "x", "--token=" + CLICloudStub.token]] {
+            let result = app.run(arguments)
+            XCTAssertEqual(result.exitCode, 2, arguments.joined(separator: " ")); clean(result, arguments[0] + " " + arguments[1])
+        }
+        XCTAssertEqual(CLICloudStub.requests.count, requests, "refused before reaching the service")
     }
 }
 

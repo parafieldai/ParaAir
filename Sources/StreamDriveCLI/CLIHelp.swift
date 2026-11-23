@@ -126,7 +126,26 @@ enum CLIHelp {
             Folder rules of a ParaAir Cloud drive, for its workspace's owners and admins (exit 12 otherwise).
             list shows the rules on, above and inside FOLDER (all with /). create lets someone add files and
             folders and change only what they wrote, without moving or deleting anything. The most specific rule
-            wins; owners and admins are never limited.
+            wins; owners and admins are never limited. --credential takes a service credential's id (see credentials);
+            a credential sees only the folders its own rules give it.
+            """ + "\n"
+        case "credentials":
+            return """
+            Usage: paraair credentials create --cloud-account ID --workspace WS --name NAME [--json]
+                   paraair credentials list --cloud-account ID --workspace WS [--json]
+                   paraair credentials revoke --cloud-account ID --workspace WS --id CREDENTIAL_ID [--json]
+            Service credentials of a ParaAir Cloud workspace, for its owners and admins (exit 12 otherwise): a login
+            for a backend, such as a job that writes one folder, that sees only the folders given to it. The workspace
+            id is in cloud-drives' output.
+            create prints the token, pcs_cred_….<secret>, once, on standard output ("token" with --json). It can't be
+            shown again and ParaAir keeps no copy: store it in the backend's secret store, or revoke the credential
+            and create another if it is lost. A new credential sees nothing until a folder rule names it:
+              paraair access set PROFILE /admin/finance --credential CREDENTIAL_ID --level write
+            (--level create: read, add files and folders, change only what it wrote, move or delete nothing).
+            list shows each credential's id, state, last use and name, never the token. revoke stops the token at once
+            and deletes the credential's folder rules in every drive of the workspace.
+            At most 20 active credentials per workspace. Exit 14 when the account isn't in the workspace, 17 when the
+            workspace has no credential with that id.
             """ + "\n"
         case "conflicts", "resolve":
             return """
@@ -180,6 +199,8 @@ enum CLIHelp {
               changes TARGET [--since CURSOR] [--follow]
                                                   The drive's change feed, as JSON lines with --json
               access list|set|remove TARGET ...   A drive's folder rules (owners and admins)
+              credentials create|list|revoke --cloud-account ID --workspace WS
+                                                  A workspace's service credentials (owners and admins)
               trash PROFILE                       List deleted ParaAir Cloud files that can be restored
               restore PROFILE NODE_ID [--to PATH] Restore a deleted ParaAir Cloud file
               stored-drives --connection ID       List drives backed up in a connection's bucket
@@ -199,10 +220,11 @@ enum CLIHelp {
             Untouched files are not downloaded; cache, pins, dirty writes and metadata are accounted separately.
             Exit codes: 0 success, 1 operation failed, 2 usage error, 3 uploads remain after retry, 10 the app isn't
             installed, 11 not signed in to ParaAir Cloud, 12 the account's role doesn't allow it, 13 the File System
-            Extension isn't turned on, 14 no such ParaAir Cloud drive, 15 the path isn't on a mounted ParaAir drive,
-            16 the file changed since the expected version, 17 no such file, version or conflict copy. With --json an
-            error prints {"error", "exitCode", "code"}; code is failed, usage, app_not_installed, not_signed_in,
-            forbidden, extension_disabled, drive_not_found, not_mounted, version_conflict or not_found.
+            Extension isn't turned on, 14 no such ParaAir Cloud drive or workspace, 15 the path isn't on a mounted
+            ParaAir drive, 16 the file changed since the expected version, 17 no such file, version, conflict copy or
+            service credential. With --json an error prints {"error", "exitCode", "code"}; code is failed, usage,
+            app_not_installed, not_signed_in, forbidden, extension_disabled, drive_not_found, not_mounted,
+            version_conflict or not_found.
             """ + "\n"
         }
     }
