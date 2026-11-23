@@ -9,7 +9,7 @@ import StreamDriveCore
 /// folders as changed. Every 3 s while a drive is mounted; offline or failing, waiting longer, up to a minute.
 @MainActor
 final class ChangeFeedMonitor {
-    private struct Target: Equatable { let stateRoot: URL; let profiles: [DriveProfile] }
+    private struct Drive: Equatable { let stateRoot: URL; let profile: DriveProfile; var key: String { stateRoot.path + "\0" + profile.name } }
     /// Engine is not Sendable; each box is used by one poll at a time.
     private final class EngineBox: @unchecked Sendable {
         let engine: Engine
@@ -19,17 +19,17 @@ final class ChangeFeedMonitor {
 
     private let log = Logger(subsystem: "dev.streamdrive.app", category: "changes")
     private let interval: TimeInterval
-    private var target: Target?
+    private var target: [Drive]?
     private var engines: [String: EngineBox] = [:]
     private var loop: Task<Void, Never>?
     private var wait: TimeInterval
 
     init(interval: TimeInterval = 3) { self.interval = interval; wait = interval }
 
-    /// Follows the ParaAir Cloud drives among `profiles` while they are mounted; none stops it.
-    func watch(stateRoot: URL, profiles: [DriveProfile]) {
-        let drives = profiles.filter { $0.backend == .paraairCloud }
-        let next = drives.isEmpty ? nil : Target(stateRoot: stateRoot.standardizedFileURL, profiles: drives)
+    /// Follows the ParaAir Cloud drives among `drives` (each with its state folder) while they are mounted; none stops it.
+    func watch(_ drives: [(stateRoot: URL, profile: DriveProfile)]) {
+        let cloud = drives.filter { $0.profile.backend == .paraairCloud }.map { Drive(stateRoot: $0.stateRoot.standardizedFileURL, profile: $0.profile) }
+        let next = cloud.isEmpty ? nil : cloud
         guard next != target else { return }
         stop()
         guard next != nil else { return }
@@ -51,10 +51,10 @@ final class ChangeFeedMonitor {
         guard let target else { return nil }
         let mounted = Set(ParaAirVolumes.mountedPaths())
         var failed = false
-        for profile in target.profiles {
-            guard let mount = profile.mountPoint, mounted.contains(mount) else { engines[profile.name] = nil; continue }
-            let existing = engines[profile.name].flatMap { $0.profile == profile ? $0 : nil }
-            let root = target.stateRoot
+        for drive in target {
+            let profile = drive.profile, root = drive.stateRoot
+            guard let mount = profile.mountPoint, mounted.contains(mount) else { engines[drive.key] = nil; continue }
+            let existing = engines[drive.key].flatMap { $0.profile == profile ? $0 : nil }
             let result: Result<(EngineBox, Int), Error> = await Task.detached(priority: .utility) {
                 do {
                     let box = try existing ?? EngineBox(engine: Engine.open(profile: profile, stateRoot: root), profile: profile)
@@ -66,10 +66,10 @@ final class ChangeFeedMonitor {
             guard self.target == target else { return interval }
             switch result {
             case .success(let (box, folders)):
-                engines[profile.name] = box
+                engines[drive.key] = box
                 if folders > 0 { log.notice("changes from other devices refreshed folders=\(folders)") }
             case .failure(let error):
-                engines[profile.name] = nil; failed = true
+                engines[drive.key] = nil; failed = true
                 log.error("change feed failed errno=\((error as? DriveError)?.code ?? -1)")
             }
         }

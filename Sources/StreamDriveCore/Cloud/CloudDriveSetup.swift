@@ -9,8 +9,55 @@ public enum CloudDriveSetup {
 
     /// `<home>/Library/Application Support/ParaAir/Cloud Drives/<accountID>/`
     public static func defaultStateRoot(accountID: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        cloudDrivesFolder(home: home).appendingPathComponent(accountID, isDirectory: true)
+    }
+    /// `<home>/Library/Application Support/ParaAir/Cloud Drives`: the app's sign-ins and the CLI's extra drives make
+    /// their state folders here.
+    public static func cloudDrivesFolder(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
         home.appendingPathComponent("Library/Application Support/ParaAir/Cloud Drives", isDirectory: true)
-            .appendingPathComponent(accountID, isDirectory: true)
+    }
+
+    /// A new, empty state folder for one more drive of `account`, signed in in another folder: `Cloud Drives/<uuid>/`
+    /// with a copy of the account's public record (CloudAccountStore.share), so the folder needs no sign-in of its own.
+    /// The folder is removed again if the record can't be saved.
+    public static func newStateRoot(sharing account: CloudAccount, vault: any ConnectionVault,
+                                    home: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> URL {
+        let parent = cloudDrivesFolder(home: home)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let root = parent.appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+        guard Darwin.mkdir(root.path, 0o700) == 0 else { throw DriveError(errno, "Couldn’t make a state folder for the drive") }
+        do { try CloudAccountStore(root: root).share(account, vault: vault) }
+        catch { try? FileManager.default.removeItem(at: root); throw error }
+        return root.standardizedFileURL
+    }
+
+    /// The drive of a state folder another app asks ParaAir to learn (a mount request for a folder it doesn't know yet),
+    /// or an error saying why not. Only what the paraair CLI makes qualifies, never a folder a web page could have put
+    /// on this Mac: a real folder (no link) directly inside "Cloud Drives", owned by this user, holding exactly one valid
+    /// ParaAir Cloud profile, whose account record there is signed in and is the same sign-in (id, issuer and binding)
+    /// as one in a folder ParaAir already knows.
+    public static func adoptableProfile(_ folder: URL, knownRoots: [URL], home: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> DriveProfile {
+        let refused = { (reason: String) in DriveError(EACCES, "ParaAir can’t add this folder: " + reason) }
+        let root = folder.standardizedFileURL, parent = cloudDrivesFolder(home: home).standardizedFileURL
+        guard root.deletingLastPathComponent().standardizedFileURL.path == parent.path else { throw refused("it isn’t a ParaAir Cloud Drives folder") }
+        for url in [parent, root] {
+            var info = Darwin.stat()
+            guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid() else {
+                throw refused("it isn’t a folder of this user")
+            }
+        }
+        let profiles = try ProfileStore(root: root).list()
+        guard profiles.count == 1, let profile = profiles.first, profile.backend == .paraairCloud, (try? profile.validate()) != nil,
+              let accountID = profile.cloudAccountID else { throw refused("it doesn’t hold exactly one ParaAir Cloud drive") }
+        guard let account = try? CloudAccountStore(root: root).load(accountID), account.state == .signedIn,
+              account.issuer == profile.cloudIssuer else { throw refused("its ParaAir Cloud account isn’t signed in") }
+        let known = knownRoots.map(\.standardizedFileURL).filter { $0.path != root.path }
+        guard known.contains(where: { other in
+            (try? CloudAccountStore(root: other).load(accountID)).map {
+                $0.state == .signedIn && $0.binding == account.binding && $0.issuer == account.issuer
+            } ?? false
+        }) else { throw refused("its account isn’t one ParaAir is signed in to") }
+        return profile
     }
 
     /// Verifies the drive with `GET /v1/drives/{id}` before saving the profile.
@@ -89,7 +136,7 @@ public enum CloudDriveSetup {
     private static func requireEmptyFolder(_ stateRoot: URL, replacing name: String?) throws {
         let profiles = try ProfileStore(root: stateRoot).list()
         guard profiles.isEmpty || (name != nil && profiles.map(\.name) == [name!]) else {
-            throw DriveError(EEXIST, "This Finder state folder already has a drive. Choose another state folder for another drive.")
+            throw DriveError(EEXIST, "This Finder state folder already has a drive. Choose another state folder for another drive (paraair connect --new-state-folder).")
         }
     }
 

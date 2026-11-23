@@ -20,6 +20,10 @@ enum CLIHelp {
               --block-size N         Read/cache block size in bytes (4096–8388608; default 1048576,
                                      4194304 with --connection; ParaAir Cloud requires 4194304)
               --journal-mib N        Pending-write admission limit (default 4096 MiB)
+              --new-state-folder     With --cloud-account: attach the drive in a state folder of its own under
+                                     ~/Library/Application Support/ParaAir/Cloud Drives, sharing the account's
+                                     sign-in from the folder it is in (a state folder holds one drive). Then mount
+                                     with --state-dir set to the stateDirectory it prints; the app learns the folder
               --conflict-copies      Save a change that loses to another device's beside the file as
                                      "NAME (conflict YYYY-MM-DD).ext" instead of waiting for resolve (see settings)
               --replace             Explicitly replace an unmounted profile configuration (keeps its block size

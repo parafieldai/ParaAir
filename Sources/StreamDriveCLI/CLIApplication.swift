@@ -16,9 +16,12 @@ final class CLIApplication {
     private let output: (Data) throws -> Void
     /// Tests stop `changes --follow` after this many polls; nil follows until the process ends.
     var maxFollowPolls: Int?
+    /// Where "Cloud Drives" is (connect --new-state-folder, and the folders setup-status looks in); tests replace it.
+    private let home: URL
     init(environment: [String: String] = ProcessInfo.processInfo.environment, dependencies: EngineOpenDependencies = .live,
-         system: CLISystem = .live, output: @escaping (Data) throws -> Void = CLIApplication.writeStandardOutput) {
-        self.environment = environment; self.dependencies = dependencies; self.system = system; self.output = output
+         system: CLISystem = .live, output: @escaping (Data) throws -> Void = CLIApplication.writeStandardOutput,
+         home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.environment = environment; self.dependencies = dependencies; self.system = system; self.output = output; self.home = home
     }
 
     /// Writes all of `data` to file descriptor 1, unbuffered, so each line of a followed feed reaches the reader at once.
@@ -128,12 +131,23 @@ final class CLIApplication {
             if let size = values["block-size"], Int(size) != CloudDriveSetup.blockSize {
                 throw CLIUsageError(message: "ParaAir Cloud drives use --block-size 4194304")
             }
+            let accountID = values["cloud-account"]!
+            // With --new-state-folder the account may be signed in in any folder ParaAir knows; the drive gets its own.
+            var accountRoot = stateRoot, targetRoot = stateRoot, sharing: CloudAccount?
+            if arguments.newStateFolder {
+                let found = try signedInAccount(accountID, roots: [stateRoot.standardizedFileURL] + knownRoots(explicit: nil))
+                accountRoot = found.root; sharing = found.account
+                for root in knownRoots(explicit: nil) + [stateRoot.standardizedFileURL] {
+                    if let other = (try? ProfileStore(root: root).list())?.first(where: { $0.name == arguments.profile }) {
+                        throw DriveError(EEXIST, "A drive named '\(other.name)' is already saved in \(root.path); it would mount at the same place. Choose another name")
+                    }
+                }
+            }
             let drive: String
             if let wanted = values["cloud-drive-name"] {
-                let accountID = values["cloud-account"]!
-                _ = try signedInAccount(accountID, roots: [stateRoot])
+                _ = try signedInAccount(accountID, roots: [accountRoot])
                 let name = wanted.precomposedStringWithCanonicalMapping
-                let matches = try accountAPI(root: stateRoot, accountID: accountID).drives().filter { $0.name.precomposedStringWithCanonicalMapping == name }
+                let matches = try accountAPI(root: accountRoot, accountID: accountID).drives().filter { $0.name.precomposedStringWithCanonicalMapping == name }
                 guard matches.count == 1 else {
                     throw CLIOutcomeError(outcome: .driveNotFound, message: matches.isEmpty
                         ? "This account has no ParaAir Cloud drive named \(displayName(wanted))"
@@ -146,9 +160,18 @@ final class CLIApplication {
             if arguments.overwrite, let previous = try? store.load(arguments.profile), mounted(previous) {
                 throw DriveError(EBUSY, "Unmount the profile before replacing its configuration")
             }
-            var profile = try CloudDriveSetup.attach(driveID: drive, finderName: arguments.profile, name: arguments.profile,
-                                                     accountID: values["cloud-account"]!, stateRoot: stateRoot,
+            if let sharing { targetRoot = try CloudDriveSetup.newStateRoot(sharing: sharing, vault: dependencies.cloudVault, home: home) }
+            let targetStore = ProfileStore(root: targetRoot)
+            var profile: DriveProfile
+            do {
+                profile = try CloudDriveSetup.attach(driveID: drive, finderName: arguments.profile, name: arguments.profile,
+                                                     accountID: accountID, stateRoot: targetRoot,
                                                      replace: arguments.overwrite, dependencies: dependencies)
+            } catch {
+                // Only the folder this command just made goes; it holds nothing but the account record.
+                if sharing != nil { try? FileManager.default.removeItem(at: targetRoot) }
+                throw error
+            }
             if values["cache-mib"] != nil || values["min-free-mib"] != nil || values["journal-mib"] != nil || values["mount-point"] != nil
                 || arguments.conflictCopies {
                 if arguments.conflictCopies { profile.conflictCopies = true }
@@ -156,10 +179,12 @@ final class CLIApplication {
                 profile.minFreeBytes = try bytes(values["min-free-mib"], default: profile.minFreeBytes)
                 profile.maxJournalBytes = try bytes(values["journal-mib"], default: profile.maxJournalBytes)
                 profile.mountPoint = values["mount-point"].map(absolutePath) ?? profile.mountPoint
-                try store.save(profile, overwrite: true)
+                try targetStore.save(profile, overwrite: true)
             }
-            let response = ProfileReference(profile: profile.name, backend: profile.backend.rawValue, mountPoint: profile.mountPoint, mounted: false)
-            return try render(response, invocation: invocation, text: "Saved ParaAir Cloud profile '\(profile.name)'. Run ls to browse it, then mount to open it in Finder.\n")
+            let response = ProfileReference(profile: profile.name, backend: profile.backend.rawValue, mountPoint: profile.mountPoint, mounted: false,
+                                            stateDirectory: targetRoot.standardizedFileURL.path)
+            return try render(response, invocation: invocation, text: "Saved ParaAir Cloud profile '\(profile.name)' in \(displayName(targetRoot.path)). "
+                              + "Run ls to browse it, then mount to open it in Finder\(sharing == nil ? "" : " (pass --state-dir \(displayName(targetRoot.path)))").\n")
         case .connect(let arguments):
             let values = arguments.values
             let fixture = values["fixture-root"].map(absolutePath)
@@ -414,8 +439,11 @@ final class CLIApplication {
         var roots = [base]
         let appPath = absolutePath(Self.applicationPath(environment: environment))
         let bundleID = system.appInfo(appPath)?.bundleID ?? ParaAirBundle.releaseApp
-        for path in system.appStateFolders(bundleID) {
-            let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        // The app's folders, then those under "Cloud Drives" it hasn't learned yet (connect --new-state-folder).
+        let cloudDrives = (try? FileManager.default.contentsOfDirectory(at: CloudDriveSetup.cloudDrivesFolder(home: home), includingPropertiesForKeys: nil)) ?? []
+        for url in system.appStateFolders(bundleID).map({ URL(fileURLWithPath: $0, isDirectory: true) })
+            + cloudDrives.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let url = url.standardizedFileURL
             var isDirectory: ObjCBool = false
             if !roots.contains(url), FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue { roots.append(url) }
         }
@@ -460,6 +488,7 @@ final class CLIApplication {
                                   running: info?.bundleID.map(system.isRunning) ?? false, version: info?.version)
         let state = info == nil ? "notDiscovered" : system.extensionState(appPath, info?.bundleID)
         let roots = knownRoots(explicit: explicit)
+        let appFolders = Set(system.appStateFolders(info?.bundleID ?? ParaAirBundle.releaseApp).map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL.path })
         let profiles = roots.flatMap { root -> [SetupStatus.Profile] in
             ((try? ProfileStore(root: root).list()) ?? []).map { profile in
                 let isMounted = mounted(profile)
@@ -468,7 +497,8 @@ final class CLIApplication {
                 return SetupStatus.Profile(profile: profile.name, stateDirectory: root.path, backend: profile.backend.rawValue,
                                            cloudAccountId: profile.cloudAccountID, cloudDriveId: profile.cloudDriveID,
                                            workspaceId: profile.cloudWorkspaceID, mountPoint: profile.mountPoint, mounted: isMounted,
-                                           healthy: healthy, offline: drive?.offline, conflictCopies: profile.conflictCopies ?? false)
+                                           healthy: healthy, offline: drive?.offline, conflictCopies: profile.conflictCopies ?? false,
+                                           knownToApp: appFolders.contains(root.standardizedFileURL.path))
             }
         }
         return SetupStatus(app: app, extension: .init(state: state), accounts: accountItems(roots), profiles: profiles)
@@ -777,13 +807,19 @@ struct SetupStatus: Encodable {
         var cloudAccountId: String?; var cloudDriveId: String?; var workspaceId: String?
         var mountPoint: String?; var mounted: Bool; var healthy: Bool; var offline: Bool?
         var conflictCopies: Bool
+        /// Whether the app has learned this state folder (it mounts its drive at login); a mount request teaches it.
+        var knownToApp: Bool
     }
     var app: App
     var `extension`: Extension
     var accounts: [Account]
     var profiles: [Profile]
 }
-private struct ProfileReference: Encodable { var profile: String; var backend: String; var mountPoint: String?; var mounted: Bool }
+private struct ProfileReference: Encodable {
+    var profile: String; var backend: String; var mountPoint: String?; var mounted: Bool
+    /// The state folder, for a drive attached in one of its own (connect --new-state-folder).
+    var stateDirectory: String? = nil
+}
 private struct ProfileStatus: Encodable { var profile: String; var backend: String; var mountPoint: String?; var mounted: Bool; var connectionState: String; var drive: DriveStatus }
 private struct CacheResult: Encodable { var profile: String; var evictedBytes: Int64; var drive: DriveStatus }
 private struct PinResult: Encodable { var profile: String; var path: String; var pinned: Bool; var drive: DriveStatus }

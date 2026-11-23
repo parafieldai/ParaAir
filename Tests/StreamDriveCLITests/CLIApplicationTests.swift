@@ -770,6 +770,42 @@ extension CLIApplicationTests {
     }
 }
 
+extension CLIApplicationTests {
+    func testASecondDriveGetsAStateFolderOfItsOwnSharingTheSignIn() throws {
+        let fixture = try cloudFixture(), fake = FakeSystem()
+        let home = try temporaryDirectory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: home); _ = fake }
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path, "PARAAIR_APP_PATH": "/missing/ParaAir.app"],
+                                 dependencies: fixture.dependencies, system: fake.system, home: home)
+        XCTAssertEqual(app.run(["connect", "studio", "--cloud-account", fixture.account.id, "--cloud-drive", CLICloudStub.drive]).exitCode, 0)
+        let full = app.run(["connect", "ParaOS", "--cloud-account", fixture.account.id, "--cloud-drive-name", "ParaAir Cloud"])
+        XCTAssertEqual(full.exitCode, 1); XCTAssertTrue(full.stderr.contains("--new-state-folder"), full.stderr)
+
+        let added = app.run(["connect", "ParaOS", "--cloud-account", fixture.account.id, "--cloud-drive-name", "ParaAir Cloud",
+                             "--new-state-folder", "--conflict-copies", "--json"])
+        XCTAssertEqual(added.exitCode, 0, added.stdout + added.stderr)
+        let folder = try XCTUnwrap(try object(added)["stateDirectory"] as? String)
+        XCTAssertEqual(URL(fileURLWithPath: folder).deletingLastPathComponent().path,
+                       CloudDriveSetup.cloudDrivesFolder(home: home).standardizedFileURL.path)
+        let profile = try ProfileStore(root: URL(fileURLWithPath: folder)).load("ParaOS")
+        XCTAssertEqual(profile.cloudDriveID, CLICloudStub.drive); XCTAssertEqual(profile.conflictCopies, true)
+        XCTAssertEqual(try CloudAccountStore(root: URL(fileURLWithPath: folder)).load(fixture.account.id).binding, fixture.account.binding)
+        XCTAssertEqual(try ProfileStore(root: fixture.root).list().map(\.name), ["studio"], "the first folder keeps its one drive")
+        XCTAssertNoThrow(try CloudDriveSetup.adoptableProfile(URL(fileURLWithPath: folder), knownRoots: [fixture.root], home: home))
+
+        // Two drives of one name would mount at the same place.
+        let clash = app.run(["connect", "studio", "--cloud-account", fixture.account.id, "--cloud-drive", CLICloudStub.drive, "--new-state-folder"])
+        XCTAssertEqual(clash.exitCode, 1); XCTAssertTrue(clash.stderr.contains("already saved"), clash.stderr)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: CloudDriveSetup.cloudDrivesFolder(home: home).path).count, 1)
+        // A drive the service doesn't know leaves no folder behind.
+        let missing = app.run(["connect", "Other", "--cloud-account", fixture.account.id, "--cloud-drive", "4f0c2a7e-6b1d-4e0a-9c2f-1d2e3f4a5b6c",
+                               "--new-state-folder"])
+        XCTAssertEqual(missing.exitCode, 14)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: CloudDriveSetup.cloudDrivesFolder(home: home).path).count, 1)
+        XCTAssertEqual(app.run(["connect", "x", "--new-state-folder"]).exitCode, 2)
+    }
+}
+
 private final class OutputBox: @unchecked Sendable {
     private let lock = NSLock()
     private var stored = Data()

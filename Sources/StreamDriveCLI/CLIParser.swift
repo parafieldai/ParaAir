@@ -12,6 +12,8 @@ struct ConnectArguments: Equatable {
     var values: [String: String]
     var overwrite: Bool
     var conflictCopies = false
+    /// Attach the drive in a state folder of its own (`Cloud Drives/<uuid>`), sharing a sign-in from another folder.
+    var newStateFolder = false
 }
 
 enum CLICommand: Equatable {
@@ -117,7 +119,7 @@ enum CLIParser {
             try noExtraArguments(commandArguments, command: name)
             command = .connections
         case "connect":
-            let options = try parseOptions(commandArguments, valueNames: ["metadata-url", "library", "mount-point", "fixture-root", "credential-id", "connection", "cache-mib", "min-free-mib", "block-size", "journal-mib", "cloud-account", "cloud-drive", "cloud-drive-name"], switchNames: ["replace", "conflict-copies"])
+            let options = try parseOptions(commandArguments, valueNames: ["metadata-url", "library", "mount-point", "fixture-root", "credential-id", "connection", "cache-mib", "min-free-mib", "block-size", "journal-mib", "cloud-account", "cloud-drive", "cloud-drive-name"], switchNames: ["replace", "conflict-copies", "new-state-folder"])
             commandArguments = options.positionals
             let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
             try noExtraArguments(commandArguments, command: name)
@@ -134,8 +136,13 @@ enum CLIParser {
                     throw usage("--\(flag) requires a lowercase identifier")
                 }
             }
+            if options.switches.contains("new-state-folder") {
+                guard options.values["cloud-account"] != nil else { throw usage("--new-state-folder requires --cloud-account") }
+                guard !options.switches.contains("replace") else { throw usage("--new-state-folder makes a new folder; --replace doesn't apply") }
+            }
             command = .connect(ConnectArguments(profile: profile, values: options.values, overwrite: options.switches.contains("replace"),
-                                                conflictCopies: options.switches.contains("conflict-copies")))
+                                                conflictCopies: options.switches.contains("conflict-copies"),
+                                                newStateFolder: options.switches.contains("new-state-folder")))
         case "mount":
             let options = try parseOptions(commandArguments, valueNames: ["mount-point", "wait"])
             commandArguments = options.positionals

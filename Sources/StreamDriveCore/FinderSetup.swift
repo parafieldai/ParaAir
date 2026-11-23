@@ -77,6 +77,12 @@ public struct LoginMountFolders: Equatable, Sendable {
     public mutating func choose(_ next: String, leaving previous: String, previousHasDrive: Bool) {
         select(next, keeping: previousHasDrive && kept.contains(next) ? previous : nil)
     }
+    /// A folder another app asked to mount (a drive the paraair CLI attached in a folder of its own): it mounts at
+    /// login too, beside the selected one.
+    public mutating func keep(_ folder: String, selected: String) {
+        guard folder != selected, !kept.contains(folder) else { return }
+        kept.append(folder)
+    }
     /// Folders to mount at login, the selected one first. Kept folders without a drive drop out.
     public mutating func targets(selected: String, hasDrive: (String) -> Bool) -> [String] {
         kept.removeAll { $0 == selected || !hasDrive($0) }

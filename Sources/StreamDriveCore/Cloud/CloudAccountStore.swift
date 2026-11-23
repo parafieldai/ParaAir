@@ -118,6 +118,28 @@ public final class CloudAccountStore: @unchecked Sendable {
         }
     }
 
+    /// Saves `account`'s public record in this folder, for one more drive of an account signed in in another folder.
+    /// No token is copied: the record names the same Keychain item (its id and binding), which every folder's sessions
+    /// re-read under their own lock before a refresh, and a repeated refresh gets the same successor from the service
+    /// for a day (spec 3.4), so folders sharing a sign-in never invalidate each other. Signing out in one folder signs
+    /// out all of them. Refused unless the vault holds tokens bound to this account.
+    public func share(_ account: CloudAccount, vault: any ConnectionVault) throws {
+        try account.validate()
+        guard account.state == .signedIn, let secrets = try? vault.load(id: account.id), secrets.binding == account.binding,
+              !(secrets.oauth?.refreshToken ?? "").isEmpty else {
+            throw DriveError(EACCES, "Sign in to ParaAir Cloud")
+        }
+        try withLock {
+            try check(file(account.id), directory: false)
+            if FileManager.default.fileExists(atPath: file(account.id).path) {
+                guard try load(account.id).binding == account.binding else {
+                    throw DriveError(EXDEV, "This saved account belongs to another ParaAir Cloud user. Sign in again to add it.")
+                }
+            }
+            try write(account)
+        }
+    }
+
     /// Marks the record signed out first, so no process can use it, then removes and
     /// returns the stored tokens for a best-effort revoke outside the lock.
     @discardableResult

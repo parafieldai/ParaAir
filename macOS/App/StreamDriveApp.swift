@@ -195,9 +195,12 @@ final class MenuModel: ObservableObject {
         if !early.isEmpty { DispatchQueue.main.async { [weak self] in early.forEach { self?.handleExternalURL($0) } } }
     }
 
-    /// paraair:// requests from other apps (the paraair CLI, ParaOS onboarding). Neither changes a setting or reads a
-    /// secret: sign-in opens ParaAir's own ParaAir Cloud sign-in, whose code the person types in the browser; mount
-    /// mounts a drive already saved in a folder ParaAir knows, as the Connect button does.
+    /// paraair:// requests from other apps (the paraair CLI, ParaOS onboarding). Neither reads a secret: sign-in opens
+    /// ParaAir's own ParaAir Cloud sign-in, whose code the person types in the browser; mount mounts a drive already
+    /// saved in a folder ParaAir knows, as the Connect button does. A folder it doesn't know yet (a drive the paraair CLI
+    /// attached with connect --new-state-folder) is learned only when CloudDriveSetup.adoptableProfile accepts it: a
+    /// folder of this user directly in "Cloud Drives", with one ParaAir Cloud drive of an account already signed in
+    /// here. A link on a web page can't make such a folder, so it can't add one.
     ///   paraair://cloud/sign-in
     ///   paraair://drive/mount?profile=NAME&folder=STATE_FOLDER
     func handleExternalURL(_ url: URL) {
@@ -212,8 +215,25 @@ final class MenuModel: ObservableObject {
             guard let name = items.first(where: { $0.name == "profile" })?.value,
                   let folder = items.first(where: { $0.name == "folder" })?.value else { return }
             let root = URL(fileURLWithPath: folder, isDirectory: true).standardizedFileURL
-            guard knownStateRoots().contains(root), let profile = try? ProfileStore(root: root).load(name) else {
-                AppLog.setup.notice("external request: mount ignored, unknown folder or drive")
+            if !knownStateRoots().contains(root) {
+                do {
+                    guard try CloudDriveSetup.adoptableProfile(root, knownRoots: knownStateRoots()).name == name else {
+                        AppLog.setup.notice("external request: mount ignored, another drive in that folder"); return
+                    }
+                } catch {
+                    AppLog.setup.notice("external request: mount ignored, unknown folder errno=\((error as? DriveError)?.code ?? -1)")
+                    return
+                }
+                // Learned like a folder kept for login: it is renewed, mounts now and at every login, and the selected
+                // folder stays as it is.
+                rememberStateRoot(root)
+                loginMounts.keep(root.path, selected: stateRoot.path)
+                saveLoginMounts()
+                AppLog.setup.notice("external request: learned a drive folder")
+                reload()
+            }
+            guard let profile = try? ProfileStore(root: root).load(name) else {
+                AppLog.setup.notice("external request: mount ignored, unknown drive")
                 return
             }
             AppLog.setup.notice("external request: mount selected=\(root == self.stateRoot)")
@@ -222,6 +242,7 @@ final class MenuModel: ObservableObject {
             } else if (try? ProfileStore(root: root).list())?.first == profile {
                 // Another folder's drive mounts like a kept folder's at login, once that folder has been renewed.
                 if !pendingLoginMounts.contains(root) { pendingLoginMounts.append(root) }
+                if otherRenewals[root.path] == nil { renewNow(root) }
                 resumeLoginMounts()
             }
         default:
@@ -435,6 +456,21 @@ final class MenuModel: ObservableObject {
         let paths = Set(knownStateRoots().map(\.path))
         renewals = renewals.filter { paths.contains($0.key) }
         otherRenewals = otherRenewals.filter { paths.contains($0.key) }
+    }
+
+    /// Renews one other folder now, for a mount another app asked for, instead of waiting for the next pass over them.
+    private func renewNow(_ root: URL) {
+        Task { [weak self] in
+            guard let self else { return }
+            let services = self.renewalServices(for: root)
+            let started = Date()
+            let report = await services.connections.renewDueConnections()
+            let cloud = await services.cloud.renewDue()
+            self.logRenewal(root: root, report: report, cloud: cloud, started: started, selected: false)
+            guard !report.alreadyRunning else { return }
+            self.otherRenewals[root.path] = FolderRenewal(errors: report.errors, outcomes: report.outcomes, cloud: cloud)
+            self.resumeLoginMounts()
+        }
     }
 
     /// A mount waits on the extension: the selected folder's continuation or a kept folder's login mount.
@@ -665,7 +701,10 @@ final class MenuModel: ObservableObject {
         // A waiting switch keeps the sign-in it is for on screen until it happens.
         if pendingAdoption == nil { cloudAccount.reload() }
         activity.watch(stateRoot: stateRoot, profile: profiles.first)
-        changeFeed.watch(stateRoot: stateRoot, profiles: profiles)
+        // Every known folder's ParaAir Cloud drive, not only the selected one: a drive in a folder of its own (ParaOS) too.
+        changeFeed.watch(knownStateRoots().flatMap { root in
+            (root == stateRoot ? profiles : (try? ProfileStore(root: root).list()) ?? []).map { (root, $0) }
+        })
         readyConnection = profiles.isEmpty
             ? (try? ConnectionStore(root: stateRoot).list())?.first { $0.state == .storageReady } : nil
         mounted = Set(ParaAirVolumes.mountedPaths())
