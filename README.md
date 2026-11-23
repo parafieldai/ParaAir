@@ -166,7 +166,7 @@ paraair --state-dir DIR mount ParaOS --json   # the app mounts it at /Volumes/Pa
 - A state folder holds one drive. For another drive of an account already signed in (the ParaOS drive for someone whose folder holds their own drive), `connect … --new-state-folder` attaches it in a new folder, `~/Library/Application Support/ParaAir/Cloud Drives/<uuid>/`, and prints it as `stateDirectory`; then `paraair --state-dir <stateDirectory> mount ParaOS`. The folder shares the sign-in of the folder the account is in (only the account's public record is copied; the tokens stay one Keychain item, and signing out in one folder signs out both). The app learns a folder it doesn't know from a mount request only if it is a folder of this user directly in "Cloud Drives", holding one valid ParaAir Cloud drive of an account it is already signed in to, so a link on a web page can't add one; it then renews it, mounts the drive and mounts it at every login, and follows its change feed. `setup-status` lists such folders too, each profile with `knownToApp`. A drive name used in another folder is refused (both would mount at the same `/Volumes` point).
 - `cloud-sign-in` answers at once with the signed-in account if there is one. Otherwise it opens `paraair://cloud/sign-in`; with `--wait` it returns the account once one is signed in, or exits 11.
 - `mount` without `--mount-point`, or with one under `/Volumes`, asks the app (`paraair://drive/mount?profile=NAME&folder=STATE_FOLDER`) to mount the drive through FSKit at `/Volumes/<Finder name>` (the drive's display name, else the profile name), as its Connect button does, and waits up to `--wait` seconds (default 90). It counts as mounted only once the app has saved that point to this drive's profile, which the app does after checking the volume serves this state folder; a volume already at that point is refused. The app only mounts a drive already saved in a state folder it knows. This needs macOS 27 and a build with FSKit's mount entitlement; elsewhere the app mounts through its bundled CLI (marked `PARAAIR_MOUNT_ROUTE=direct`, which never asks the app back), and that path needs a mount point outside `/Volumes`.
-- Exit codes: 0 success, 1 failed, 2 usage, 3 uploads left after `uploads --retry`, 10 the app isn't installed, 11 not signed in, 12 the account's role or workspace doesn't allow it, 13 the File System Extension isn't turned on, 14 no such ParaAir Cloud drive (15–17: see Shared drives). With `--json` an error prints `{"error", "exitCode", "code"}`, `code` being `failed`, `usage`, `app_not_installed`, `not_signed_in`, `forbidden`, `extension_disabled`, `drive_not_found`, `not_mounted`, `version_conflict` or `not_found`.
+- Exit codes: 0 success, 1 failed, 2 usage, 3 uploads left after `uploads --retry`, 10 the app isn't installed, 11 not signed in, 12 the account's role or workspace doesn't allow it, 13 the File System Extension isn't turned on, 14 no such ParaAir Cloud drive or workspace (15–17: see Shared drives). With `--json` an error prints `{"error", "exitCode", "code"}`, `code` being `failed`, `usage`, `app_not_installed`, `not_signed_in`, `forbidden`, `extension_disabled`, `drive_not_found`, `not_mounted`, `version_conflict` or `not_found`.
 
 ### Shared drives (ParaOS)
 
@@ -198,6 +198,25 @@ paraair access set /Volumes/ParaOS/claims --role members --level create --json
   - On macOS 26 the kernel keeps a file's cached size and contents until the drive is remounted.
 - A save the drive's folder rules or the member's role refuse (403) waits for a decision like a read-only drive's change: Review… can save it as a new file (a `create` folder accepts that), export or discard it. It is retried at most every 15 minutes, so a rule granted later lets it through.
 - More exit codes: 15 `not_mounted` (the path isn't on a mounted ParaAir drive, or no known profile is mounted there), 16 `version_conflict`, 17 `not_found`.
+
+### Service credentials
+
+A service credential is a login for a backend (a job that collects records, a relay) to one workspace, limited to the folders you give it. Any workspace's owners and admins can make them, Personal or Team, with their own sign-in on this Mac. Give each backend its own credential and only the folder it needs, never your own sign-in.
+
+```sh
+paraair cloud-drives --cloud-account ID --json                      # the drive's workspaceId
+paraair credentials create --cloud-account ID --workspace WS --name "finance collector" --json
+paraair access set ParaOS /admin/finance --credential cred_… --level write --json   # or --level create
+paraair credentials list --cloud-account ID --workspace WS --json
+paraair credentials revoke --cloud-account ID --workspace WS --id cred_… --json
+```
+
+1. `credentials create` → `{workspaceId, credential: {id, name, createdAt, createdBy, lastUsedAt, revokedAt}, token}`. The token, `pcs_cred_….<secret>`, is in this output only, once, on standard output (the text form prints it on a line of its own with a warning). The service keeps a hash and ParaAir keeps no copy, in the state folder, Keychain or logs, so it can't be shown again: pipe it straight into the backend's secret store (`… --json | jq -r .token`), and if it is lost, revoke the credential and make another. The request is sent once and not retried, so a failure can't leave a second credential behind; if the reply was lost on the way, the error says so: check `credentials list` and revoke the one you have no token for. At most 20 active credentials per workspace.
+2. A new credential sees nothing. `access set … --credential ID --level write` lets it read and change everything at and under one folder (`/admin/finance` here); `--level create` lets it read, add files and folders and change only files it wrote, without moving or deleting anything; `read` only reads. Only its own rules apply (rules for `members` or `viewers` don't), and it can't manage credentials or rules or purge. `--credential` takes the id (`cred_…`); a token there is refused (exit 2) without being repeated.
+3. The backend sends the token as `Authorization: Bearer` on that workspace's drive routes (`/v1/drives/{d}/…`, see the service's API). Versions it writes show `author: {credential, name, createdBy}` in `versions`, and `access list` shows its rules as `credential:cred_… (name)`.
+4. `credentials list` → `{workspaceId, credentials: [...]}`, revoked ones included, never a token; the text form prints `id, active or revoked <time>, last used, name`. `credentials revoke --id ID` → `{workspaceId, id, revoked}`: the token stops working at once and the credential's folder rules are deleted in every drive of the workspace. Revoking twice succeeds.
+
+Exit codes: 11 the account isn't signed in on this Mac, 12 not an owner or admin of the workspace, 14 the account isn't in that workspace, 17 the workspace has no credential with that id.
 
 ## Storage, cache and write semantics
 
