@@ -340,6 +340,7 @@ final class MenuModel: ObservableObject {
     private func observeCloudAccount() {
         cloudObservation = cloudAccount.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         cloudAccount.refreshPendingUploads = { [weak self] in await self?.activity.refreshNow() }
+        cloudAccount.signedInFolder = { [weak self] root in self?.rememberStateRoot(root) }
     }
 
     private func logLifecycle(_ event: String) {
@@ -832,6 +833,8 @@ final class MenuModel: ObservableObject {
         let process = Process()
         process.executableURL = helper
         process.arguments = ["--state-dir", stateRoot.path, "mount", profileName]
+        // The CLI would otherwise ask this app to mount a drive that has no mount point, and the two would loop.
+        process.environment = ProcessInfo.processInfo.environment.merging(["PARAAIR_MOUNT_ROUTE": "direct"]) { _, new in new }
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice

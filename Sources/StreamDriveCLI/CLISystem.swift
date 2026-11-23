@@ -46,7 +46,9 @@ struct CLIOutcomeError: Error, LocalizedError {
 
 /// What the setup commands ask of macOS. Tests replace it, so they never open the app or read its settings.
 struct CLISystem {
-    struct AppInfo: Equatable { var bundleID: String?; var version: String? }
+    /// `version` is CFBundleShortVersionString ("0.1.0" for every 0.1.0 alpha); `build` is CFBundleVersion, the number
+    /// that grows with each release (alpha.3 is 21), which is what to compare.
+    struct AppInfo: Equatable { var bundleID: String?; var version: String?; var build: String? = nil }
 
     /// The app's bundle id and version from its Info.plist; nil when no app is there.
     var appInfo: (_ appPath: String) -> AppInfo?
@@ -73,7 +75,8 @@ struct CLISystem {
         appInfo: { path in
             let plist = URL(fileURLWithPath: path).appendingPathComponent("Contents/Info.plist")
             guard let info = NSDictionary(contentsOf: plist) as? [String: Any] else { return nil }
-            return AppInfo(bundleID: info["CFBundleIdentifier"] as? String, version: info["CFBundleShortVersionString"] as? String)
+            return AppInfo(bundleID: info["CFBundleIdentifier"] as? String, version: info["CFBundleShortVersionString"] as? String,
+                           build: info["CFBundleVersion"] as? String)
         },
         isRunning: { !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty },
         extensionState: { liveExtensionState(appPath: $0, bundleID: $1) },

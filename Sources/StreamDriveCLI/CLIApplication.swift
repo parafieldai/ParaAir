@@ -381,12 +381,13 @@ final class CLIApplication {
                 throw DriveError(ENOTSUP, "This Finder filesystem extension requires macOS 26 or later")
             }
             // Without a mount point, or under /Volumes (which only macOS can create folders in), the app mounts the drive
-            // through FSKit at /Volumes/<profile>, as its own Connect button does.
+            // through FSKit at /Volumes/<profile>, as its own Connect button does. The app's own mount helper (this CLI,
+            // run with PARAAIR_MOUNT_ROUTE=direct where FSKit's native mount isn't available) never asks the app back.
             let wanted = override.map(absolutePath) ?? profile.mountPoint
-            if wanted == nil || wanted!.hasPrefix("/Volumes/") {
+            if environment["PARAAIR_MOUNT_ROUTE"] != "direct", wanted == nil || wanted!.hasPrefix("/Volumes/") {
                 return try mountThroughApp(profile, stateRoot: stateRoot, requested: wanted, waitSeconds: wait ?? 90, invocation: invocation)
             }
-            let requested = wanted!
+            guard let requested = wanted else { throw CLIUsageError(message: "Set --mount-point when connecting or mounting this profile") }
             let point = try prepareMountPoint(requested, stateRoot: stateRoot, profile: profile)
             let output = try SystemCommands.run(executable: "/sbin/mount", arguments: MountController.mountArguments(profile: name, stateRoot: stateRoot.path, mountPoint: point))
             guard output.exitCode == 0 else {
@@ -485,19 +486,21 @@ final class CLIApplication {
         let appPath = absolutePath(Self.applicationPath(environment: environment))
         let info = system.appInfo(appPath)
         let app = SetupStatus.App(installed: info != nil, path: info == nil ? nil : appPath,
-                                  running: info?.bundleID.map(system.isRunning) ?? false, version: info?.version)
+                                  running: info?.bundleID.map(system.isRunning) ?? false, version: info?.version, build: info?.build)
         let state = info == nil ? "notDiscovered" : system.extensionState(appPath, info?.bundleID)
         let roots = knownRoots(explicit: explicit)
         let appFolders = Set(system.appStateFolders(info?.bundleID ?? ParaAirBundle.releaseApp).map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL.path })
         let profiles = roots.flatMap { root -> [SetupStatus.Profile] in
             ((try? ProfileStore(root: root).list()) ?? []).map { profile in
                 let isMounted = mounted(profile)
+                // Connectivity lives in the mounted drive's own process; a status read from here can't see it, so it is
+                // not part of `healthy` (and not reported).
                 let drive = try? open(profile, root: root).status()
-                let healthy = isMounted && drive != nil && drive?.offline == false && drive?.failingUploads == nil && drive?.ownedElsewhere == nil
+                let healthy = isMounted && drive != nil && drive?.failingUploads == nil && drive?.ownedElsewhere == nil
                 return SetupStatus.Profile(profile: profile.name, stateDirectory: root.path, backend: profile.backend.rawValue,
                                            cloudAccountId: profile.cloudAccountID, cloudDriveId: profile.cloudDriveID,
                                            workspaceId: profile.cloudWorkspaceID, mountPoint: profile.mountPoint, mounted: isMounted,
-                                           healthy: healthy, offline: drive?.offline, conflictCopies: profile.conflictCopies ?? false,
+                                           healthy: healthy, conflictCopies: profile.conflictCopies ?? false,
                                            knownToApp: appFolders.contains(root.standardizedFileURL.path))
             }
         }
@@ -512,10 +515,10 @@ final class CLIApplication {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    /// Asks the app to mount `profile` through FSKit (paraair://drive/mount), then waits for /Volumes/<profile>.
+    /// Asks the app to mount `profile` through FSKit (paraair://drive/mount), then waits for /Volumes/<Finder name>.
     private func mountThroughApp(_ profile: DriveProfile, stateRoot: URL, requested: String?, waitSeconds: Int,
                                  invocation: CLIInvocation) throws -> CLIExecution {
-        let point = "/Volumes/" + profile.name
+        let point = "/Volumes/" + profile.finderName
         if let requested, requested != point {
             throw CLIUsageError(message: "ParaAir mounts this drive at \(point); pass that or no --mount-point")
         }
@@ -525,8 +528,18 @@ final class CLIApplication {
             throw CLIOutcomeError(outcome: .extensionDisabled,
                                   message: "Turn on ParaAir in System Settings → General → Login Items & Extensions → File System Extensions")
         }
+        guard !system.mountedVolumes().contains(where: { $0.mountPoint == point }) else {
+            throw DriveError(EBUSY, "Another volume is already mounted at \(point)")
+        }
         try system.openURL(app.path, CLISystem.mountURL(profile: profile.name, stateDirectory: stateRoot.standardizedFileURL.path))
-        let isUp = { self.system.mountedVolumes().contains { $0.mountPoint == point && $0.isStreamDrive } }
+        // Done when a ParaAir volume is at the point and the app has saved that point to this drive's profile, which it
+        // does only after checking the mounted volume serves this state folder. A volume that merely has the same name
+        // (another folder's drive) never counts.
+        let store = ProfileStore(root: stateRoot)
+        let isUp = {
+            guard (try? store.load(profile.name))?.mountPoint == point else { return false }
+            return self.system.mountedVolumes().contains { $0.mountPoint == point && $0.isStreamDrive }
+        }
         for _ in 0..<waitSeconds {
             if isUp() { break }
             system.sleep(1)
@@ -546,7 +559,7 @@ final class CLIApplication {
 
     /// The profile, state folder and drive path a target names. A mounted path picks the mounted ParaAir drive that
     /// contains it, then the profile mounted there in the known state folders (or, failing that, the profile named
-    /// like the volume, as the app mounts drives at /Volumes/<profile>).
+    /// like the volume, as the app mounts drives at /Volumes/<Finder name>).
     private func resolve(_ target: CLITarget, invocation: CLIInvocation) throws -> ResolvedTarget {
         switch target {
         case .drive(let name, let path):
@@ -564,7 +577,7 @@ final class CLIApplication {
             }
             let volumeName = (volume.mountPoint as NSString).lastPathComponent
             guard let found = candidates.first(where: { $0.profile.mountPoint == volume.mountPoint })
-                    ?? candidates.first(where: { $0.profile.name == volumeName && $0.profile.mountPoint == nil }) else {
+                    ?? candidates.first(where: { ($0.profile.finderName == volumeName || $0.profile.name == volumeName) && $0.profile.mountPoint == nil }) else {
                 throw CLIOutcomeError(outcome: .notMounted, message: "No ParaAir profile in the known state folders is mounted at \(displayName(volume.mountPoint)); pass --state-dir")
             }
             let rest = String(full.dropFirst(volume.mountPoint.count))
@@ -799,13 +812,13 @@ private struct CloudDriveItem: Encodable { var id: String; var workspaceId: Stri
 
 /// `setup-status --json`: everything another app needs to walk a person through ParaAir setup. Read locally, no network.
 struct SetupStatus: Encodable {
-    struct App: Encodable { var installed: Bool; var path: String?; var running: Bool; var version: String? }
+    struct App: Encodable { var installed: Bool; var path: String?; var running: Bool; var version: String?; var build: String? }
     struct Extension: Encodable { var state: String }
     struct Account: Encodable { var id: String; var email: String; var issuer: String; var state: String; var stateDirectory: String; var workspaceIds: [String] }
     struct Profile: Encodable {
         var profile: String; var stateDirectory: String; var backend: String
         var cloudAccountId: String?; var cloudDriveId: String?; var workspaceId: String?
-        var mountPoint: String?; var mounted: Bool; var healthy: Bool; var offline: Bool?
+        var mountPoint: String?; var mounted: Bool; var healthy: Bool
         var conflictCopies: Bool
         /// Whether the app has learned this state folder (it mounts its drive at login); a mount request teaches it.
         var knownToApp: Bool

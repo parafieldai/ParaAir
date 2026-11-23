@@ -455,7 +455,7 @@ private final class FakeSystem {
     var onOpen: ((URL) -> Void)?
     var onSleep: ((Int) -> Void)?
     var system: CLISystem {
-        CLISystem(appInfo: { [unowned self] _ in installed ? .init(bundleID: "dev.streamdrive.app", version: "0.2.0") : nil },
+        CLISystem(appInfo: { [unowned self] _ in installed ? .init(bundleID: "dev.streamdrive.app", version: "0.2.0", build: "42") : nil },
                   isRunning: { [unowned self] _ in running },
                   extensionState: { [unowned self] _, _ in extensionState },
                   appStateFolders: { [unowned self] _ in folders },
@@ -481,7 +481,7 @@ extension CLIApplicationTests {
         let value = try object(result)
         let appInfo = try XCTUnwrap(value["app"] as? [String: Any])
         XCTAssertEqual(appInfo["installed"] as? Bool, true); XCTAssertEqual(appInfo["running"] as? Bool, true)
-        XCTAssertEqual(appInfo["version"] as? String, "0.2.0"); XCTAssertNotNil(appInfo["path"])
+        XCTAssertEqual(appInfo["version"] as? String, "0.2.0"); XCTAssertEqual(appInfo["build"] as? String, "42"); XCTAssertNotNil(appInfo["path"])
         XCTAssertEqual((value["extension"] as? [String: Any])?["state"] as? String, "enabled")
         let accounts = try XCTUnwrap(value["accounts"] as? [[String: Any]])
         XCTAssertEqual(accounts.count, 1)
@@ -581,7 +581,12 @@ extension CLIApplicationTests {
         let app = CLIApplication(environment: ["STREAMDRIVE_HOME": state.path], system: fake.system)
         XCTAssertEqual(app.run(["connect", "fixture", "--fixture-root", data.path]).exitCode, 0)
 
-        fake.onOpen = { _ in fake.mounted = [MountedVolume(mountPoint: "/Volumes/fixture", type: "streamdrive")] }
+        // Like the app: mount, then save the mount point to the profile.
+        let store = ProfileStore(root: state)
+        fake.onOpen = { _ in
+            fake.mounted = [MountedVolume(mountPoint: "/Volumes/fixture", type: "streamdrive")]
+            if var profile = try? store.load("fixture") { profile.mountPoint = "/Volumes/fixture"; try? store.save(profile, overwrite: true) }
+        }
         let mounted = app.run(["mount", "fixture", "--json"])
         XCTAssertEqual(mounted.exitCode, 0, mounted.stdout)
         XCTAssertEqual(try object(mounted)["mountPoint"] as? String, "/Volumes/fixture")
@@ -595,7 +600,21 @@ extension CLIApplicationTests {
         let timedOut = app.run(["mount", "fixture", "--wait", "2", "--json"])
         XCTAssertEqual(timedOut.exitCode, 1); XCTAssertEqual(try object(timedOut)["code"] as? String, "failed")
         XCTAssertEqual(fake.sleeps, 2)
+        // Another folder's drive with the same name appearing is not this drive: the profile never got that mount point.
+        if var profile = try? store.load("fixture") { profile.mountPoint = nil; try store.save(profile, overwrite: true) }
+        fake.onOpen = { _ in fake.mounted = [MountedVolume(mountPoint: "/Volumes/fixture", type: "streamdrive")] }
+        XCTAssertEqual(app.run(["mount", "fixture", "--wait", "2"]).exitCode, 1)
+        // And a volume already at that point refuses the request before asking the app.
+        fake.opened = []
+        XCTAssertEqual(app.run(["mount", "fixture", "--wait", "2"]).exitCode, 1)
+        XCTAssertTrue(fake.opened.isEmpty)
+        fake.mounted = []; fake.onOpen = nil
         XCTAssertEqual(app.run(["mount", "fixture", "--mount-point", "/Volumes/other"]).exitCode, 2)
+        // The app's own mount helper never asks the app back (they would loop): without a mount point it is a usage error.
+        let helper = CLIApplication(environment: ["STREAMDRIVE_HOME": state.path, "PARAAIR_MOUNT_ROUTE": "direct"], system: fake.system)
+        fake.opened = []
+        XCTAssertEqual(helper.run(["mount", "fixture"]).exitCode, 2)
+        XCTAssertTrue(fake.opened.isEmpty)
         fake.extensionState = "disabled"
         XCTAssertEqual(app.run(["mount", "fixture"]).exitCode, 13)
         fake.installed = false
