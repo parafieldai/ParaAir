@@ -131,8 +131,10 @@ struct GlideLink: View {
 /// The one prominent action per view: deep sage (Dark) or charcoal (Light). Its shape, height and
 /// font size are a native push button's for the same control size (a continuous rounded rectangle,
 /// corner about a quarter of the height, as AppKit draws it), so it sits in line with the native
-/// buttons beside it; the website's chamfered silhouette stays on the web. On hover a band of light
-/// crosses the face once; the button never moves.
+/// buttons beside it; the website's chamfered silhouette stays on the web. On hover a band crosses the
+/// face once, a shade in Dark mode and a faint light in Light mode, and pressing darkens the face: the
+/// warm-white label stays at 4.5:1 or more in every state (Dark: 4.8 at rest, 5.4 mid-band, 5.4
+/// pressed; Light: 13.0 at rest, 5.9 mid-band, 13.6 pressed). The button never moves.
 struct GlideProminentButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         GlideProminentButton(configuration: configuration)
@@ -148,6 +150,7 @@ private struct GlideProminentButton: View {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.controlSize) private var controlSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var scheme
     @State private var sweep: CGFloat = -1.2
 
     private var metrics: (font: CGFloat, horizontal: CGFloat, height: CGFloat) {
@@ -191,7 +194,9 @@ private struct GlideProminentButton: View {
             .overlay {
                 GeometryReader { proxy in
                     LinearGradient(stops: [.init(color: .clear, location: 0.3),
-                                           .init(color: Glide.accentInk.opacity(0.16), location: 0.5),
+                                           // Paper is charcoal in Dark mode (a shade, raising contrast)
+                                           // and warm white in Light mode (kept faint: 10% leaves 5.9:1).
+                                           .init(color: Glide.paper.opacity(scheme == .dark ? 0.18 : 0.10), location: 0.5),
                                            .init(color: .clear, location: 0.7)],
                                    startPoint: .leading, endPoint: .trailing)
                         .frame(width: proxy.size.width)
@@ -199,7 +204,7 @@ private struct GlideProminentButton: View {
                 }
                 .allowsHitTesting(false)
             }
-            .overlay(shape.fill(Glide.paper.opacity(configuration.isPressed && isEnabled ? 0.2 : 0)))
+            .overlay(shape.fill(Color.black.opacity(configuration.isPressed && isEnabled ? 0.18 : 0)))
             .clipShape(shape)
             .contentShape(shape)
             .onHover { inside in
