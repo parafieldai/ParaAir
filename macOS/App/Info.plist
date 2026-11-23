@@ -9,7 +9,7 @@
 <key>CFBundleIconName</key><string>ParaAir</string>
 <key>ParaAirUseNativeMount</key><true/>
 <key>CFBundlePackageType</key><string>APPL</string>
-<!-- paraair:// requests from other apps (the paraair CLI, ParaOS onboarding): MenuModel.handleExternalURL. -->
+<!-- paraair:// requests from other apps (the paraair CLI, another app's setup; contract/paraair-cli-v1): MenuModel.handleExternalURL. -->
 <key>CFBundleURLTypes</key><array><dict>
     <key>CFBundleURLName</key><string>ParaAir</string>
     <key>CFBundleURLSchemes</key><array><string>paraair</string></array>

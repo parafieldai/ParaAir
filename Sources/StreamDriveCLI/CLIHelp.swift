@@ -94,7 +94,7 @@ enum CLIHelp {
             for a service credential. cat-version writes the version's bytes to standard output, unchanged (exit 0
             only when all of them were written). restore-version makes a version current again, as a new version;
             with --expected-version it refuses (exit 16) when the file's current version is another one.
-            A MOUNTED_PATH such as /Volumes/ParaOS/records/x.json names the drive and the file in one argument.
+            A MOUNTED_PATH such as /Volumes/Team/projects/plan.md names the drive and the file in one argument.
             """ + "\n"
         case "conflict-info":
             return """
@@ -188,8 +188,8 @@ enum CLIHelp {
               doctor [PROFILE]                    Check local prerequisites without network or Keychain access
               help [COMMAND]
 
-            TARGET is PROFILE PATH (a path in the drive, such as /records/x.json) or a path under a mounted drive,
-            such as /Volumes/ParaOS/records/x.json; the drive and its state folder are worked out from the mount.
+            TARGET is PROFILE PATH (a path in the drive, such as /projects/plan.md) or a path under a mounted drive,
+            such as /Volumes/Team/projects/plan.md; the drive and its state folder are worked out from the mount.
             --json returns structured results. --profile NAME can replace a positional profile.
             State: --state-dir, then STREAMDRIVE_HOME, then ~/Library/Application Support/StreamDrive.
             The streamdrive command remains available for compatibility.

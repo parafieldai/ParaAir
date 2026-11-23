@@ -6,7 +6,7 @@ import StreamDriveCore
 import FSKit
 #endif
 
-/// Exit codes, and the JSON `code` beside them, that another app can act on (ParaOS onboarding). 1 is any other
+/// Exit codes, and the JSON `code` beside them, that another app can act on (contract/paraair-cli-v1). 1 is any other
 /// failure, 2 a usage error, 3 uploads left after `uploads --retry`.
 struct CLIOutcome: Equatable {
     var code: String

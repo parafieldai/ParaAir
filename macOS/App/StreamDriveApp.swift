@@ -216,7 +216,7 @@ final class MenuModel: ObservableObject {
         if !early.isEmpty { DispatchQueue.main.async { [weak self] in early.forEach { self?.handleExternalURL($0) } } }
     }
 
-    /// paraair:// requests from other apps (the paraair CLI, ParaOS onboarding). Neither reads a secret: sign-in opens
+    /// paraair:// requests from other apps (the paraair CLI, another app's setup). Neither reads a secret: sign-in opens
     /// ParaAir's own ParaAir Cloud sign-in, whose code the person types in the browser; mount mounts a drive already
     /// saved in a folder ParaAir knows, as the Connect button does. A folder it doesn't know yet (a drive the paraair CLI
     /// attached with connect --new-state-folder) is learned only when CloudDriveSetup.adoptableProfile accepts it: a
@@ -755,7 +755,7 @@ final class MenuModel: ObservableObject {
         if pendingAdoption == nil { cloudAccount.reload() }
         activity.watch(stateRoot: stateRoot, profile: profiles.first)
         let others = knownStateRoots().filter { $0 != stateRoot }.map { root in (root, (try? ProfileStore(root: root).list()) ?? []) }
-        // Every known folder's ParaAir Cloud drive, not only the selected one: a drive in a folder of its own (ParaOS) too.
+        // Every known folder's ParaAir Cloud drive, not only the selected one: a drive in a folder of its own (connect --new-state-folder) too.
         let watched: [(stateRoot: URL, profile: DriveProfile)] = profiles.map { (stateRoot, $0) }
             + others.flatMap { root, list in list.map { (root, $0) } }
         changeFeed.watch(watched)
