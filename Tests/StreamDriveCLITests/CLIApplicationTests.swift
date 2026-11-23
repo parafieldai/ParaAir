@@ -517,7 +517,12 @@ extension CLIApplicationTests {
         let app = CLIApplication(environment: ["STREAMDRIVE_HOME": state.path], system: fake.system)
         XCTAssertEqual(app.run(["connect", "fixture", "--fixture-root", data.path]).exitCode, 0)
 
-        fake.onOpen = { _ in fake.mounted = [MountedVolume(mountPoint: "/Volumes/fixture", type: "streamdrive")] }
+        // Like the app: mount, then save the mount point to the profile.
+        let store = ProfileStore(root: state)
+        fake.onOpen = { _ in
+            fake.mounted = [MountedVolume(mountPoint: "/Volumes/fixture", type: "streamdrive")]
+            if var profile = try? store.load("fixture") { profile.mountPoint = "/Volumes/fixture"; try? store.save(profile, overwrite: true) }
+        }
         let mounted = app.run(["mount", "fixture", "--json"])
         XCTAssertEqual(mounted.exitCode, 0, mounted.stdout)
         XCTAssertEqual(try object(mounted)["mountPoint"] as? String, "/Volumes/fixture")
@@ -531,6 +536,15 @@ extension CLIApplicationTests {
         let timedOut = app.run(["mount", "fixture", "--wait", "2", "--json"])
         XCTAssertEqual(timedOut.exitCode, 1); XCTAssertEqual(try object(timedOut)["code"] as? String, "failed")
         XCTAssertEqual(fake.sleeps, 2)
+        // Another folder's drive with the same name appearing is not this drive: the profile never got that mount point.
+        if var profile = try? store.load("fixture") { profile.mountPoint = nil; try store.save(profile, overwrite: true) }
+        fake.onOpen = { _ in fake.mounted = [MountedVolume(mountPoint: "/Volumes/fixture", type: "streamdrive")] }
+        XCTAssertEqual(app.run(["mount", "fixture", "--wait", "2"]).exitCode, 1)
+        // And a volume already at that point refuses the request before asking the app.
+        fake.opened = []
+        XCTAssertEqual(app.run(["mount", "fixture", "--wait", "2"]).exitCode, 1)
+        XCTAssertTrue(fake.opened.isEmpty)
+        fake.mounted = []; fake.onOpen = nil
         XCTAssertEqual(app.run(["mount", "fixture", "--mount-point", "/Volumes/other"]).exitCode, 2)
         // The app's own mount helper never asks the app back (they would loop): without a mount point it is a usage error.
         let helper = CLIApplication(environment: ["STREAMDRIVE_HOME": state.path, "PARAAIR_MOUNT_ROUTE": "direct"], system: fake.system)

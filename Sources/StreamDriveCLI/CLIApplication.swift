@@ -360,12 +360,14 @@ final class CLIApplication {
         let profiles = roots.flatMap { root -> [SetupStatus.Profile] in
             ((try? ProfileStore(root: root).list()) ?? []).map { profile in
                 let isMounted = mounted(profile)
+                // Connectivity lives in the mounted drive's own process; a status read from here can't see it, so it is
+                // not part of `healthy` (and not reported).
                 let drive = try? open(profile, root: root).status()
-                let healthy = isMounted && drive != nil && drive?.offline == false && drive?.failingUploads == nil && drive?.ownedElsewhere == nil
+                let healthy = isMounted && drive != nil && drive?.failingUploads == nil && drive?.ownedElsewhere == nil
                 return SetupStatus.Profile(profile: profile.name, stateDirectory: root.path, backend: profile.backend.rawValue,
                                            cloudAccountId: profile.cloudAccountID, cloudDriveId: profile.cloudDriveID,
                                            workspaceId: profile.cloudWorkspaceID, mountPoint: profile.mountPoint, mounted: isMounted,
-                                           healthy: healthy, offline: drive?.offline)
+                                           healthy: healthy)
             }
         }
         return SetupStatus(app: app, extension: .init(state: state), accounts: accountItems(roots), profiles: profiles)
@@ -379,10 +381,10 @@ final class CLIApplication {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    /// Asks the app to mount `profile` through FSKit (paraair://drive/mount), then waits for /Volumes/<profile>.
+    /// Asks the app to mount `profile` through FSKit (paraair://drive/mount), then waits for /Volumes/<Finder name>.
     private func mountThroughApp(_ profile: DriveProfile, stateRoot: URL, requested: String?, waitSeconds: Int,
                                  invocation: CLIInvocation) throws -> CLIExecution {
-        let point = "/Volumes/" + profile.name
+        let point = "/Volumes/" + profile.finderName
         if let requested, requested != point {
             throw CLIUsageError(message: "ParaAir mounts this drive at \(point); pass that or no --mount-point")
         }
@@ -392,8 +394,18 @@ final class CLIApplication {
             throw CLIOutcomeError(outcome: .extensionDisabled,
                                   message: "Turn on ParaAir in System Settings → General → Login Items & Extensions → File System Extensions")
         }
+        guard !system.mountedVolumes().contains(where: { $0.mountPoint == point }) else {
+            throw DriveError(EBUSY, "Another volume is already mounted at \(point)")
+        }
         try system.openURL(app.path, CLISystem.mountURL(profile: profile.name, stateDirectory: stateRoot.standardizedFileURL.path))
-        let isUp = { self.system.mountedVolumes().contains { $0.mountPoint == point && $0.isStreamDrive } }
+        // Done when a ParaAir volume is at the point and the app has saved that point to this drive's profile, which it
+        // does only after checking the mounted volume serves this state folder. A volume that merely has the same name
+        // (another folder's drive) never counts.
+        let store = ProfileStore(root: stateRoot)
+        let isUp = {
+            guard (try? store.load(profile.name))?.mountPoint == point else { return false }
+            return self.system.mountedVolumes().contains { $0.mountPoint == point && $0.isStreamDrive }
+        }
         for _ in 0..<waitSeconds {
             if isUp() { break }
             system.sleep(1)
@@ -563,7 +575,7 @@ struct SetupStatus: Encodable {
     struct Profile: Encodable {
         var profile: String; var stateDirectory: String; var backend: String
         var cloudAccountId: String?; var cloudDriveId: String?; var workspaceId: String?
-        var mountPoint: String?; var mounted: Bool; var healthy: Bool; var offline: Bool?
+        var mountPoint: String?; var mounted: Bool; var healthy: Bool
     }
     var app: App
     var `extension`: Extension

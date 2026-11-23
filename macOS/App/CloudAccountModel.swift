@@ -93,6 +93,9 @@ final class CloudAccountModel: ObservableObject {
     let policy: ParaAirCloudTransportPolicy
     /// Set by the app so the sign-out confirmation counts uploads that are current.
     var refreshPendingUploads: (@MainActor () async -> UploadActivity?)?
+    /// Told the state folder of every finished sign-in, at once, so other apps (the paraair CLI) can find the account
+    /// while a drive is still being chosen.
+    var signedInFolder: ((URL) -> Void)?
     private(set) var baseURL: URL?
     private let dependencies: EngineOpenDependencies
     private let resolveBaseURL: @MainActor (URL) -> URL?
@@ -248,6 +251,7 @@ final class CloudAccountModel: ObservableObject {
                 self.signInTask = nil
                 self.authorizationURL = nil
                 self.summary = result.me; self.summaryState = .loaded; self.summaryLoadedAt = Date()
+                self.signedInFolder?(result.stateRoot)
                 self.log.notice("cloud sign-in finished drives=\(result.drives.count) hasDrive=\(driveExists) newFolder=\(result.createdStateRoot)")
                 if driveExists {
                     self.phase = .signedIn(result.account)
