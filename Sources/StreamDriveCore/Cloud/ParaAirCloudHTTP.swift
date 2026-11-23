@@ -175,16 +175,20 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
     @discardableResult
     private func start(_ request: Request, bearer: String?, completion: @escaping (Result<Response, DriveError>) -> Void) -> URLSessionTask? {
         let route = request.route ?? request.method
+        // A request refused before it is sent names the check that refused it, in the log and the message, never a
+        // value: such a refusal leaves no other trace.
+        func refuse(_ check: String) -> URLSessionTask? {
+            Self.logger.error("\(route, privacy: .public) refused before sending: \(check, privacy: .public)")
+            completion(.failure(DriveError(EINVAL, "Invalid ParaAir Cloud request (\(check))", disposition: .attemptNotDispatched)))
+            return nil
+        }
         guard request.path.hasPrefix("/"), !request.path.hasPrefix("//"),
-              request.path.unicodeScalars.allSatisfy(Self.pathAllowed.contains), !request.path.contains("/../"),
-              request.method.range(of: "^[A-Z]{3,7}$", options: .regularExpression) != nil,
-              request.maxResponseBytes > 0, bearer.map(Self.validBearer) ?? true else {
-            completion(.failure(DriveError(EINVAL, "Invalid ParaAir Cloud request", disposition: .attemptNotDispatched))); return nil
-        }
+              request.path.unicodeScalars.allSatisfy(Self.pathAllowed.contains), !request.path.contains("/../") else { return refuse("path") }
+        guard request.method.range(of: "^[A-Z]{3,7}$", options: .regularExpression) != nil else { return refuse("method") }
+        guard request.maxResponseBytes > 0 else { return refuse("size") }
+        if let bearer, !Self.validBearer(bearer) { return refuse(Self.bearerProblem(bearer)) }
         let query = request.query.isEmpty ? "" : "?" + Self.encodeQuery(request.query)
-        guard let url = URL(string: baseURL.absoluteString + request.path + query) else {
-            completion(.failure(DriveError(EINVAL, "Invalid ParaAir Cloud request", disposition: .attemptNotDispatched))); return nil
-        }
+        guard let url = URL(string: baseURL.absoluteString + request.path + query) else { return refuse("address") }
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = request.method
         urlRequest.timeoutInterval = min(request.timeout ?? .infinity, session.configuration.timeoutIntervalForRequest)
@@ -222,6 +226,14 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
 
     private static func validBearer(_ value: String) -> Bool {
         !value.isEmpty && value.utf8.count <= 4096 && value.utf8.allSatisfy { (0x21...0x7e).contains($0) }
+    }
+    /// Which rule a token breaks, for the log: its shape only, never its characters.
+    static func bearerProblem(_ value: String) -> String {
+        if value.isEmpty { return "token empty" }
+        if value.utf8.count > 4096 { return "token longer than 4096 bytes" }
+        if value.utf8.contains(where: { $0 == 0x20 || $0 == 0x09 || $0 == 0x0a || $0 == 0x0d }) { return "token has whitespace (\(value.utf8.count) bytes)" }
+        if value.utf8.contains(where: { $0 < 0x20 || $0 == 0x7f }) { return "token has control characters (\(value.utf8.count) bytes)" }
+        return "token has non-ASCII characters (\(value.utf8.count) bytes)"
     }
 
     private func take(_ task: URLSessionTask?) -> Pending? {

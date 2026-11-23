@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import os
 
 /// The sign-in path shared by the app and the end-to-end tests: loopback PKCE,
 /// `/v1/me`, choice of state folder, account record and drive list.
@@ -43,20 +44,22 @@ public enum ParaAirCloudSignIn {
             throw DriveError(EACCES, "ParaAir Cloud did not grant drive access. Sign in again.")
         }
         return try await ParaAirCloudBlocking.run {
-            let http = try ParaAirCloudHTTP(baseURL: issuer, policy: transport.policy, configuration: transport.configuration)
+            let http = try step("client") { try ParaAirCloudHTTP(baseURL: issuer, policy: transport.policy, configuration: transport.configuration) }
             defer { http.invalidate() }
             let api = ParaAirCloudAPI(http: http, tokens: StaticAccessToken(tokens.accessToken))
-            let me = try api.me()
-            let target = try chooseRoot(issuer: issuer.absoluteString, userID: me.user.id, current: currentStateRoot, home: home)
+            let me = try step("account") { try api.me() }
+            let target = try step("folder") {
+                try chooseRoot(issuer: issuer.absoluteString, userID: me.user.id, current: currentStateRoot, home: home)
+            }
             let account = CloudAccount(id: target.accountID, issuer: issuer.absoluteString, userID: me.user.id, email: me.user.email)
             do {
-                try CloudAccountStore(root: target.root).signIn(account, tokens: tokens, vault: vault)
+                try step("save") { try CloudAccountStore(root: target.root).signIn(account, tokens: tokens, vault: vault) }
             } catch {
                 if target.created { try? FileManager.default.removeItem(at: target.root) }
                 throw error
             }
-            let saved = try CloudAccountStore(root: target.root).load(account.id)
-            return Result(account: saved, stateRoot: target.root, me: me, drives: try api.drives(),
+            let saved = try step("save") { try CloudAccountStore(root: target.root).load(account.id) }
+            return Result(account: saved, stateRoot: target.root, me: me, drives: try step("drives") { try api.drives() },
                           createdStateRoot: target.created, transport: transport)
         }
     }
@@ -92,13 +95,26 @@ public enum ParaAirCloudSignIn {
         }
     }
 
+    private static let log = Logger(subsystem: "dev.streamdrive.cloud", category: "sign-in")
+
+    /// Runs one step after the browser part of sign-in, and logs which one failed (no account details or tokens), so a
+    /// failure names its step: client, account (`/v1/me`), folder, save or drives.
+    private static func step<T>(_ name: StaticString, _ body: () throws -> T) throws -> T {
+        do { return try body() }
+        catch {
+            log.error("sign-in step \(name, privacy: .public) failed errno \((error as? DriveError)?.code ?? -1, privacy: .public): \((error as? DriveError)?.message ?? "\(type(of: error))", privacy: .public)")
+            throw error
+        }
+    }
+
     /// The current folder when it already holds this account or holds nothing;
-    /// otherwise this account's own folder under "Cloud Drives".
+    /// otherwise this account's own folder under "Cloud Drives". A folder whose profiles can't be read (a file whose
+    /// name doesn't match the profile in it, say) counts as taken, so it never stops a sign-in.
     static func chooseRoot(issuer: String, userID: String, current: URL, home: URL) throws -> (root: URL, accountID: String, created: Bool) {
         let store = CloudAccountStore(root: current)
         if let existing = store.existing(issuer: issuer, userID: userID) { return (current, existing.id, false) }
         let listed = store.list()
-        if listed.accounts.isEmpty, listed.unreadable.isEmpty, try ProfileStore(root: current).list().isEmpty {
+        if listed.accounts.isEmpty, listed.unreadable.isEmpty, (try? ProfileStore(root: current).list())?.isEmpty == true {
             return (current, UUID().uuidString.lowercased(), false)
         }
         let drives = CloudDriveSetup.defaultStateRoot(accountID: "x", home: home).deletingLastPathComponent()
