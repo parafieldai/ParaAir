@@ -120,12 +120,29 @@ struct CheckForUpdatesButton: View {
     }
 }
 
-/// Routes NSApplication's termination question to MenuModel.shouldTerminate.
+/// Routes NSApplication's termination question to MenuModel.shouldTerminate, and paraair:// URLs to
+/// MenuModel.handleExternalURL.
 final class AppTermination: NSObject, NSApplicationDelegate {
     @MainActor static weak var model: MenuModel?
+    /// URLs that arrived before the model existed (a launch by `open paraair://...`); the model takes them at init.
+    @MainActor static var pendingURLs: [URL] = []
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated { Self.model?.shouldTerminate() ?? .terminateNow }
+    }
+
+    /// Registered before launch finishes, so a URL that launches the app reaches this handler rather than SwiftUI's
+    /// default, which would open a window for it.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleGetURL(_:withReplyEvent:)),
+                                                     forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
+    @objc func handleGetURL(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        guard let text = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue, let url = URL(string: text) else { return }
+        MainActor.assumeIsolated {
+            if let model = Self.model { model.handleExternalURL(url) } else { Self.pendingURLs.append(url) }
+        }
     }
 }
 

@@ -16,7 +16,7 @@ enum CLICommand: Equatable {
     case help(String?)
     case connect(ConnectArguments)
     case connections
-    case mount(profile: String, mountPoint: String?)
+    case mount(profile: String, mountPoint: String?, waitSeconds: Int?)
     case unmount(profile: String)
     case list(profile: String, path: String)
     case reveal(profile: String, path: String)
@@ -27,6 +27,9 @@ enum CLICommand: Equatable {
     case uploads(profile: String, retry: Bool)
     case doctor(profile: String?)
     case cloudAccounts
+    case cloudDrives(account: String)
+    case cloudSignIn(waitSeconds: Int?)
+    case setupStatus
     case trash(profile: String)
     case restore(profile: String, nodeID: Int64, to: String?)
     case storedDrives(connection: String, library: String?)
@@ -91,7 +94,7 @@ enum CLIParser {
             try noExtraArguments(commandArguments, command: name)
             command = .connections
         case "connect":
-            let options = try parseOptions(commandArguments, valueNames: ["metadata-url", "library", "mount-point", "fixture-root", "credential-id", "connection", "cache-mib", "min-free-mib", "block-size", "journal-mib", "cloud-account", "cloud-drive"], switchNames: ["replace"])
+            let options = try parseOptions(commandArguments, valueNames: ["metadata-url", "library", "mount-point", "fixture-root", "credential-id", "connection", "cache-mib", "min-free-mib", "block-size", "journal-mib", "cloud-account", "cloud-drive", "cloud-drive-name"], switchNames: ["replace"])
             commandArguments = options.positionals
             let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
             try noExtraArguments(commandArguments, command: name)
@@ -99,6 +102,10 @@ enum CLIParser {
                 if let value = options.values[flag] { _ = try integer(value, option: flag, allowsZero: flag == "min-free-mib") }
             }
             if options.values["cloud-drive"] != nil, options.values["cloud-account"] == nil { throw usage("--cloud-drive requires --cloud-account") }
+            if options.values["cloud-drive-name"] != nil {
+                guard options.values["cloud-account"] != nil else { throw usage("--cloud-drive-name requires --cloud-account") }
+                guard options.values["cloud-drive"] == nil else { throw usage("Use --cloud-drive or --cloud-drive-name, not both") }
+            }
             for flag in ["cloud-account", "cloud-drive"] {
                 if let value = options.values[flag], UUID(uuidString: value) == nil || value != value.lowercased() {
                     throw usage("--\(flag) requires a lowercase identifier")
@@ -106,11 +113,11 @@ enum CLIParser {
             }
             command = .connect(ConnectArguments(profile: profile, values: options.values, overwrite: options.switches.contains("replace")))
         case "mount":
-            let options = try parseOptions(commandArguments, valueNames: ["mount-point"])
+            let options = try parseOptions(commandArguments, valueNames: ["mount-point", "wait"])
             commandArguments = options.positionals
             let profile = try requiredProfile(globals["profile"], positionals: &commandArguments)
             try noExtraArguments(commandArguments, command: name)
-            command = .mount(profile: profile, mountPoint: options.values["mount-point"])
+            command = .mount(profile: profile, mountPoint: options.values["mount-point"], waitSeconds: try options.values["wait"].map(seconds))
         case "unmount":
             let options = try parseOptions(commandArguments)
             commandArguments = options.positionals
@@ -143,6 +150,19 @@ enum CLIParser {
         case "cloud-accounts":
             try noExtraArguments(commandArguments, command: name)
             command = .cloudAccounts
+        case "cloud-drives":
+            let options = try parseOptions(commandArguments, valueNames: ["cloud-account"])
+            try noExtraArguments(options.positionals, command: name)
+            guard let account = options.values["cloud-account"] else { throw usage("Usage: paraair cloud-drives --cloud-account ID") }
+            guard UUID(uuidString: account) != nil, account == account.lowercased() else { throw usage("--cloud-account requires a lowercase identifier") }
+            command = .cloudDrives(account: account)
+        case "cloud-sign-in":
+            let options = try parseOptions(commandArguments, valueNames: ["wait"])
+            try noExtraArguments(options.positionals, command: name)
+            command = .cloudSignIn(waitSeconds: try options.values["wait"].map(seconds))
+        case "setup-status":
+            try noExtraArguments(commandArguments, command: name)
+            command = .setupStatus
         case "trash":
             let options = try parseOptions(commandArguments)
             commandArguments = options.positionals
@@ -277,6 +297,12 @@ enum CLIParser {
             throw usage("--\(option) requires a \(allowsZero ? "nonnegative" : "positive") bounded integer")
         }
         return integer
+    }
+
+    /// `--wait` values: whole seconds, 1 to 900.
+    private static func seconds(_ value: String) throws -> Int {
+        guard let seconds = Int(value), (1...900).contains(seconds) else { throw usage("--wait requires 1 to 900 seconds") }
+        return seconds
     }
 
     private static func usage(_ message: String) -> CLIUsageError { CLIUsageError(message: message) }

@@ -111,4 +111,23 @@ final class CLIParserTests: XCTestCase {
             XCTAssertThrowsError(try CLIParser.parse(invalid), invalid.joined(separator: " "))
         }
     }
+
+    func testSetupCommandsParse() throws {
+        let account = "3f0c2a7e-6b1d-4e0a-9c2f-1d2e3f4a5b6c"
+        XCTAssertEqual(try CLIParser.parse(["setup-status", "--json"]).command, .setupStatus)
+        XCTAssertEqual(try CLIParser.parse(["cloud-sign-in"]).command, .cloudSignIn(waitSeconds: nil))
+        XCTAssertEqual(try CLIParser.parse(["cloud-sign-in", "--wait", "120"]).command, .cloudSignIn(waitSeconds: 120))
+        XCTAssertEqual(try CLIParser.parse(["cloud-drives", "--cloud-account", account]).command, .cloudDrives(account: account))
+        XCTAssertEqual(try CLIParser.parse(["mount", "ParaOS", "--wait", "60"]).command, .mount(profile: "ParaOS", mountPoint: nil, waitSeconds: 60))
+        for bad in [["cloud-sign-in", "--wait", "0"], ["cloud-sign-in", "--wait", "901"], ["cloud-sign-in", "extra"], ["setup-status", "x"],
+                    ["cloud-drives"], ["cloud-drives", "--cloud-account", account.uppercased()],
+                    ["connect", "p", "--cloud-drive-name", "ParaOS"],
+                    ["connect", "p", "--cloud-account", account, "--cloud-drive", account, "--cloud-drive-name", "ParaOS"]] {
+            XCTAssertThrowsError(try CLIParser.parse(bad), bad.joined(separator: " "))
+        }
+        guard case .connect(let arguments) = try CLIParser.parse(["connect", "ParaOS", "--cloud-account", account, "--cloud-drive-name", "ParaOS"]).command else {
+            return XCTFail("connect")
+        }
+        XCTAssertEqual(arguments.values["cloud-drive-name"], "ParaOS")
+    }
 }

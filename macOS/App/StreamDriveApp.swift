@@ -54,6 +54,12 @@ struct StreamDriveApp: App {
         } label: {
             Image(nsImage: BrandMenuIcon.image).renderingMode(.template)
                 .accessibilityLabel("ParaAir")
+                // The menu bar label lives as long as the app, so it can open a window an external request asked for.
+                .onChange(of: model.windowRequest) { _, id in
+                    guard let id else { return }
+                    openWindow(id: id); NSApp.activate(ignoringOtherApps: true)
+                    model.windowRequest = nil
+                }
         }.menuBarExtraStyle(.window)
     }
 }
@@ -128,6 +134,8 @@ final class MenuModel: ObservableObject {
     @Published var reviewOpen = false
     @Published var resolvingPath: String?
     @Published var pendingReconnectID: String?
+    /// A window an external request wants shown (handleExternalURL); the menu bar label opens it.
+    @Published var windowRequest: String?
     /// A verified saved connection that has no drive yet (read from public connection records only).
     @Published private(set) var readyConnection: StorageConnection?
     @Published private(set) var extensionState: FinderExtensionState = .unchecked
@@ -180,6 +188,43 @@ final class MenuModel: ObservableObject {
         startRenewal()
         updater.$pendingUpdateTitle.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         AppTermination.model = self
+        let early = AppTermination.pendingURLs
+        AppTermination.pendingURLs = []
+        if !early.isEmpty { DispatchQueue.main.async { [weak self] in early.forEach { self?.handleExternalURL($0) } } }
+    }
+
+    /// paraair:// requests from other apps (the paraair CLI, ParaOS onboarding). Neither changes a setting or reads a
+    /// secret: sign-in opens ParaAir's own ParaAir Cloud sign-in, whose code the person types in the browser; mount
+    /// mounts a drive already saved in a folder ParaAir knows, as the Connect button does.
+    ///   paraair://cloud/sign-in
+    ///   paraair://drive/mount?profile=NAME&folder=STATE_FOLDER
+    func handleExternalURL(_ url: URL) {
+        guard url.scheme?.lowercased() == "paraair", let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        switch (components.host?.lowercased(), components.path) {
+        case ("cloud", "/sign-in"):
+            AppLog.setup.notice("external request: sign-in")
+            windowRequest = "storage-settings"
+            cloudAccount.signIn(onReady: { [weak self] root in self?.adoptStateRoot(root) })
+        case ("drive", "/mount"):
+            let items = components.queryItems ?? []
+            guard let name = items.first(where: { $0.name == "profile" })?.value,
+                  let folder = items.first(where: { $0.name == "folder" })?.value else { return }
+            let root = URL(fileURLWithPath: folder, isDirectory: true).standardizedFileURL
+            guard knownStateRoots().contains(root), let profile = try? ProfileStore(root: root).load(name) else {
+                AppLog.setup.notice("external request: mount ignored, unknown folder or drive")
+                return
+            }
+            AppLog.setup.notice("external request: mount selected=\(root == self.stateRoot)")
+            if root == stateRoot {
+                continueSetup(profile)
+            } else if (try? ProfileStore(root: root).list())?.first == profile {
+                // Another folder's drive mounts like a kept folder's at login, once that folder has been renewed.
+                if !pendingLoginMounts.contains(root) { pendingLoginMounts.append(root) }
+                resumeLoginMounts()
+            }
+        default:
+            AppLog.setup.notice("external request ignored")
+        }
     }
 
     /// Sparkle updates; it ejects every drive before an update replaces the app (UpdateGate).

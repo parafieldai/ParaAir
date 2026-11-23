@@ -9,6 +9,11 @@
 <key>CFBundleIconName</key><string>ParaAir</string>
 <key>ParaAirUseNativeMount</key><true/>
 <key>CFBundlePackageType</key><string>APPL</string>
+<!-- paraair:// requests from other apps (the paraair CLI, ParaOS onboarding): MenuModel.handleExternalURL. -->
+<key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>ParaAir</string>
+    <key>CFBundleURLSchemes</key><array><string>paraair</string></array>
+</dict></array>
 <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
 <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
 <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>

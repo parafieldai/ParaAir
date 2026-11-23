@@ -24,8 +24,11 @@ private final class CLICloudStub: URLProtocol {
     static let workspace = "ws_0123456789ABCDEFGHJKMNPQRS"
     private static let lock = NSLock()
     private static var logged: [(path: String, body: Data)] = []
+    /// What GET /v1/drives lists (names only; the drive above is the one whose details exist).
+    private static var listed: [(id: String, name: String)] = [(drive, "ParaAir Cloud")]
     static var requests: [(path: String, body: Data)] { lock.lock(); defer { lock.unlock() }; return logged }
-    static func reset() { lock.lock(); logged = []; lock.unlock() }
+    static func reset() { lock.lock(); logged = []; listed = [(drive, "ParaAir Cloud")]; lock.unlock() }
+    static func list(_ drives: [(id: String, name: String)]) { lock.lock(); listed = drives; lock.unlock() }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == host }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -44,6 +47,10 @@ private final class CLICloudStub: URLProtocol {
         }
         var status = 200, object: Any
         switch path {
+        case "/v1/drives":
+            Self.lock.lock(); let drives = Self.listed; Self.lock.unlock()
+            object = ["drives": drives.map { ["id": $0.id, "workspaceId": Self.workspace, "name": $0.name, "role": "admin", "writable": true,
+                                               "chunkSize": 4_194_304, "createdAt": "2026-10-09T12:00:00.000Z"] }]
         case drive:
             object = ["drive": ["id": Self.drive, "workspaceId": Self.workspace, "name": "ParaAir Cloud", "role": "owner", "writable": true,
                                 "chunkSize": 4_194_304, "createdAt": "2026-10-09T12:00:00.000Z"],
@@ -105,7 +112,7 @@ final class CLIApplicationTests: XCTestCase {
         let fresh = try cloudFixture()
         let missing = CLIApplication(environment: ["STREAMDRIVE_HOME": fresh.root.path], dependencies: fresh.dependencies)
             .run(["connect", "studio", "--cloud-account", fresh.account.id, "--cloud-drive", "4f0c2a7e-6b1d-4e0a-9c2f-1d2e3f4a5b6c"])
-        XCTAssertEqual(missing.exitCode, 1)
+        XCTAssertEqual(missing.exitCode, 14, "drive_not_found has its own exit code")
         XCTAssertTrue(try ProfileStore(root: fresh.root).list().isEmpty)
     }
 
@@ -371,5 +378,173 @@ final class CLIApplicationTests: XCTestCase {
         let root = testWorkspaceRoot().appendingPathComponent("streamdrive-cli-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+}
+
+/// A stand-in for macOS in the setup commands: no app is opened and no real settings are read.
+private final class FakeSystem {
+    var installed = true, running = false, extensionState = "enabled"
+    var folders: [String] = []
+    var opened: [URL] = []
+    var mounted: [MountedVolume] = []
+    var sleeps = 0
+    var onOpen: ((URL) -> Void)?
+    var onSleep: ((Int) -> Void)?
+    var system: CLISystem {
+        CLISystem(appInfo: { [unowned self] _ in installed ? .init(bundleID: "dev.streamdrive.app", version: "0.2.0") : nil },
+                  isRunning: { [unowned self] _ in running },
+                  extensionState: { [unowned self] _, _ in extensionState },
+                  appStateFolders: { [unowned self] _ in folders },
+                  openURL: { [unowned self] _, url in opened.append(url); onOpen?(url) },
+                  mountedVolumes: { [unowned self] in mounted },
+                  sleep: { [unowned self] _ in sleeps += 1; onSleep?(sleeps) })
+    }
+}
+
+extension CLIApplicationTests {
+    private func object(_ result: CLIExecution) throws -> [String: Any] {
+        try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any], result.stdout + result.stderr)
+    }
+
+    func testSetupStatusReportsAppExtensionAccountsAndDrives() throws {
+        let fixture = try cloudFixture(), fake = FakeSystem()
+        fake.running = true
+        fake.folders = ["/nonexistent-app-folder"] // ignored: STREAMDRIVE_HOME names the only folder
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path], dependencies: fixture.dependencies, system: fake.system)
+        XCTAssertEqual(app.run(["connect", "studio", "--cloud-account", fixture.account.id, "--cloud-drive", CLICloudStub.drive]).exitCode, 0)
+        let result = app.run(["setup-status", "--json"])
+        XCTAssertEqual(result.exitCode, 0, result.stdout)
+        let value = try object(result)
+        let appInfo = try XCTUnwrap(value["app"] as? [String: Any])
+        XCTAssertEqual(appInfo["installed"] as? Bool, true); XCTAssertEqual(appInfo["running"] as? Bool, true)
+        XCTAssertEqual(appInfo["version"] as? String, "0.2.0"); XCTAssertNotNil(appInfo["path"])
+        XCTAssertEqual((value["extension"] as? [String: Any])?["state"] as? String, "enabled")
+        let accounts = try XCTUnwrap(value["accounts"] as? [[String: Any]])
+        XCTAssertEqual(accounts.count, 1)
+        XCTAssertEqual(accounts[0]["id"] as? String, fixture.account.id)
+        XCTAssertEqual(accounts[0]["state"] as? String, "signedIn")
+        XCTAssertEqual(accounts[0]["email"] as? String, "cli@example.test")
+        XCTAssertEqual(accounts[0]["stateDirectory"] as? String, fixture.root.standardizedFileURL.path)
+        XCTAssertEqual(accounts[0]["workspaceIds"] as? [String], [CLICloudStub.workspace])
+        let profiles = try XCTUnwrap(value["profiles"] as? [[String: Any]])
+        XCTAssertEqual(profiles.count, 1)
+        XCTAssertEqual(profiles[0]["profile"] as? String, "studio")
+        XCTAssertEqual(profiles[0]["cloudDriveId"] as? String, CLICloudStub.drive)
+        XCTAssertEqual(profiles[0]["cloudAccountId"] as? String, fixture.account.id)
+        XCTAssertEqual(profiles[0]["workspaceId"] as? String, CLICloudStub.workspace)
+        XCTAssertEqual(profiles[0]["mounted"] as? Bool, false); XCTAssertEqual(profiles[0]["healthy"] as? Bool, false)
+
+        fake.installed = false
+        let missing = try object(app.run(["setup-status", "--json"]))
+        XCTAssertEqual((missing["app"] as? [String: Any])?["installed"] as? Bool, false)
+        XCTAssertNil((missing["app"] as? [String: Any])?["path"])
+        XCTAssertEqual((missing["extension"] as? [String: Any])?["state"] as? String, "notDiscovered")
+        XCTAssertTrue(fake.opened.isEmpty, "setup-status never opens the app")
+    }
+
+    func testCloudSignInOpensTheAppAndWaitsForAnAccount() throws {
+        let fixture = try cloudFixture(), fake = FakeSystem()
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path], dependencies: fixture.dependencies, system: fake.system)
+        // Already signed in: answered at once, nothing opened.
+        let already = app.run(["cloud-sign-in", "--json"])
+        XCTAssertEqual(already.exitCode, 0); XCTAssertEqual(try object(already)["id"] as? String, fixture.account.id)
+        XCTAssertTrue(fake.opened.isEmpty)
+
+        let store = CloudAccountStore(root: fixture.root)
+        _ = try store.signOut(fixture.account.id, vault: fixture.dependencies.cloudVault)
+        let opened = app.run(["cloud-sign-in", "--json"])
+        XCTAssertEqual(opened.exitCode, 0); XCTAssertEqual(try object(opened)["opened"] as? Bool, true)
+        XCTAssertEqual(fake.opened, [URL(string: "paraair://cloud/sign-in")!])
+
+        fake.onSleep = { count in
+            guard count == 2 else { return }
+            try? store.signIn(fixture.account, tokens: OAuthTokens(accessToken: "pca_again", refreshToken: "pcr_again",
+                                                                   expiresAt: Date().addingTimeInterval(3600), scope: "drive offline_access"),
+                              vault: fixture.dependencies.cloudVault)
+        }
+        let waited = app.run(["cloud-sign-in", "--wait", "30", "--json"])
+        XCTAssertEqual(waited.exitCode, 0, waited.stdout)
+        XCTAssertEqual(try object(waited)["id"] as? String, fixture.account.id)
+        XCTAssertEqual(fake.sleeps, 2)
+
+        _ = try store.signOut(fixture.account.id, vault: fixture.dependencies.cloudVault)
+        fake.onSleep = nil; fake.sleeps = 0
+        let timedOut = app.run(["cloud-sign-in", "--wait", "3", "--json"])
+        XCTAssertEqual(timedOut.exitCode, 11)
+        XCTAssertEqual(try object(timedOut)["code"] as? String, "not_signed_in")
+        XCTAssertEqual(fake.sleeps, 3)
+
+        fake.installed = false
+        let notInstalled = app.run(["cloud-sign-in", "--json"])
+        XCTAssertEqual(notInstalled.exitCode, 10)
+        XCTAssertEqual(try object(notInstalled)["code"] as? String, "app_not_installed")
+    }
+
+    func testCloudDrivesAndConnectByName() throws {
+        let fixture = try cloudFixture(), fake = FakeSystem()
+        CLICloudStub.list([(CLICloudStub.drive, "ParaOS"), ("5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "Archive")])
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path], dependencies: fixture.dependencies, system: fake.system)
+        let listed = app.run(["cloud-drives", "--cloud-account", fixture.account.id, "--json"])
+        XCTAssertEqual(listed.exitCode, 0, listed.stdout)
+        let drives = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(listed.stdout.utf8)) as? [[String: Any]])
+        XCTAssertEqual(drives.map { $0["name"] as? String }, ["ParaOS", "Archive"])
+        XCTAssertEqual(Set(drives[0].keys), ["id", "workspaceId", "name", "role", "writable"])
+
+        let connected = app.run(["connect", "ParaOS", "--cloud-account", fixture.account.id, "--cloud-drive-name", "ParaOS", "--json"])
+        XCTAssertEqual(connected.exitCode, 0, connected.stdout)
+        XCTAssertEqual(try ProfileStore(root: fixture.root).load("ParaOS").cloudDriveID, CLICloudStub.drive)
+
+        let fresh = try cloudFixture()
+        let other = CLIApplication(environment: ["STREAMDRIVE_HOME": fresh.root.path], dependencies: fresh.dependencies, system: fake.system)
+        CLICloudStub.list([(CLICloudStub.drive, "Dup"), ("5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "Dup")])
+        for name in ["Missing", "Dup"] {
+            let result = other.run(["connect", "x", "--cloud-account", fresh.account.id, "--cloud-drive-name", name, "--json"])
+            XCTAssertEqual(result.exitCode, 14, name)
+            XCTAssertEqual(try object(result)["code"] as? String, "drive_not_found")
+        }
+        XCTAssertTrue(try ProfileStore(root: fresh.root).list().isEmpty)
+        let unknown = other.run(["cloud-drives", "--cloud-account", "6b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e", "--json"])
+        XCTAssertEqual(unknown.exitCode, 11)
+        XCTAssertEqual(other.run(["connect", "x", "--cloud-drive-name", "ParaOS"]).exitCode, 2)
+    }
+
+    func testMountWithoutAMountPointAsksTheAppAndWaitsForVolumes() throws {
+        let root = try temporaryDirectory(), data = root.appendingPathComponent("data")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+        let state = root.appendingPathComponent("state")
+        let fake = FakeSystem()
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": state.path], system: fake.system)
+        XCTAssertEqual(app.run(["connect", "fixture", "--fixture-root", data.path]).exitCode, 0)
+
+        fake.onOpen = { _ in fake.mounted = [MountedVolume(mountPoint: "/Volumes/fixture", type: "streamdrive")] }
+        let mounted = app.run(["mount", "fixture", "--json"])
+        XCTAssertEqual(mounted.exitCode, 0, mounted.stdout)
+        XCTAssertEqual(try object(mounted)["mountPoint"] as? String, "/Volumes/fixture")
+        let url = try XCTUnwrap(fake.opened.first)
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual([components.scheme, components.host, components.path], ["paraair", "drive", "/mount"])
+        XCTAssertEqual(components.queryItems?.first { $0.name == "profile" }?.value, "fixture")
+        XCTAssertEqual(components.queryItems?.first { $0.name == "folder" }?.value, state.standardizedFileURL.path)
+
+        fake.mounted = []; fake.onOpen = nil
+        let timedOut = app.run(["mount", "fixture", "--wait", "2", "--json"])
+        XCTAssertEqual(timedOut.exitCode, 1); XCTAssertEqual(try object(timedOut)["code"] as? String, "failed")
+        XCTAssertEqual(fake.sleeps, 2)
+        XCTAssertEqual(app.run(["mount", "fixture", "--mount-point", "/Volumes/other"]).exitCode, 2)
+        fake.extensionState = "disabled"
+        XCTAssertEqual(app.run(["mount", "fixture"]).exitCode, 13)
+        fake.installed = false
+        XCTAssertEqual(app.run(["mount", "fixture"]).exitCode, 10)
+    }
+
+    func testJSONErrorsCarryAStableCode() throws {
+        let root = try temporaryDirectory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": root.path], system: FakeSystem().system)
+        let failed = app.run(["status", "missing", "--json"])
+        XCTAssertEqual(failed.exitCode, 1); XCTAssertEqual(try object(failed)["code"] as? String, "failed")
+        let usage = app.run(["mount", "--json"])
+        XCTAssertEqual(usage.exitCode, 2); XCTAssertEqual(try object(usage)["code"] as? String, "usage")
     }
 }

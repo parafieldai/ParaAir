@@ -11,6 +11,8 @@ enum CLIHelp {
               --connection ID        Saved storage connection from the Mac app (no secrets)
               --cloud-account ID     ParaAir Cloud account signed in with the Mac app (see cloud-accounts)
               --cloud-drive ID       ParaAir Cloud drive to attach; requires --cloud-account
+              --cloud-drive-name NAME
+                                     The same, by the drive's exact name (exit 14 when none or several match)
               --credential-id ID     Metadata URI stored by the app's secure Keychain dialog
               --mount-point PATH     Empty directory for the Finder volume
               --cache-mib N          Evictable touched-block cache limit (default 1024 MiB)
@@ -87,9 +89,14 @@ enum CLIHelp {
             Usage: paraair [--state-dir PATH] COMMAND [PROFILE] [options]
 
               connections                         List public saved connection references
+              setup-status                        App, File System Extension, accounts and drives, for setup by another app
+              cloud-sign-in [--wait SECONDS]      Open ParaAir's ParaAir Cloud sign-in; --wait until an account is signed in
               cloud-accounts                      List ParaAir Cloud accounts signed in with the app
+              cloud-drives --cloud-account ID     List the account's ParaAir Cloud drives (id, workspace, name, role)
               connect PROFILE [options]           Save an existing JuiceFS volume reference
-              mount PROFILE [--mount-point PATH]  Mount using the signed macOS filesystem extension
+              mount PROFILE [--mount-point PATH] [--wait SECONDS]
+                                                  Mount using the signed macOS filesystem extension; without a
+                                                  mount point (or under /Volumes) the app mounts it at /Volumes/PROFILE
               unmount PROFILE                     Unmount without forcing open files closed
               ls PROFILE [/path]                  List metadata without hydrating file content
               reveal PROFILE [/path]              Open the mounted path in Finder
@@ -116,7 +123,11 @@ enum CLIHelp {
             This Finder extension requires macOS 26+ and the installed, signed, enabled ParaAir app.
             Profiles contain no credentials. Sign in or enter keys in the separate Connections window.
             Untouched files are not downloaded; cache, pins, dirty writes and metadata are accounted separately.
-            Exit codes: 0 success, 1 operation failed, 2 usage error, 3 uploads remain after retry.
+            Exit codes: 0 success, 1 operation failed, 2 usage error, 3 uploads remain after retry, 10 the app isn't
+            installed, 11 not signed in to ParaAir Cloud, 12 the account's role doesn't allow it, 13 the File System
+            Extension isn't turned on, 14 no such ParaAir Cloud drive. With --json an error prints
+            {"error", "exitCode", "code"}; code is failed, usage, app_not_installed, not_signed_in, forbidden,
+            extension_disabled or drive_not_found.
             """ + "\n"
         }
     }

@@ -90,7 +90,7 @@ A build shows the ParaAir Cloud section in Storage Settings only when it knows a
 - Uploads that keep failing (four failed attempts, or a quarter hour of failures) get their own notice instead of "waiting to upload": "Couldn’t upload 3 files: your storage refused access…", with how long the oldest has waited, and one notification per run of failures. `paraair status` prints the same line.
 - **Sign Out…** says how many files haven't uploaded yet and offers Upload First.
 
-CLI support (see `paraair help connect`): `paraair cloud-accounts`, `paraair connect NAME --cloud-account ID --cloud-drive ID`, `paraair trash NAME` and `paraair restore NAME NODE_ID [--to PATH]`.
+CLI support (see `paraair help connect`): `paraair cloud-accounts`, `paraair cloud-drives --cloud-account ID`, `paraair connect NAME --cloud-account ID (--cloud-drive ID | --cloud-drive-name NAME)`, `paraair trash NAME` and `paraair restore NAME NODE_ID [--to PATH]`. For setup by another app, see "Setup by another app" below.
 
 Loopback development builds, for a local `wrangler dev` service only:
 
@@ -138,6 +138,23 @@ Global `--state-dir PATH` or `STREAMDRIVE_HOME` selects state; the default is `~
 Credential-bearing URLs are rejected in public profiles and command arguments. Use `--credential-id NAME` and the app's secure credential-entry UI to store the authenticated metadata URI in Keychain. The URI must address the configured volume. Shared Keychain access is verified in the Developer ID signed app and packaged CLI; the sandboxed extension still needs runtime validation. The separate Connections window stores OAuth tokens and S3 keys in Keychain. `paraair connections --json` lists nonsecret references; `connect --connection ID --metadata-url URI` attaches a saved connection to an existing formatted volume. It does not start sign-in or accept storage secrets.
 
 Mounting requires an installed, signed and enabled FSKit extension. See [the macOS build and activation guide](macOS/README.md). The mount resource is the state directory, granting scoped access to its cache and journal. A development library or local fixture outside that directory is unsuitable for the sandboxed extension; the packaged native library is embedded in the app.
+
+### Setup by another app
+
+Another app on the Mac (ParaOS onboarding, for example) can walk a person through ParaAir setup with the CLI at `ParaAir.app/Contents/Helpers/ParaAirCLI.app/Contents/MacOS/paraair`. It never handles a sign-in code: sign-in happens in ParaAir's own window and the person's browser.
+
+```sh
+paraair setup-status --json        # app, File System Extension, accounts and drives; local only, no network
+paraair cloud-sign-in --wait 300 --json   # opens ParaAir's ParaAir Cloud sign-in, waits until an account is signed in
+paraair cloud-drives --cloud-account ID --json
+paraair --state-dir DIR connect ParaOS --cloud-account ID --cloud-drive-name ParaOS --json
+paraair --state-dir DIR mount ParaOS --json   # the app mounts it at /Volumes/ParaOS
+```
+
+- `setup-status` returns `{app: {installed, path?, running, version?}, extension: {state}, accounts: [{id, email, issuer, state, stateDirectory, workspaceIds}], profiles: [{profile, stateDirectory, backend, cloudAccountId?, cloudDriveId?, workspaceId?, mountPoint?, mounted, healthy, offline?}]}`. Missing values are left out. `extension.state` is `enabled`, `disabled`, `notDiscovered` or `unknown`. A profile is `healthy` when it is mounted and its drive is online, with no failing uploads and not in use on another Mac. It looks in the default state folder and every folder the app remembers (a ParaAir Cloud sign-in can make its own); `--state-dir` or `STREAMDRIVE_HOME` narrows it to one, and `stateDirectory` tells you which to pass to `connect` and `mount`. `workspaceIds` come from drives attached on this Mac; `cloud-drives` asks the service.
+- `cloud-sign-in` answers at once with the signed-in account if there is one. Otherwise it opens `paraair://cloud/sign-in`; with `--wait` it returns the account once one is signed in, or exits 11.
+- `mount` without `--mount-point`, or with one under `/Volumes`, asks the app (`paraair://drive/mount?profile=NAME&folder=STATE_FOLDER`) to mount the drive through FSKit at `/Volumes/<profile>`, as its Connect button does, and waits up to `--wait` seconds (default 90). The app only mounts a drive already saved in a state folder it knows.
+- Exit codes: 0 success, 1 failed, 2 usage, 3 uploads left after `uploads --retry`, 10 the app isn't installed, 11 not signed in, 12 the account's role or workspace doesn't allow it, 13 the File System Extension isn't turned on, 14 no such ParaAir Cloud drive. With `--json` an error prints `{"error", "exitCode", "code"}`, `code` being `failed`, `usage`, `app_not_installed`, `not_signed_in`, `forbidden`, `extension_disabled` or `drive_not_found`.
 
 ## Storage, cache and write semantics
 

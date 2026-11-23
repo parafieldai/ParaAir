@@ -1,4 +1,5 @@
 import Foundation
+import StreamDriveCore
 import Darwin
 
 struct ProcessOutput {
@@ -87,5 +88,6 @@ enum MountController {
 struct MountedVolume: Equatable {
     var mountPoint: String
     var type: String
-    var isStreamDrive: Bool { type.lowercased() == "streamdrive" }
+    /// Release ("streamdrive"), development ("streamdrive-dev") and legacy ("paraair") ParaAir volumes.
+    var isStreamDrive: Bool { ParaAirBundle.volumeTypes.contains(type.lowercased()) }
 }
