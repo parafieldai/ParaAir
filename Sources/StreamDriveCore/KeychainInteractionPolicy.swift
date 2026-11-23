@@ -70,6 +70,40 @@ struct SystemKeychainItemClient: KeychainItemClient {
 /// so disable legacy interaction in this process as well. This neither unlocks
 /// a Keychain nor changes any item's permissions or credentials.
 enum KeychainInteractionPolicy {
+    /// Every item ParaAir saves: readable once this Mac has been unlocked after starting up, also while the screen is
+    /// locked, and never synced to another device. A drive keeps uploading and renewing its sign-in while the Mac is
+    /// locked (overnight, say); "when unlocked" stopped both, and sign-in itself, whenever the screen locked.
+    static let accessibility = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+
+    /// What a failed save says. The Keychain reports a locked Mac as errSecInteractionNotAllowed.
+    static func saveFailure(_ status: OSStatus, _ generic: String) -> DriveError {
+        status == errSecInteractionNotAllowed
+            ? DriveError(EACCES, "This Mac is locked, so ParaAir can’t save to the Keychain. Unlock it and try again.")
+            : DriveError(EACCES, generic)
+    }
+    /// What a failed read says, for statuses other than a missing item.
+    static func readFailure(_ status: OSStatus, _ generic: String) -> DriveError {
+        status == errSecInteractionNotAllowed
+            ? DriveError(EACCES, "This Mac is locked, so ParaAir can’t read its saved credentials. Unlock it to continue.")
+            : DriveError(EACCES, generic)
+    }
+
+    /// Items saved by earlier builds ("when unlocked") move to `accessibility` the first time this process reads them
+    /// while the Mac is unlocked. Shared (data-protection) items only: the file-based Keychain doesn't lock with the screen.
+    private static let migrationLock = NSLock()
+    nonisolated(unsafe) private static var migrated = Set<String>()
+    static func migrateAccessibility(_ query: [String: Any], key: String, configuration: KeychainAccessConfiguration,
+                                     client: any KeychainItemClient) {
+        guard case .shared = configuration else { return }
+        let first = migrationLock.withLock { migrated.insert(key).inserted }
+        guard first else { return }
+        var match = query
+        match.removeValue(forKey: kSecReturnData as String); match.removeValue(forKey: kSecMatchLimit as String)
+        _ = client.update(match, attributes: [kSecAttrAccessible as String: accessibility])
+    }
+    /// Tests start from a clean slate.
+    static func resetMigrationsForTesting() { migrationLock.withLock { migrated = [] } }
+
     @discardableResult
     static func disableLegacyUI() -> OSStatus {
         SecKeychainSetUserInteractionAllowed(false)

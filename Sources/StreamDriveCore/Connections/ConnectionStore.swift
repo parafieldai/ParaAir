@@ -127,8 +127,9 @@ public struct KeychainConnectionVault: ConnectionVault {
         let (status, result) = client.copyMatching(q)
         guard status == errSecSuccess, let data = result, data.count <= 131072,
               let value = try? JSONDecoder().decode(ConnectionSecrets.self, from: data) else {
-            throw DriveError(EACCES, "Saved credentials are unavailable to this ParaAir build. Automatic access is paused; no password dialog will be opened.")
+            throw KeychainInteractionPolicy.readFailure(status, "Saved credentials are unavailable to this ParaAir build. Automatic access is paused; no password dialog will be opened.")
         }
+        KeychainInteractionPolicy.migrateAccessibility(q, key: service + "\0" + id, configuration: configuration, client: client)
         return value
     }
     public func save(_ secrets: ConnectionSecrets, id: String) throws {
@@ -136,13 +137,13 @@ public struct KeychainConnectionVault: ConnectionVault {
         guard data.count <= 131072 else { throw DriveError(EINVAL, "Connection credentials exceed the permitted size") }
         var q = try query(id); q[kSecValueData as String] = data
         q[kSecAttrLabel as String] = "ParaAir — Storage connection"
-        q[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        q[kSecAttrAccessible as String] = KeychainInteractionPolicy.accessibility
         let status = client.add(q)
         if status == errSecDuplicateItem {
-            guard client.update(try query(id), attributes: [kSecValueData as String: data, kSecAttrLabel as String: "ParaAir — Storage connection"]) == errSecSuccess else {
-                throw DriveError(EACCES, "Cannot renew credentials in Keychain")
-            }
-        } else if status != errSecSuccess { throw DriveError(EACCES, "Cannot save connection credentials in Keychain") }
+            let updated = client.update(try query(id), attributes: [kSecValueData as String: data, kSecAttrLabel as String: "ParaAir — Storage connection",
+                                                                    kSecAttrAccessible as String: KeychainInteractionPolicy.accessibility])
+            guard updated == errSecSuccess else { throw KeychainInteractionPolicy.saveFailure(updated, "Cannot renew credentials in Keychain") }
+        } else if status != errSecSuccess { throw KeychainInteractionPolicy.saveFailure(status, "Cannot save connection credentials in Keychain") }
     }
     public func remove(id: String) throws {
         let status = client.delete(try query(id))

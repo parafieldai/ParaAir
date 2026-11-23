@@ -235,8 +235,9 @@ public final class KeychainSecretStore {
         let (status, result) = client.copyMatching(query)
         guard status == errSecSuccess, let data = result, let uri = String(data: data, encoding: .utf8) else {
             if status == errSecItemNotFound { throw DriveError(ENOENT, "Metadata credentials are missing from Keychain. Add them through the app's secure credential workflow.") }
-            throw DriveError(EACCES, "Keychain metadata credentials are unavailable or locked")
+            throw KeychainInteractionPolicy.readFailure(status, "Keychain metadata credentials are unavailable or locked")
         }
+        KeychainInteractionPolicy.migrateAccessibility(query, key: service + "\0" + identifier, configuration: configuration, client: client)
         try validateSecretURI(uri)
         return uri
     }
@@ -248,14 +249,15 @@ public final class KeychainSecretStore {
         var value = try KeychainInteractionPolicy.prepare(item(identifier), configuration: configuration)
         value[kSecValueData as String] = data
         value[kSecAttrLabel as String] = "ParaAir — Metadata connection"
-        value[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        value[kSecAttrAccessible as String] = KeychainInteractionPolicy.accessibility
         let status = client.add(value)
         if status == errSecDuplicateItem {
             let updated = client.update(try KeychainInteractionPolicy.prepare(item(identifier), configuration: configuration),
-                                        attributes: [kSecValueData as String: data, kSecAttrLabel as String: "ParaAir — Metadata connection"])
-            guard updated == errSecSuccess else { throw DriveError(EACCES, "Cannot update metadata credentials in Keychain") }
+                                        attributes: [kSecValueData as String: data, kSecAttrLabel as String: "ParaAir — Metadata connection",
+                                                     kSecAttrAccessible as String: KeychainInteractionPolicy.accessibility])
+            guard updated == errSecSuccess else { throw KeychainInteractionPolicy.saveFailure(updated, "Cannot update metadata credentials in Keychain") }
         } else if status != errSecSuccess {
-            throw DriveError(EACCES, "Cannot save metadata credentials in Keychain")
+            throw KeychainInteractionPolicy.saveFailure(status, "Cannot save metadata credentials in Keychain")
         }
     }
 
@@ -267,8 +269,9 @@ public final class KeychainSecretStore {
         let (status, result) = client.copyMatching(query)
         guard status == errSecSuccess, let data = result, data.count <= 32768 else {
             if status == errSecItemNotFound { throw DriveError(ENOENT, "Storage connection credentials are missing from Keychain") }
-            throw DriveError(EACCES, "Storage connection credentials are unavailable or locked")
+            throw KeychainInteractionPolicy.readFailure(status, "Storage connection credentials are unavailable or locked")
         }
+        KeychainInteractionPolicy.migrateAccessibility(query, key: service + ".s3\0" + identifier, configuration: configuration, client: client)
         guard let value = try? JSONDecoder().decode(S3Credentials.self, from: data) else {
             throw DriveError(EINVAL, "Stored storage credentials are invalid")
         }
@@ -283,14 +286,15 @@ public final class KeychainSecretStore {
         var value = try KeychainInteractionPolicy.prepare(objectItem(identifier), configuration: configuration)
         value[kSecValueData as String] = data
         value[kSecAttrLabel as String] = "ParaAir — S3 storage"
-        value[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        value[kSecAttrAccessible as String] = KeychainInteractionPolicy.accessibility
         let status = client.add(value)
         if status == errSecDuplicateItem {
             let updated = client.update(try KeychainInteractionPolicy.prepare(objectItem(identifier), configuration: configuration),
-                                        attributes: [kSecValueData as String: data, kSecAttrLabel as String: "ParaAir — S3 storage"])
-            guard updated == errSecSuccess else { throw DriveError(EACCES, "Cannot update storage credentials in Keychain") }
+                                        attributes: [kSecValueData as String: data, kSecAttrLabel as String: "ParaAir — S3 storage",
+                                                     kSecAttrAccessible as String: KeychainInteractionPolicy.accessibility])
+            guard updated == errSecSuccess else { throw KeychainInteractionPolicy.saveFailure(updated, "Cannot update storage credentials in Keychain") }
         } else if status != errSecSuccess {
-            throw DriveError(EACCES, "Cannot save storage credentials in Keychain")
+            throw KeychainInteractionPolicy.saveFailure(status, "Cannot save storage credentials in Keychain")
         }
     }
 
