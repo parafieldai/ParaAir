@@ -133,7 +133,10 @@ final class MenuModel: ObservableObject {
     @Published private(set) var mountingFolder: String?
     /// The first drive of each known folder besides the selected one, read in `reload()`.
     private(set) var otherFolderDrives: [(root: URL, profile: DriveProfile)] = []
-    @Published var mountMessage: String?
+    @Published var mountMessage: String? { didSet { if mountMessage == nil { mountMessageFolder = nil } } }
+    /// The state folder of the drive `mountMessage` is about, recorded when it is written (`showMountMessage`); nil
+    /// when it is about no single drive.
+    @Published private(set) var mountMessageFolder: String?
     @Published var sidebarMessage: String?
     /// Presentation requests shared by the home window, menu bar panel and Storage Settings.
     @Published var appearanceOpen = false
@@ -772,8 +775,15 @@ final class MenuModel: ObservableObject {
     func reveal(_ profile: DriveProfile) {
         guard let mount = profile.mountPoint, isMounted(profile) else { return }
         if !NSWorkspace.shared.open(URL(fileURLWithPath: mount, isDirectory: true)) {
-            mountMessage = "Finder couldn’t open the mounted drive at " + mount + "."
+            let folder = profiles.contains(profile) ? stateRoot : otherFolderDrives.first { $0.profile == profile }?.root
+            showMountMessage("Finder couldn’t open the mounted drive at " + mount + ".", about: folder)
         }
+    }
+    /// Shows a mount or Finder message and records which drive's folder it is about, so a list of several drives names
+    /// that drive (not whichever one is mounting when the window draws).
+    private func showMountMessage(_ text: String, about folder: URL?) {
+        mountMessage = text
+        mountMessageFolder = folder?.path
     }
     func mount(_ profile: DriveProfile) { mount(profile, root: stateRoot, readiness: readiness(profile)) }
 
@@ -799,7 +809,7 @@ final class MenuModel: ObservableObject {
         let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/ParaAirCLI.app/Contents/MacOS/paraair")
         guard FileManager.default.isExecutableFile(atPath: helper.path) else {
             AppLog.mount.error("mount route=helper missing")
-            mountMessage = "This build is missing its mount helper."; return
+            showMountMessage("This build is missing its mount helper.", about: nil); return
         }
         AppLog.mount.notice("mount route=helper selected=\(selected)")
         mounting = true
@@ -815,16 +825,18 @@ final class MenuModel: ObservableObject {
                     // The helper exits 0 only once the volume is in the mount table.
                     AppLog.mount.notice("helper finished status=\(status) selected=false")
                     if status != 0 { setOtherDriveIssue(Self.otherDriveNotice(profile, root: root), root: root) }
+                    // The mount table and that folder's profile changed: read them before the list redraws.
+                    reload()
                     return
                 }
                 reload()
                 AppLog.mount.notice("helper finished status=\(status) mounted=\(self.isMounted(profile))")
                 if status != 0 || !isMounted(profile) {
-                    mountMessage = "ParaAir couldn’t open the drive. Check that ParaAir is turned on in System Settings, or review the connection in Storage Settings. Your saved files are retained."
+                    showMountMessage("ParaAir couldn’t open the drive. Check that ParaAir is turned on in System Settings, or review the connection in Storage Settings. Your saved files are retained.", about: root)
                 }
             } catch {
                 AppLog.mount.error("helper failed errno=\((error as? DriveError)?.code ?? -1)")
-                if root == stateRoot { mountMessage = error.localizedDescription }
+                if root == stateRoot { showMountMessage(error.localizedDescription, about: root) }
                 else { setOtherDriveIssue(Self.otherDriveNotice(profile, root: root), root: root) }
             }
         }
@@ -838,7 +850,7 @@ final class MenuModel: ObservableObject {
             guard let self else { return }
             switch event {
             case .pending:
-                self.mountMessage = Self.mountPendingNotice
+                self.showMountMessage(Self.mountPendingNotice, about: root)
             case .finished(let result):
                 defer { self.mounting = false; self.nativeMount = nil; self.resumeWaitingWork(trigger: "mount-finished") }
                 if root != self.stateRoot, self.mountMessage == Self.mountPendingNotice { self.mountMessage = nil }
@@ -860,14 +872,15 @@ final class MenuModel: ObservableObject {
                     // pins and durable pending writes.
                     saved.mountPoint = url.path
                     try store.save(saved, overwrite: true)
-                    guard root == self.stateRoot else { return }
+                    // Another folder's drive: read the new mount point and the mount table before the list redraws.
+                    guard root == self.stateRoot else { self.reload(); return }
                     self.reload()
                     guard self.isMounted(saved) else {
                         throw DriveError(EIO, "macOS returned a volume that is not present in the mount table")
                     }
                     self.mountMessage = nil
                 } catch {
-                    if root == self.stateRoot { self.mountMessage = error.localizedDescription }
+                    if root == self.stateRoot { self.showMountMessage(error.localizedDescription, about: root) }
                     else { self.setOtherDriveIssue(Self.otherDriveNotice(profile, root: root), root: root) }
                 }
             }
@@ -876,7 +889,7 @@ final class MenuModel: ObservableObject {
         do { try operation.start(stateRoot: root, profileName: profile.name) }
         catch {
             nativeMount = nil; mounting = false
-            if root == stateRoot { mountMessage = error.localizedDescription }
+            if root == stateRoot { showMountMessage(error.localizedDescription, about: root) }
             else { setOtherDriveIssue(Self.otherDriveNotice(profile, root: root), root: root) }
             // After this call returns, so a queued mount doesn't start inside the one that failed.
             Task { resumeWaitingWork(trigger: "mount-failed") }
@@ -1085,8 +1098,8 @@ final class MenuModel: ObservableObject {
         }
         if let url = URL(string: link) {
             if !NSWorkspace.shared.open(url) {
-                mountMessage = "Couldn’t open System Settings. Open General → Login Items & Extensions → By Category → File System Extensions, "
-                    + "switch on ParaAir, then return and choose Check again."
+                showMountMessage("Couldn’t open System Settings. Open General → Login Items & Extensions → By Category → File System Extensions, "
+                    + "switch on ParaAir, then return and choose Check again.", about: nil)
             }
         }
     }

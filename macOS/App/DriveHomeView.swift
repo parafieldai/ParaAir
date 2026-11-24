@@ -56,10 +56,13 @@ extension MenuModel {
             otherCopies: otherAppCopies,
             mounted: profile.map(isMounted) ?? false,
             mounting: mountingSelected,
+            otherMountRunning: mounting && !mountingSelected,
             creatingDrive: creatingDrive,
             error: error,
             mountMessage: mountMessage,
-            mountMessageDrive: mountingSelected ? nil : mountingFolder.flatMap { otherFolderDrive($0)?.profile.finderName },
+            mountMessageDrive: mountMessageFolder.flatMap { folder in
+                folder == stateRoot.path ? profile?.finderName : otherFolderDrive(folder)?.profile.finderName
+            },
             // Listed drives show their own problems; the old folder notice is left for a folder no longer listed.
             folderNotice: adoptionNotice ?? (others.isEmpty ? otherDriveNotice : nil),
             sidebarMessage: sidebarMessage,

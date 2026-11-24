@@ -194,6 +194,11 @@ struct UISnapshots {
         var paraOSOff = fixtureParaOS
         paraOSOff.state = .off; paraOSOff.mounted = false
         switchOffSeveral.otherDrives = [paraOSOff, fixtureArchiveOff]
+        // A service without billing made the selected cloud workspace read-only; its row alone would say Connected.
+        var readOnlyListed = cloudReady
+        readOnlyListed.uploadActivity = nil
+        readOnlyListed.cloudUsage = CloudUsage(workspace: fixtureMe(stored: 640_000_000_000, status: "read_only").workspaces.first, state: .loaded)
+        readOnlyListed.otherDrives = [fixtureParaOS]
         return [("1-first-run", firstRun), ("2-storage-ready", ready), ("3-turn-on", turnOn),
                 ("4-checking", checking), ("5-connected", connected), ("6-connected-sign-in", mountedIssue),
                 ("7-sign-in-needed", issue), ("8-connecting", connecting),
@@ -205,7 +210,7 @@ struct UISnapshots {
                 ("22-cloud-no-storage", noStorage), ("23-cloud-trial", trial), ("24-turn-on-first", turnOnFirst),
                 ("25-still-off", stillOff), ("26-drives-one-needs-sign-in", oneNeedsSignIn), ("27-drives-connected", allConnected),
                 ("28-drives-all-blocked", allBlocked), ("29-drives-connecting", oneConnecting), ("30-drives-other-failed", otherFailed),
-                ("31-drives-switch-off", switchOffSeveral)]
+                ("31-drives-switch-off", switchOffSeveral), ("32-drives-cloud-read-only", readOnlyListed)]
     }()
 
     /// Drives of other state folders (folders of their own under Cloud Drives, and an older one kept for login).
@@ -1229,6 +1234,50 @@ struct UISnapshots {
         expect(switchOff.primary.action == .openSystemSettings && switchOff.showsPrimary && switchOff.offersCheckAgain
                && switchOff.showsSwitchPicture && switchOff.drives.count == 3 && switchOff.steps.isEmpty,
                "the switch still leads when it stops every drive, and the drives stay listed")
+
+        // Review fixes on #36.
+        let readOnly = HomePresentation.make(scenarios["32-drives-cloud-read-only"]!)
+        expect(readOnly.drives.first?.stateTitle == "Connected"
+               && readOnly.notices.contains { $0.id == "read-only" && $0.text == "ParaAir Cloud: " + HomePresentation.readOnlyNotice },
+               "a read-only workspace without billing keeps its warning beside other drives")
+        var billedReadOnly = scenarios["15-cloud-read-only"]!
+        billedReadOnly.otherDrives = [fixtureParaOS]
+        let billed = HomePresentation.make(billedReadOnly).notices
+        expect(billed.contains { $0.id == "billing" && $0.text.hasPrefix("ParaAir Cloud: ") } && !billed.contains { $0.id == "read-only" },
+               "billing that already explains read-only isn't repeated")
+        var noStorageListed = scenarios["22-cloud-no-storage"]!
+        noStorageListed.otherDrives = [fixtureParaOS]
+        expect(HomePresentation.make(noStorageListed).notices.contains { $0.id == "billing" && $0.text.hasPrefix("ParaAir Cloud: ") },
+               "a workspace with no storage yet keeps its billing notice beside other drives")
+        var mountingElsewhere = HomeInputs()
+        mountingElsewhere.credentialCheckFinished = true; mountingElsewhere.extensionState = .enabled
+        var paraOSConnecting = fixtureParaOS
+        paraOSConnecting.state = .connecting; paraOSConnecting.mounted = false
+        mountingElsewhere.otherDrives = [paraOSConnecting]
+        mountingElsewhere.mountMessage = "macOS is still opening the drive. ParaAir will finish setup when it replies."
+        mountingElsewhere.mountMessageDrive = "ParaOS"
+        expect(HomePresentation.make(mountingElsewhere).notices.contains { $0.id == "mount" && $0.text.hasPrefix("ParaOS: macOS is still opening") },
+               "another drive's mount message keeps its name with no drive selected")
+        mountingElsewhere.mountMessage = "Couldn’t open System Settings."
+        mountingElsewhere.mountMessageDrive = nil
+        expect(HomePresentation.make(mountingElsewhere).notices.contains { $0.id == "mount" && $0.text == "Couldn’t open System Settings." },
+               "a message about no single drive isn't given a drive's name")
+        var selectedWaits = scenarios["27-drives-connected"]!
+        selectedWaits.mounted = false; selectedWaits.uploadActivity = nil
+        selectedWaits.otherDrives = [paraOSConnecting, fixtureArchiveOff]
+        expect(HomePresentation.make(selectedWaits).drives.allSatisfy(\.enabled), "nothing waits while no mount runs")
+        selectedWaits.otherMountRunning = true
+        let waits = HomePresentation.make(selectedWaits).drives
+        expect(waits.first { $0.id == HomePresentation.selectedDriveID }.map { $0.action == .connectDrive && !$0.enabled } == true
+               && waits.first { $0.name == "Archive" }?.enabled == true,
+               "while another drive mounts, the selected drive's Connect waits; another folder's Connect still queues")
+        var switchWaits = scenarios["28-drives-all-blocked"]!
+        expect(HomePresentation.make(switchWaits).drives.first { $0.name == "ParaOS" }?.enabled == true, "switching folders is open when idle")
+        switchWaits.otherMountRunning = true
+        expect(HomePresentation.make(switchWaits).drives.first { $0.name == "ParaOS" }?.enabled == false, "switching folders waits for a mount")
+        switchWaits.otherMountRunning = false; switchWaits.creatingDrive = true
+        expect(HomePresentation.make(switchWaits).drives.first { $0.name == "ParaOS" }?.enabled == false,
+               "switching folders waits for a drive being created")
 
         var many = scenarios["26-drives-one-needs-sign-in"]!
         many.otherDrives.append(scenarios["28-drives-all-blocked"]!.otherDrives[0])

@@ -86,7 +86,7 @@ struct DriveHomeContent: View {
                 if listsDrives {
                     Section {
                         ForEach(presentation.drives) { row in
-                            DriveListRow(row: row, canSwitchFolder: details.canChangeStateFolder, perform: actions.drive)
+                            DriveListRow(row: row, perform: actions.drive)
                         }
                     } header: {
                         Text("Drives").font(.glideHeading).foregroundStyle(Glide.ink)
@@ -180,7 +180,7 @@ struct MenuBarPanel: View {
             if listsDrives {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(presentation.drives) { row in
-                        DriveListRow(row: row, compact: true, canSwitchFolder: details.canChangeStateFolder, perform: actions.drive)
+                        DriveListRow(row: row, compact: true, perform: actions.drive)
                     }
                 }
             }
@@ -312,8 +312,6 @@ private struct ActionRow: View {
 struct DriveListRow: View {
     let row: HomePresentation.DriveRow
     var compact = false
-    /// False while a mount or drive creation runs: a row that switches the selected folder waits for it.
-    var canSwitchFolder = true
     let perform: (String, HomePresentation.Action) -> Void
 
     var body: some View {
@@ -350,10 +348,14 @@ struct DriveListRow: View {
 
     @ViewBuilder private var action: some View {
         if let action = row.action, let title = row.actionTitle {
-            Button(title) { perform(row.id, action) }
+            let button = Button(title) { perform(row.id, action) }
                 .controlSize(compact ? .small : .regular)
-                .disabled(row.switchesFolder && !canSwitchFolder)
-                .help(row.switchesFolder ? "Shows \(row.name)’s state folder in ParaAir, then opens Storage Settings." : "")
+                .disabled(!row.enabled)
+            if row.switchesFolder {
+                button.help("Shows \(row.name)’s state folder in ParaAir, then opens Storage Settings.")
+            } else {
+                button
+            }
         } else if row.state == .connecting {
             ProgressView().controlSize(.small).accessibilityLabel("\(row.name) is connecting")
         }

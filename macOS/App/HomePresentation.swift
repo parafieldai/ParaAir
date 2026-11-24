@@ -20,11 +20,15 @@ struct HomeInputs: Equatable {
     /// Other copies of ParaAir on this Mac that LaunchServices knows about (OtherAppCopies.present).
     var otherCopies: [String] = []
     var mounted = false
+    /// The selected folder's drive is mounting.
     var mounting = false
+    /// Another folder's drive is mounting. One mount runs at a time, so the selected drive's Connect waits for it.
+    var otherMountRunning = false
     var creatingDrive = false
     var error: String?
     var mountMessage: String?
-    /// The drive `mountMessage` is about when it isn't the selected folder's (another folder's drive is mounting).
+    /// The drive `mountMessage` is about, recorded when the message was written; nil when it is about no single drive
+    /// (System Settings didn't open). Named before the message while drives are listed.
     var mountMessageDrive: String?
     /// A waiting folder switch, or a drive in another state folder that didn't connect at login.
     var folderNotice: String?
@@ -144,8 +148,11 @@ struct HomePresentation: Equatable {
         var issue: String?
         /// Its folder becomes the selected one first: Storage Settings shows the selected folder's connections.
         var switchesFolder = false
+        /// False while the action can't run yet (a mount or drive creation is running).
+        var enabled = true
     }
     static let selectedDriveID = "selected"
+    static let readOnlyNotice = "Read-only. You can open, download, move and delete files; new and changed files don’t upload."
 
     var status: Status
     var primary: Primary
@@ -280,8 +287,8 @@ struct HomePresentation: Equatable {
         if let error = input.error { result.notices.append(.init(id: "error", text: error, tone: .problem)) }
         if let copies = otherCopiesNotice(input.otherCopies) { result.notices.append(copies) }
         // The no-storage status already says what the billing notice would; the notice stays in Storage Settings.
-        result.notices += selectedDriveNotices(input, named: nil, billing: result.status.title != Self.noStorageTitle,
-                                               ownedWhenMounted: false)
+        result.notices += selectedDriveNotices(input, named: nil, mountDrive: nil, billing: result.status.title != Self.noStorageTitle,
+                                               listed: false)
         return result
     }
 
@@ -324,7 +331,7 @@ struct HomePresentation: Equatable {
                 result.notices.append(.init(id: "drive-" + row.id, text: "\(row.name): \(issue)", tone: .attention))
             }
         }
-        result.notices += selectedDriveNotices(input, named: input.driveName, billing: true, ownedWhenMounted: true)
+        result.notices += selectedDriveNotices(input, named: input.driveName, mountDrive: input.mountMessageDrive, billing: true, listed: true)
         return result
     }
 
@@ -346,7 +353,14 @@ struct HomePresentation: Equatable {
         }
         return drives.enumerated()
             .sorted { (rank($0.element.state), $0.offset) < (rank($1.element.state), $1.offset) }
-            .map { row($0.element) }
+            .map { item in
+                var row = row(item.element)
+                // The selected drive's Connect starts a mount, which waits for one already running; another folder's
+                // Connect only queues its drive. Switching folders waits for any mount or drive creation.
+                if row.id == selectedDriveID, row.action == .connectDrive { row.enabled = !input.otherMountRunning }
+                if row.switchesFolder { row.enabled = !(input.mounting || input.otherMountRunning || input.creatingDrive) }
+                return row
+            }
     }
 
     private static func row(_ drive: KnownDrive) -> DriveRow {
@@ -391,8 +405,9 @@ struct HomePresentation: Equatable {
 
     /// Notices about the selected folder's drive. `named` puts the drive's name before each one when other drives are
     /// listed beside it, so a problem never reads as if it were every drive's.
-    private static func selectedDriveNotices(_ input: HomeInputs, named drive: String?, billing showsBilling: Bool,
-                                             ownedWhenMounted: Bool) -> [Notice] {
+    /// `listed`: other drives are listed beside it, so limits the status would otherwise explain become notices.
+    private static func selectedDriveNotices(_ input: HomeInputs, named drive: String?, mountDrive: String?, billing showsBilling: Bool,
+                                             listed: Bool) -> [Notice] {
         func withName(_ notice: Notice, as name: String?) -> Notice {
             guard let name else { return notice }
             var notice = notice
@@ -402,17 +417,23 @@ struct HomePresentation: Equatable {
         func named(_ notice: Notice) -> Notice { withName(notice, as: drive) }
         var notices: [Notice] = []
         if let message = input.mountMessage {
-            notices.append(withName(.init(id: "mount", text: message, tone: .attention), as: drive == nil ? nil : input.mountMessageDrive ?? drive))
+            // Named after the drive it was written about, which may be another folder's, even with no drive selected.
+            notices.append(withName(.init(id: "mount", text: message, tone: .attention), as: mountDrive))
         }
         if let notice = input.folderNotice { notices.append(.init(id: "folder", text: notice, tone: .attention)) }
         if let renewal = input.renewalError, input.connectionIssue == nil {
             notices.append(named(.init(id: "renewal", text: renewal, tone: .attention)))
         }
-        if let billing = input.cloudUsage?.billing.notice, input.storageKind == .paraairCloud, showsBilling {
-            notices.append(named(billing))
+        let billingNotice = input.storageKind == .paraairCloud ? input.cloudUsage?.billing.notice : nil
+        if let billing = billingNotice, showsBilling { notices.append(named(billing)) }
+        // A service without billing can still make a workspace read-only; alone, the status says so (`one()`), listed
+        // beside other drives the row only says Connected.
+        if listed, billingNotice == nil, input.storageKind == .paraairCloud, input.mounted,
+           input.cloudUsage?.workspace?.status == "read_only" {
+            notices.append(named(.init(id: "read-only", text: Self.readOnlyNotice, tone: .attention)))
         }
         if let message = input.sidebarMessage { notices.append(.init(id: "sidebar", text: message, tone: .neutral)) }
-        if let owner = input.ownedElsewhere, ownedWhenMounted || !input.mounted {
+        if let owner = input.ownedElsewhere, listed || !input.mounted {
             notices.append(named(.init(id: "owned-elsewhere", text: "\(owner) took over this drive. It opens read-only on this Mac.",
                                        tone: .attention)))
         }
