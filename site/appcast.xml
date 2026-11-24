@@ -7,6 +7,22 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>ParaAir updates</description>
     <language>en</language>
     <item>
+      <title>ParaAir 0.1.0 alpha 6</title>
+      <pubDate>Tue, 24 Nov 2026 01:43:00 GMT</pubDate>
+      <sparkle:version>38</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.6</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>Shared drives stay in step across Macs (macOS 27): files and folders changed, renamed, restored or deleted on another Mac show their new state here within seconds.</li>
+<li>Guided setup: turning on ParaAir's drive in System Settings comes first, with a picture of the right switch, and ParaAir moves on by itself once it's on.</li>
+<li>Updates keep the drive switched on; if macOS ever turns it off, ParaAir says so and shows the one-click step.</li>
+<li>Sign-in while the screen is locked recovers by itself once the Mac is unlocked.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.6/ParaAir-0.1.0-alpha.6.zip" length="49225787" type="application/octet-stream" sparkle:edSignature="DKn85Cxul7KqfUorcl8WgC44TkVYpdCF/VtPOjFi6Nlfht3qqsXjbpokejv0GH4Af+MsF1GVBJ8T3kMHcRV5Dw=="/>
+    </item>
+    <item>
       <title>ParaAir 0.1.0 alpha 3</title>
       <pubDate>Fri, 16 Oct 2026 11:14:22 GMT</pubDate>
       <sparkle:version>21</sparkle:version>
@@ -43,6 +59,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: ZHTwGTbBuChkMOYsqQyaHf6hFMcpklJGnUssPMWfgnKyFGCFZ52RgamTmm8NyldkRYIlrQ1bUrn2OXBuAmWkBg==
-length: 3116
+edSignature: LhUU5UELg9hmYxuFuSy9TDZbteGkuceH6MI3KpkcIW+KQ3KUHSox4j8U78W7ogPFl2qRRRrawLvdNKZ86/u8AQ==
+length: 4441
 -->
