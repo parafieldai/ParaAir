@@ -126,10 +126,12 @@ struct HomePresentation: Equatable {
             result = .init(status: .init(title: "Creating your drive…",
                                          detail: "ParaAir is preparing the drive on this Mac.", tone: .working),
                            primary: .init(action: .createDrive, title: "Creating…", enabled: false, busy: true))
-        } else if !input.mounted && !input.mounting && input.checkingExtension && input.extensionState == .unchecked {
+        } else if !input.mounted && !input.mounting && input.extensionState == .unchecked {
+            // Not known yet: the switch comes first, so nothing else is offered until the check answers. The button
+            // stays usable, in case macOS is slow to answer.
             result = .init(status: .init(title: "Checking System Settings…",
                                          detail: "Looking for ParaAir’s file system extension.", tone: .working),
-                           primary: .init(action: .openSystemSettings, title: "Open System Settings", enabled: false, busy: true))
+                           primary: .init(action: .openSystemSettings, title: "Open System Settings", busy: input.checkingExtension))
         } else if !input.mounted && !input.mounting && extensionOff {
             result = .init(status: extensionStatus(input.extensionState, stillOff: input.extensionStillOff,
                                                    turnedOff: input.extensionTurnedOff),

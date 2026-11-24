@@ -932,12 +932,15 @@ final class MenuModel: ObservableObject {
     /// moment the switch is on, whether or not the person comes back to ParaAir first.
     private func watchExtensionUntilEnabled() {
         extensionWatch?.cancel()
+        // A deadline in elapsed time, and a check that never waits on FSKit: a discovery that is slow or never answers
+        // can't stretch or stall the watch (refreshExtensionInBackground skips while one is still running).
+        let deadline = Date().addingTimeInterval(300)
         extensionWatch = Task { [weak self] in
-            for _ in 0..<150 {
+            while Date() < deadline {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let self, !Task.isCancelled else { return }
-                await self.refreshExtensionStatus(trigger: "settings-watch")
                 if self.extensionState == .enabled { return }
+                self.refreshExtensionInBackground(trigger: "settings-watch")
             }
         }
     }

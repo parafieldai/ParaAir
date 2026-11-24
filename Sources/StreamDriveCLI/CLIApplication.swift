@@ -101,7 +101,9 @@ final class CLIApplication {
                 return try render(ExtensionSettingsResult(state: state, opened: true), invocation: invocation,
                                   text: "Opened System Settings. \(ExtensionSetupGuidance.turnOn)\n")
             }
-            for _ in 0..<wait {
+            // Elapsed seconds, not polls: a slow FSKit answer (up to 5 s each) must not stretch the wait.
+            let deadline = system.now().addingTimeInterval(TimeInterval(wait))
+            while system.now() < deadline {
                 system.sleep(1)
                 if system.extensionState(app.path, app.bundleID) == "enabled" {
                     return try render(ExtensionSettingsResult(state: "enabled", opened: true), invocation: invocation,

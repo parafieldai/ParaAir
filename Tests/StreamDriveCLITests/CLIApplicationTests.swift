@@ -451,6 +451,9 @@ private final class FakeSystem {
     var folders: [String] = []
     var otherCopies: [String] = []
     var settingsOpened = 0
+    /// Seconds a fake FSKit query takes; the fake clock advances by it on each extensionState call.
+    var queryDelay: TimeInterval = 0
+    var clock = Date(timeIntervalSince1970: 2_000_000_000)
     var opened: [URL] = []
     var mounted: [MountedVolume] = []
     var sleeps = 0
@@ -459,13 +462,14 @@ private final class FakeSystem {
     var system: CLISystem {
         CLISystem(appInfo: { [unowned self] _ in installed ? .init(bundleID: "dev.streamdrive.app", version: "0.2.0", build: "42") : nil },
                   isRunning: { [unowned self] _ in running },
-                  extensionState: { [unowned self] _, _ in extensionState },
+                  extensionState: { [unowned self] _, _ in clock += queryDelay; return extensionState },
                   appStateFolders: { [unowned self] _ in folders },
                   otherAppCopies: { [unowned self] _, _ in otherCopies },
                   openExtensionSettings: { [unowned self] in settingsOpened += 1 },
                   openURL: { [unowned self] _, url in opened.append(url); onOpen?(url) },
                   mountedVolumes: { [unowned self] in mounted },
-                  sleep: { [unowned self] _ in sleeps += 1; onSleep?(sleeps) })
+                  sleep: { [unowned self] seconds in sleeps += 1; clock += seconds; onSleep?(sleeps) },
+                  now: { [unowned self] in clock })
     }
 }
 
@@ -650,6 +654,12 @@ extension CLIApplicationTests {
         let timedOut = app.run(["extension-settings", "--wait", "2", "--json"])
         XCTAssertEqual(timedOut.exitCode, 13); XCTAssertEqual(try object(timedOut)["code"] as? String, "extension_disabled")
         XCTAssertTrue((try object(timedOut)["error"] as? String)?.contains("By Category") == true)
+        // A slow FSKit (5 s per answer) doesn't stretch a 10-second wait into 60.
+        fake.queryDelay = 5; fake.sleeps = 0
+        let slow = fake.clock
+        XCTAssertEqual(app.run(["extension-settings", "--wait", "10"]).exitCode, 13)
+        XCTAssertLessThanOrEqual(fake.clock.timeIntervalSince(slow), 10 + 5 + 5 + 1, "the wait is elapsed seconds, not polls")
+        fake.queryDelay = 0
         XCTAssertEqual(app.run(["extension-settings", "extra"]).exitCode, 2)
         fake.installed = false
         XCTAssertEqual(app.run(["extension-settings"]).exitCode, 10)

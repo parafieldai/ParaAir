@@ -64,6 +64,8 @@ struct CLISystem {
     var openURL: (_ appPath: String, _ url: URL) throws -> Void
     var mountedVolumes: () -> [MountedVolume]
     var sleep: (_ seconds: TimeInterval) -> Void
+    /// The current time, for waits measured in elapsed seconds. Tests advance it with `sleep`.
+    var now: () -> Date = { Date() }
 
     /// Opens ParaAir's own sign-in (Storage Settings → ParaAir Cloud). The code is typed in the browser, never here.
     static let signInURL = URL(string: "paraair://cloud/sign-in")!

@@ -81,7 +81,7 @@ struct UISnapshots {
         drive.storageSummary = "Cloudflare R2 · studio-footage"
         drive.mountPath = "/Volumes/Client Footage"
 
-        var firstRun = base; firstRun.extensionState = .unchecked
+        var firstRun = base // the switch is already on: storage setup comes next
         var ready = base; ready.readyConnectionName = "Cloudflare R2"
         var turnOnFirst = base; turnOnFirst.extensionState = .disabled
         var stillOff = turnOnFirst; stillOff.extensionStillOff = true
@@ -1029,7 +1029,12 @@ struct UISnapshots {
         failures += checkUploadActivity()
         let first = HomePresentation.make(scenarios["1-first-run"]!)
         expect(first.primary.action == .addStorage, "first run offers Add Storage")
-        expect(first.steps.first?.state == .current, "first run starts at step 1")
+        expect(first.steps.map(\.state) == [.done, .current, .upcoming, .upcoming], "with the switch on, storage is the current step")
+        var unchecked = scenarios["1-first-run"]!; unchecked.extensionState = .unchecked
+        let pending = HomePresentation.make(unchecked)
+        expect(pending.primary.action == .openSystemSettings && pending.primary.enabled && pending.status.tone == .working
+               && pending.steps.first?.state == .current,
+               "before the first check answers, the switch is pending and no storage action is offered")
         let ready = HomePresentation.make(scenarios["2-storage-ready"]!)
         expect(ready.primary.action == .createDrive, "saved storage without a drive offers Create Drive")
         expect(ready.steps.map(\.state) == [.done, .done, .current, .upcoming], "ready storage marks the drive step current")
@@ -1051,9 +1056,10 @@ struct UISnapshots {
         var storageWithSwitchOff = scenarios["2-storage-ready"]!; storageWithSwitchOff.extensionState = .disabled
         expect(HomePresentation.make(storageWithSwitchOff).primary.action == .openSystemSettings,
                "saved storage still waits for the switch first")
-        var firstCheck = scenarios["1-first-run"]!; firstCheck.checkingExtension = true
+        var firstCheck = scenarios["1-first-run"]!; firstCheck.extensionState = .unchecked; firstCheck.checkingExtension = true
         let checkingFirst = HomePresentation.make(firstCheck)
-        expect(checkingFirst.primary.busy && !checkingFirst.primary.enabled, "the first extension check shows as checking, not as storage setup")
+        expect(checkingFirst.primary.busy && checkingFirst.primary.action == .openSystemSettings,
+               "the first extension check shows as checking, not as storage setup")
         var recheck = scenarios["24-turn-on-first"]!; recheck.checkingExtension = true
         expect(HomePresentation.make(recheck).status.title == turnOnFirst.status.title,
                "re-checking a switch that's off doesn't flicker to a checking state")
