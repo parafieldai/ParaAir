@@ -253,7 +253,7 @@ paraair members remove --cloud-account ID --workspace WS --email E --json
 - `add` makes the person a member at once, as `member` unless `--role` says otherwise; an address without an account gets one and can sign in with it. A new member needs a free seat (exit 1 otherwise). `added` is false when the address already was a member with that role; an address that is a member with another role is exit 1 (use `role`). With `--notify` the service emails a newly added person an invitation; `notified` says whether it did (false from a service that predates `--notify`). Without it nothing is emailed.
 - `role` and `remove` find the member by email, case-insensitively: exit 17 (`not_found`) when the address isn't a member, also when they left between that lookup and the change.
 - Only owners make owners, and admins can't change or remove an owner; the service refuses those. The last owner can't be demoted or removed (exit 1).
-- `add` and `remove` are sent once: a retry after a change that went through would read back "already a member" or "not a member". When the answer is lost (a server error or a dropped connection) they exit 1 and the `error` says to check `members list`; do that before trying again. A removed member loses access to the workspace's drives at once.
+- `add` and `remove` are never sent again after an answer that may mean the change went through (a timeout, a server error, a dropped connection): a retry would read back "already a member" or "not a member". They exit 1 then, and the `error` says to check `members list`; do that before trying again. The only resends are after a 401 (once, with a renewed sign-in) or a 429 that asks to wait, which the service answers before changing anything. A removed member loses access to the workspace's drives at once.
 
 ### `credentials`
 
@@ -281,7 +281,7 @@ paraair credentials revoke --cloud-account ID --workspace WS --id CREDENTIAL_ID 
 - `--name` is 1–100 characters after trimming, without control characters. A name or id that looks like a token is refused (exit 2) without repeating it, and no error message ever contains a token.
 - A new credential sees nothing until a folder rule names it. `revoke` stops its token at once and deletes its folder rules in every drive of the workspace; revoking a revoked credential succeeds. Exit 17 when the workspace has no credential with that id.
 - At most 20 active credentials per workspace (exit 1 beyond that).
-- `create` is sent once. When its answer is lost it exits 1 and the `error` says to run `credentials list` and revoke any credential you didn't get a token for.
+- `create` is never sent again after an answer that may mean the credential was made (a timeout, a server error, a lost reply). It exits 1 then, and the `error` says to run `credentials list` and revoke any credential you didn't get a token for. As for `members`, the only resends are after a 401 (once, with a renewed sign-in) or a 429 that asks to wait, which the service answers before making anything.
 
 ## Errors
 
