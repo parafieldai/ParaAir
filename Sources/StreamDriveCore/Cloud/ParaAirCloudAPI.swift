@@ -695,15 +695,18 @@ extension ParaAirCloudAPI {
     /// `POST /v1/workspaces/{ws}/members`: adds `email` with `role`. An address without an account gets one and can then
     /// sign in. `added` is false when the address already was a member with that role (a retry). With `notify` the
     /// service emails a newly added address an invitation and answers `notified: true`; a service that predates `notify`
-    /// ignores it and omits `notified`, which reads as false.
+    /// ignores it and omits `notified`, which reads as false. One attempt: a retry after an add that went through would
+    /// answer "already a member" and lose `added` and `notified`, so an uncertain failure says to check the list instead.
     public func addMember(workspaceID: String, email: String, role: ParaAirCloudMemberRole, notify: Bool = false) throws -> ParaAirCloudMemberAdded {
         struct Request: Encodable { var email: String; var role: String; var notify: Bool? }
         struct Body: Decodable { var member: ParaAirCloudWorkspaceMember; var notified: Bool? }
         return try unwrap {
             let request = Request(email: email, role: role.rawValue, notify: notify ? true : nil)
-            let call = Call(method: "POST", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/members", route: "POST /v1/workspaces/{ws}/members",
+            var call = Call(method: "POST", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/members", route: "POST /v1/workspaces/{ws}/members",
                             body: try ParaAirCloudJSON.encoder().encode(request))
-            let response = try memberCall(call, busy: "The workspace has no free seat. An owner can add seats to its plan")
+            call.attempts = 1
+            let response = try memberCall(call, busy: "The workspace has no free seat. An owner can add seats to its plan",
+                                          uncertain: "The address may have been added: check members list")
             let body = try decode(Body.self, response)
             guard body.member.isValid else { throw malformed() }
             return ParaAirCloudMemberAdded(member: body.member, added: response.status == 201, notified: body.notified ?? false)
@@ -722,19 +725,22 @@ extension ParaAirCloudAPI {
         }
     }
 
-    /// `DELETE /v1/workspaces/{ws}/members/{userId}`: removes a member; their access ends on their next request.
+    /// `DELETE /v1/workspaces/{ws}/members/{userId}`: removes a member; their access ends on their next request. One
+    /// attempt: a retry after a removal that went through would answer "not a member".
     public func removeMember(workspaceID: String, userID: String) throws {
         try unwrap {
-            let call = Call(method: "DELETE", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/members/\(try checkedUser(userID))",
+            var call = Call(method: "DELETE", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/members/\(try checkedUser(userID))",
                             route: "DELETE /v1/workspaces/{ws}/members/{userId}")
-            _ = try memberCall(call, busy: Self.lastOwner)
+            call.attempts = 1
+            _ = try memberCall(call, busy: Self.lastOwner, uncertain: "The member may have been removed: check members list")
         }
     }
 
     private static let lastOwner = "A workspace needs an owner: make someone else an owner first"
 
-    /// `perform`, with member wording for the codes whose file wording would mislead here.
-    private func memberCall(_ call: Call, busy: String?) throws -> ParaAirCloudHTTP.Response {
+    /// `perform`, with member wording for the codes whose file wording would mislead here. `uncertain` is added to a
+    /// failure that may have happened after the service made the change (a 5xx or a lost connection).
+    private func memberCall(_ call: Call, busy: String?, uncertain: String? = nil) throws -> ParaAirCloudHTTP.Response {
         do { return try perform(call) }
         catch let error as ParaAirCloudCallError {
             let text: String
@@ -742,7 +748,9 @@ extension ParaAirCloudAPI {
             case .busy? where busy != nil: text = busy!
             case .alreadyExists?: text = "That address is already a member with another role; change the role instead"
             case .notFound?: text = "That person isn’t a member of the workspace"
-            default: throw error
+            default:
+                guard let uncertain, error.drive.disposition == .ambiguous else { throw error }
+                text = error.drive.message + ". " + uncertain
             }
             throw ParaAirCloudCallError(drive: DriveError(error.drive.code, text, disposition: error.drive.disposition), code: error.code)
         }

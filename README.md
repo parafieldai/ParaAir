@@ -237,6 +237,7 @@ paraair members remove --cloud-account ID --workspace WS --email person@example.
 - `add` → `{member, added, notified}`: the person is a member at once, as `member` unless `--role` says otherwise. An address without an account gets one and can then sign in with it. With `--notify`, ParaAir Cloud emails a newly added person an invitation that says how to start, and `notified` is true. Without it, or when the service sent nothing, `notified` is false and the text output says to tell them to sign in with that address. A service that predates `--notify` ignores it, so `notified` stays false. `added` is false when they already were a member with that role; with another role it exits 1 (use `role`). It also exits 1 when no seat is free.
 - `role` → `{member}`; `remove` → `{userId, email, removed}`. Both find the member by email and exit 17 (`not_found`) when there is none. A removed member loses access to the workspace's drives on their next request.
 - Only owners make owners. Admins can't change or remove an owner, and members and viewers can't manage members (exit 12). The last owner can't be demoted or removed (exit 1). A workspace the account isn't in exits 14.
+- `add` and `remove` are sent once. When the answer is lost (a server error or a dropped connection) they exit 1 with an error ending in "check members list", since the change may have happened: run `members list` before trying again.
 
 ## Storage, cache and write semantics
 

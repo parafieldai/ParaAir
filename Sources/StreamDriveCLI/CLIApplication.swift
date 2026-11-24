@@ -876,10 +876,13 @@ final class CLIApplication {
             }
             return found
         }
-        /// A member who left between the list and the change is "not found" too.
+        /// A member who left between the list and the change is "not found" too. Outcomes the cloud errors already name
+        /// (a workspace the account is no longer in: 14) keep their exit code.
         func change<T>(_ body: () throws -> T) throws -> T {
             do { return try body() }
-            catch let error as DriveError where error.code == ENOENT { throw CLIOutcomeError(outcome: .notFound, message: error.message) }
+            catch let error as DriveError where error.code == ENOENT && ParaAirCloudOutcome.of(error) == nil {
+                throw CLIOutcomeError(outcome: .notFound, message: error.message)
+            }
         }
         switch action {
         case .list:

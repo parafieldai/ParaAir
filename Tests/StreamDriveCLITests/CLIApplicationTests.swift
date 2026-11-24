@@ -42,6 +42,11 @@ private final class CLICloudStub: URLProtocol {
         ["userId": adminID, "email": "ann@example.test", "role": "admin", "addedAt": "2026-11-23T10:00:00.000Z", "status": "invited"],
     ]
     private static var memberRows = initialMembers
+    /// How the next member change (POST, PATCH or DELETE) goes wrong: applied and then answered 500, or refused because the
+    /// account is no longer in the workspace.
+    enum MemberFault { case appliedThen500, workspaceGone }
+    private static var memberFault: MemberFault?
+    static func failNextMemberChange(_ fault: MemberFault) { lock.lock(); memberFault = fault; lock.unlock() }
     /// false: answer adds like a service that predates `notify` (no `notified` field, nothing emailed).
     private static var notifySupported = true
     static func serviceKnowsNotify(_ value: Bool) { lock.lock(); notifySupported = value; lock.unlock() }
@@ -50,7 +55,7 @@ private final class CLICloudStub: URLProtocol {
     static var versionHash: String { SHA256.hash(data: versionBytes).map { String(format: "%02x", $0) }.joined() }
     /// Whether the "throttled" create was already answered 429 once.
     private static var throttled = false
-    static func reset() { lock.lock(); logged = []; listed = [(drive, "ParaAir Cloud")]; throttled = false; memberRows = initialMembers; notifySupported = true; lock.unlock() }
+    static func reset() { lock.lock(); logged = []; listed = [(drive, "ParaAir Cloud")]; throttled = false; memberRows = initialMembers; memberFault = nil; notifySupported = true; lock.unlock() }
     static func list(_ drives: [(id: String, name: String)]) { lock.lock(); listed = drives; lock.unlock() }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == host }
@@ -197,8 +202,16 @@ private final class CLICloudStub: URLProtocol {
     }
     override func stopLoading() {}
 
-    /// The members routes, with the service's seat (3) and last-owner rules.
+    /// The members routes, with the service's seat (3) and last-owner rules, and the fault set for the next change.
     private static func members(path: String, method: String, body: Data) -> (Int, Any) {
+        lock.lock(); let fault = method == "GET" ? nil : memberFault; if method != "GET" { memberFault = nil }; lock.unlock()
+        let failure = { (status: Int, code: String) -> (Int, Any) in (status, ["error": ["code": code, "message": "x", "requestId": "req_TEST"]]) }
+        if fault == .workspaceGone { return failure(404, "workspace_not_found") }
+        let result = applyMembers(path: path, method: method, body: body)
+        return fault == .appliedThen500 && (200..<300).contains(result.0) ? failure(500, "internal") : result
+    }
+
+    private static func applyMembers(path: String, method: String, body: Data) -> (Int, Any) {
         func error(_ status: Int, _ code: String) -> (Int, Any) { (status, ["error": ["code": code, "message": "x", "requestId": "req_TEST"]]) }
         let base = "/v1/workspaces/\(workspace)/members"
         if path.hasPrefix("/v1/workspaces/\(forbiddenWorkspace)/") { return error(403, "forbidden") }
@@ -1054,6 +1067,37 @@ extension CLIApplicationTests {
         }
         let help = app.run(["help", "members"]).stdout
         XCTAssertTrue(help.contains("paraair members add") && help.contains("--notify"), help)
+    }
+
+    /// An add or removal may go through even when its answer is lost (a 5xx, a dropped connection). Retrying would read
+    /// back "already a member" or "not a member", so each is sent once and the error says to check the list. A workspace
+    /// the account left between the lookup and the change keeps exit 14.
+    func testMemberChangesThatMayHaveHappenedAreSentOnceAndKeepTheirExitCodes() throws {
+        let fixture = try cloudFixture()
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path], dependencies: fixture.dependencies, system: FakeSystem().system)
+        let base = ["--cloud-account", fixture.account.id, "--workspace", CLICloudStub.workspace]
+        let route = "/v1/workspaces/\(CLICloudStub.workspace)/members"
+        func sent(_ method: String) -> Int { CLICloudStub.requests.filter { $0.method == method && $0.path.hasPrefix(route) }.count }
+
+        CLICloudStub.failNextMemberChange(.appliedThen500)
+        let add = app.run(["members", "add"] + base + ["--email", "kim@example.test", "--notify", "--json"])
+        XCTAssertEqual(add.exitCode, 1, add.stdout); XCTAssertEqual(sent("POST"), 1)
+        XCTAssertTrue((try object(add)["error"] as? String ?? "").hasSuffix("The address may have been added: check members list"), add.stdout)
+        XCTAssertTrue(app.run(["members", "list"] + base).stdout.contains("kim@example.test"), "it was added")
+
+        CLICloudStub.failNextMemberChange(.appliedThen500)
+        let remove = app.run(["members", "remove"] + base + ["--email", "kim@example.test", "--json"])
+        XCTAssertEqual(remove.exitCode, 1, remove.stdout); XCTAssertEqual(sent("DELETE"), 1)
+        XCTAssertTrue((try object(remove)["error"] as? String ?? "").hasSuffix("The member may have been removed: check members list"), remove.stdout)
+        XCTAssertFalse(app.run(["members", "list"] + base).stdout.contains("kim@example.test"), "it was removed")
+
+        for arguments in [["members", "role"] + base + ["--email", "ann@example.test", "--role", "viewer"],
+                          ["members", "remove"] + base + ["--email", "ann@example.test"]] {
+            CLICloudStub.failNextMemberChange(.workspaceGone)
+            let result = app.run(arguments + ["--json"])
+            XCTAssertEqual(result.exitCode, 14, arguments.joined(separator: " ") + "\n" + result.stdout)
+            XCTAssertEqual(try object(result)["code"] as? String, "drive_not_found")
+        }
     }
 
     /// The calls ParaOS's access reconcile (Parafield-OS #22) makes, each with --state-dir first: their JSON shapes and
