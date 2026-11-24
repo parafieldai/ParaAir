@@ -887,13 +887,15 @@ final class CLIApplication {
             let rows = list.members.map { "\($0.userId)\t\($0.role)\t\($0.status)\t\(displayName($0.email))" }
             let seats = "\(displayName(list.workspace.name)): \(list.workspace.seatsUsed) of \(list.workspace.seats) seat\(list.workspace.seats == 1 ? "" : "s") used\n"
             return try render(list, invocation: invocation, text: seats + rows.map { $0 + "\n" }.joined())
-        case .add(let email, let role):
-            let result = try api.addMember(workspaceID: workspaceID, email: email, role: role)
+        case .add(let email, let role, let notify):
+            // notified is the service's word: an older service ignores notify and emails nothing.
+            let result = try api.addMember(workspaceID: workspaceID, email: email, role: role, notify: notify)
             let name = displayName(result.member.email)
-            let text = !result.added ? "\(name) is already a member (\(result.member.role)).\n"
-                : result.member.status == "invited" ? "Added \(name) as \(result.member.role). Nothing was emailed: they can sign in to ParaAir with this address now.\n"
-                : "Added \(name) as \(result.member.role).\n"
-            return try render(MemberAdded(member: result.member, added: result.added), invocation: invocation, text: text)
+            let mail = result.notified ? " ParaAir emailed them how to start."
+                : " Nothing was emailed: tell them to sign in to ParaAir with this address."
+            let text = result.added ? "Added \(name) as \(result.member.role).\(mail)\n"
+                : "\(name) is already a member (\(result.member.role)).\(result.notified ? mail : "")\n"
+            return try render(result, invocation: invocation, text: text)
         case .role(let email, let role):
             let target = try member(email)
             let updated = try change { try api.setMemberRole(workspaceID: workspaceID, userID: target.userId, role: role) }
@@ -960,7 +962,6 @@ private struct AccessRemoved: Encodable { var path: String; var principal: [Stri
 private struct CredentialCreated: Encodable { var workspaceId: String; var credential: ParaAirCloudServiceCredential; var token: String }
 private struct CredentialList: Encodable { var workspaceId: String; var credentials: [ParaAirCloudServiceCredential] }
 private struct CredentialRevoked: Encodable { var workspaceId: String; var id: String; var revoked: Bool }
-private struct MemberAdded: Encodable { var member: ParaAirCloudWorkspaceMember; var added: Bool }
 private struct MemberChanged: Encodable { var member: ParaAirCloudWorkspaceMember }
 private struct MemberRemoved: Encodable { var userId: String; var email: String; var removed: Bool }
 private struct FeedCursor: Encodable { var cursor: Int64 }

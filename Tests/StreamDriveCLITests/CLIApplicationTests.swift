@@ -42,12 +42,15 @@ private final class CLICloudStub: URLProtocol {
         ["userId": adminID, "email": "ann@example.test", "role": "admin", "addedAt": "2026-11-23T10:00:00.000Z", "status": "invited"],
     ]
     private static var memberRows = initialMembers
+    /// false: answer adds like a service that predates `notify` (no `notified` field, nothing emailed).
+    private static var notifySupported = true
+    static func serviceKnowsNotify(_ value: Bool) { lock.lock(); notifySupported = value; lock.unlock() }
     /// Not valid UTF-8, so cat-version must pass bytes through untouched.
     static let versionBytes = Data([0x7b, 0x22, 0x76, 0x22, 0x3a, 0x31, 0x7d, 0x0a, 0x00, 0xff, 0xfe])
     static var versionHash: String { SHA256.hash(data: versionBytes).map { String(format: "%02x", $0) }.joined() }
     /// Whether the "throttled" create was already answered 429 once.
     private static var throttled = false
-    static func reset() { lock.lock(); logged = []; listed = [(drive, "ParaAir Cloud")]; throttled = false; memberRows = initialMembers; lock.unlock() }
+    static func reset() { lock.lock(); logged = []; listed = [(drive, "ParaAir Cloud")]; throttled = false; memberRows = initialMembers; notifySupported = true; lock.unlock() }
     static func list(_ drives: [(id: String, name: String)]) { lock.lock(); listed = drives; lock.unlock() }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == host }
@@ -201,7 +204,8 @@ private final class CLICloudStub: URLProtocol {
         if path.hasPrefix("/v1/workspaces/\(forbiddenWorkspace)/") { return error(403, "forbidden") }
         guard path == base || path.hasPrefix(base + "/") else { return error(404, "workspace_not_found") }
         lock.lock(); defer { lock.unlock() }
-        let fields = (try? JSONSerialization.jsonObject(with: body) as? [String: String]) ?? [:]
+        let object = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
+        let fields = object.compactMapValues { $0 as? String }
         let owners = memberRows.filter { $0["role"] == "owner" }.count
         if path == base, method == "GET" {
             return (200, ["workspace": ["id": workspace, "name": "Studio", "kind": "team", "plan": "team", "seats": 3, "seatsUsed": memberRows.count] as [String: Any],
@@ -209,14 +213,16 @@ private final class CLICloudStub: URLProtocol {
         }
         if path == base, method == "POST" {
             let email = (fields["email"] ?? "").trimmingCharacters(in: .whitespaces).lowercased(), role = fields["role"] ?? "member"
+            // An invitation goes out only to a newly added address, and only when asked.
+            func answer(_ row: [String: String], emailed: Bool) -> [String: Any] { notifySupported ? ["member": row, "notified": emailed] : ["member": row] }
             if let existing = memberRows.first(where: { $0["email"] == email }) {
-                return existing["role"] == role ? (200, ["member": existing]) : error(409, "already_exists")
+                return existing["role"] == role ? (200, answer(existing, emailed: false)) : error(409, "already_exists")
             }
             guard memberRows.count < 3 else { return error(409, "busy") }
             let row = ["userId": String(format: "usr_%026d", memberRows.count + 7), "email": email, "role": role,
                        "addedAt": "2026-11-24T10:00:00.000Z", "status": "invited"]
             memberRows.append(row)
-            return (201, ["member": row])
+            return (201, answer(row, emailed: object["notify"] as? Bool == true))
         }
         let userID = String(path.dropFirst(base.count + 1))
         guard let index = memberRows.firstIndex(where: { $0["userId"] == userID }) else { return error(404, "not_found") }
@@ -954,9 +960,9 @@ extension CLIApplicationTests {
         let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path], dependencies: fixture.dependencies, system: FakeSystem().system)
         let base = ["--cloud-account", fixture.account.id, "--workspace", CLICloudStub.workspace]
         let route = "/v1/workspaces/\(CLICloudStub.workspace)/members"
-        func last() -> (path: String, method: String, body: [String: String]?) {
+        func last() -> (path: String, method: String, body: NSDictionary?) {
             let request = CLICloudStub.requests.last!
-            return (request.path, request.method, try? JSONSerialization.jsonObject(with: request.body) as? [String: String])
+            return (request.path, request.method, try? JSONSerialization.jsonObject(with: request.body) as? NSDictionary)
         }
 
         let listed = app.run(["members", "list"] + base + ["--json"])
@@ -971,9 +977,11 @@ extension CLIApplicationTests {
             """)
 
         // add: a new address is a member at once, with role member unless --role; a retry answers "already".
+        // Without --notify nothing asks for an email, and the output says so.
         let added = app.run(["members", "add"] + base + ["--email", "New@Example.test", "--json"])
         XCTAssertEqual(added.exitCode, 0, added.stdout + added.stderr)
         XCTAssertEqual(try object(added)["added"] as? Bool, true)
+        XCTAssertEqual(try object(added)["notified"] as? Bool, false)
         XCTAssertEqual((try object(added)["member"] as? [String: Any])?["status"] as? String, "invited")
         XCTAssertEqual(last().path, route); XCTAssertEqual(last().method, "POST")
         XCTAssertEqual(last().body, ["email": "New@Example.test", "role": "member"])
@@ -1001,6 +1009,31 @@ extension CLIApplicationTests {
         XCTAssertEqual(gone.exitCode, 17); XCTAssertEqual(try object(gone)["code"] as? String, "not_found")
         XCTAssertEqual(CLICloudStub.requests.count, sent + 1, "only the list; nothing to delete")
 
+        // --notify (anywhere after the verb) sends notify: true; the service emails a newly added address.
+        let invited = app.run(["members", "add", "--notify"] + base + ["--email", "kim@example.test", "--role", "viewer", "--json"])
+        XCTAssertEqual(invited.exitCode, 0, invited.stdout + invited.stderr)
+        XCTAssertEqual(last().body, ["email": "kim@example.test", "role": "viewer", "notify": true])
+        XCTAssertEqual(try object(invited)["added"] as? Bool, true); XCTAssertEqual(try object(invited)["notified"] as? Bool, true)
+        XCTAssertEqual(Set(try object(invited).keys), ["member", "added", "notified"])
+        XCTAssertEqual(app.run(["members", "remove"] + base + ["--email", "kim@example.test"]).exitCode, 0)
+        XCTAssertEqual(app.run(["members", "add"] + base + ["--email", "kim@example.test", "--notify"]).stdout,
+                       "Added kim@example.test as member. ParaAir emailed them how to start.\n")
+        XCTAssertEqual(last().body, ["email": "kim@example.test", "role": "member", "notify": true])
+        // A retry with --notify emails nobody: the address already was a member.
+        let again = app.run(["members", "add"] + base + ["--email", "kim@example.test", "--notify", "--json"])
+        XCTAssertEqual(try object(again)["added"] as? Bool, false); XCTAssertEqual(try object(again)["notified"] as? Bool, false)
+        XCTAssertEqual(app.run(["members", "remove"] + base + ["--email", "kim@example.test"]).exitCode, 0)
+        // A service that predates notify ignores it and omits notified: read as false, and the text says to tell them.
+        CLICloudStub.serviceKnowsNotify(false)
+        let older = app.run(["members", "add"] + base + ["--email", "lee@example.test", "--notify", "--json"])
+        XCTAssertEqual(older.exitCode, 0, older.stdout + older.stderr)
+        XCTAssertEqual(try object(older)["added"] as? Bool, true); XCTAssertEqual(try object(older)["notified"] as? Bool, false)
+        XCTAssertEqual(app.run(["members", "remove"] + base + ["--email", "lee@example.test"]).exitCode, 0)
+        XCTAssertEqual(app.run(["members", "add"] + base + ["--email", "lee@example.test", "--notify"]).stdout,
+                       "Added lee@example.test as member. Nothing was emailed: tell them to sign in to ParaAir with this address.\n")
+        XCTAssertEqual(app.run(["members", "remove"] + base + ["--email", "lee@example.test"]).exitCode, 0)
+        CLICloudStub.serviceKnowsNotify(true)
+
         // Not an owner or admin there: 12; a workspace the account isn't in: 14; an account not signed in here: 11.
         let forbidden = app.run(["members", "list", "--cloud-account", fixture.account.id, "--workspace", CLICloudStub.forbiddenWorkspace, "--json"])
         XCTAssertEqual(forbidden.exitCode, 12); XCTAssertEqual(try object(forbidden)["code"] as? String, "forbidden")
@@ -1012,10 +1045,15 @@ extension CLIApplicationTests {
                       ["members", "add"] + base, ["members", "add"] + base + ["--email", "no-at-sign"],
                       ["members", "add"] + base + ["--email", "a@example.test", "--role", "boss"],
                       ["members", "role"] + base + ["--email", "a@example.test"], ["members", "remove"] + base + ["--email", "a@example.test", "--role", "viewer"],
-                      ["members", "list", "--cloud-account", fixture.account.id, "--workspace", "ws_lower"], ["members", "list"] + base + ["extra"]] {
+                      ["members", "list", "--cloud-account", fixture.account.id, "--workspace", "ws_lower"], ["members", "list"] + base + ["extra"],
+                      ["members", "list"] + base + ["--notify"], ["members", "role"] + base + ["--email", "a@example.test", "--role", "viewer", "--notify"],
+                      ["members", "remove"] + base + ["--email", "a@example.test", "--notify"],
+                      ["members", "add"] + base + ["--email", "a@example.test", "--notify", "--notify"],
+                      ["members", "add"] + base + ["--email", "a@example.test", "--notify=yes"]] {
             XCTAssertEqual(app.run(usage).exitCode, 2, usage.joined(separator: " "))
         }
-        XCTAssertTrue(app.run(["help", "members"]).stdout.contains("paraair members add"))
+        let help = app.run(["help", "members"]).stdout
+        XCTAssertTrue(help.contains("paraair members add") && help.contains("--notify"), help)
     }
 
     func testASecondDriveGetsAStateFolderOfItsOwnSharingTheSignIn() throws {

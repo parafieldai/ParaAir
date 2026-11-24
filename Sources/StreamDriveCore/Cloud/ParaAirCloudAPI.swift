@@ -693,16 +693,20 @@ extension ParaAirCloudAPI {
     }
 
     /// `POST /v1/workspaces/{ws}/members`: adds `email` with `role`. An address without an account gets one and can then
-    /// sign in; nothing is emailed. `added` is false when the address already was a member with that role (a retry).
-    public func addMember(workspaceID: String, email: String, role: ParaAirCloudMemberRole) throws -> (member: ParaAirCloudWorkspaceMember, added: Bool) {
-        struct Body: Decodable { var member: ParaAirCloudWorkspaceMember }
+    /// sign in. `added` is false when the address already was a member with that role (a retry). With `notify` the
+    /// service emails a newly added address an invitation and answers `notified: true`; a service that predates `notify`
+    /// ignores it and omits `notified`, which reads as false.
+    public func addMember(workspaceID: String, email: String, role: ParaAirCloudMemberRole, notify: Bool = false) throws -> ParaAirCloudMemberAdded {
+        struct Request: Encodable { var email: String; var role: String; var notify: Bool? }
+        struct Body: Decodable { var member: ParaAirCloudWorkspaceMember; var notified: Bool? }
         return try unwrap {
+            let request = Request(email: email, role: role.rawValue, notify: notify ? true : nil)
             let call = Call(method: "POST", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/members", route: "POST /v1/workspaces/{ws}/members",
-                            body: try json(["email": email, "role": role.rawValue]))
+                            body: try ParaAirCloudJSON.encoder().encode(request))
             let response = try memberCall(call, busy: "The workspace has no free seat. An owner can add seats to its plan")
-            let member = try decode(Body.self, response).member
-            guard member.isValid else { throw malformed() }
-            return (member, response.status == 201)
+            let body = try decode(Body.self, response)
+            guard body.member.isValid else { throw malformed() }
+            return ParaAirCloudMemberAdded(member: body.member, added: response.status == 201, notified: body.notified ?? false)
         }
     }
 

@@ -256,6 +256,14 @@ public struct ParaAirCloudWorkspaceMember: Codable, Equatable, Sendable {
     }
 }
 
+/// The answer to adding a member (`POST /v1/workspaces/{ws}/members`). `added` is false when the address already was a
+/// member with that role; `notified` is true only when the service emailed the person an invitation.
+public struct ParaAirCloudMemberAdded: Codable, Equatable, Sendable {
+    public var member: ParaAirCloudWorkspaceMember
+    public var added: Bool
+    public var notified: Bool
+}
+
 /// A workspace's members and the seats they use (owners and admins only).
 public struct ParaAirCloudMemberList: Codable, Equatable, Sendable {
     public struct Workspace: Codable, Equatable, Sendable {

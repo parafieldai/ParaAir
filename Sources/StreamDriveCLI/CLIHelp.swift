@@ -150,17 +150,19 @@ enum CLIHelp {
         case "members":
             return """
             Usage: paraair members list --cloud-account ID --workspace WS [--json]
-                   paraair members add --cloud-account ID --workspace WS --email E [--role owner|admin|member|viewer] [--json]
+                   paraair members add --cloud-account ID --workspace WS --email E [--role owner|admin|member|viewer]
+                                       [--notify] [--json]
                    paraair members role --cloud-account ID --workspace WS --email E --role owner|admin|member|viewer [--json]
                    paraair members remove --cloud-account ID --workspace WS --email E [--json]
             A ParaAir Cloud workspace's members, for its owners and admins (exit 12 otherwise; 14 when the account
             isn't in the workspace). WS is the workspaceId cloud-drives shows. list prints the seats used, then
             user id, role, status and email per member; status is active (signed in since being added), invited
             (not yet) or disabled. add makes a member right away (role member unless --role); an address without an
-            account gets one and can sign in with it. Nothing is emailed, so tell the person. A new member needs a
-            free seat. Only owners make owners; admins can't change or remove an owner, and the last owner can't be
-            demoted or removed. role and remove find the member by email (exit 17 when they aren't one). A removed
-            member loses access to the workspace's drives at once.
+            account gets one and can sign in with it. With --notify, ParaAir Cloud emails a newly added person an
+            invitation; otherwise nothing is emailed, so tell them. add prints whether an email went out (notified
+            with --json). A new member needs a free seat. Only owners make owners; admins can't change or remove an
+            owner, and the last owner can't be demoted or removed. role and remove find the member by email (exit 17
+            when they aren't one). A removed member loses access to the workspace's drives at once.
             """ + "\n"
         case "conflicts", "resolve":
             return """
@@ -217,7 +219,8 @@ enum CLIHelp {
               credentials create|list|revoke --cloud-account ID --workspace WS
                                                   A workspace's service credentials (owners and admins)
               members list|add|role|remove --cloud-account ID --workspace WS ...
-                                                  A workspace's members (owners and admins)
+                                                  A workspace's members (owners and admins); add --notify emails
+                                                  the invitation
               trash PROFILE                       List deleted ParaAir Cloud files that can be restored
               restore PROFILE NODE_ID [--to PATH] Restore a deleted ParaAir Cloud file
               stored-drives --connection ID       List drives backed up in a connection's bucket

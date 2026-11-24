@@ -76,7 +76,8 @@ enum CLICredentialAction: Equatable {
 /// What `members` does with a workspace's members (owners and admins, with their own sign-in).
 enum CLIMembersAction: Equatable {
     case list
-    case add(email: String, role: ParaAirCloudMemberRole)
+    /// `notify`: ask the service to email a newly added person an invitation.
+    case add(email: String, role: ParaAirCloudMemberRole, notify: Bool)
     case role(email: String, role: ParaAirCloudMemberRole)
     case remove(email: String)
 }
@@ -387,9 +388,11 @@ enum CLIParser {
             }
             command = .credentials(action, account: account, workspace: workspace)
         case "members":
-            let usageText = "Usage: paraair members list|add|role|remove --cloud-account ID --workspace WS [--email E] [--role owner|admin|member|viewer]"
+            let usageText = "Usage: paraair members list|add|role|remove --cloud-account ID --workspace WS [--email E] [--role owner|admin|member|viewer] [--notify]"
             guard let verb = commandArguments.first, ["list", "add", "role", "remove"].contains(verb) else { throw usage(usageText) }
-            let options = try parseOptions(Array(commandArguments.dropFirst()), valueNames: ["cloud-account", "workspace", "email", "role"])
+            let options = try parseOptions(Array(commandArguments.dropFirst()), valueNames: ["cloud-account", "workspace", "email", "role"],
+                                           switchNames: ["notify"])
+            let notify = options.switches.contains("notify")
             try noExtraArguments(options.positionals, command: "members " + verb)
             guard let account = options.values["cloud-account"], let workspace = options.values["workspace"] else { throw usage(usageText) }
             guard UUID(uuidString: account) != nil, account == account.lowercased() else { throw usage("--cloud-account requires a lowercase identifier") }
@@ -406,13 +409,13 @@ enum CLIParser {
             }
             let action: CLIMembersAction
             switch (verb, email, role) {
-            case ("list", nil, nil): action = .list
-            case ("add", let email?, _): action = .add(email: email, role: role ?? .member)
-            case ("role", let email?, let role?): action = .role(email: email, role: role)
-            case ("remove", let email?, nil): action = .remove(email: email)
+            case ("list", nil, nil) where !notify: action = .list
+            case ("add", let email?, _): action = .add(email: email, role: role ?? .member, notify: notify)
+            case ("role", let email?, let role?) where !notify: action = .role(email: email, role: role)
+            case ("remove", let email?, nil) where !notify: action = .remove(email: email)
             default:
                 throw usage(verb == "list" ? "Usage: paraair members list --cloud-account ID --workspace WS"
-                    : verb == "add" ? "Usage: paraair members add --cloud-account ID --workspace WS --email E [--role owner|admin|member|viewer]"
+                    : verb == "add" ? "Usage: paraair members add --cloud-account ID --workspace WS --email E [--role owner|admin|member|viewer] [--notify]"
                     : verb == "role" ? "Usage: paraair members role --cloud-account ID --workspace WS --email E --role owner|admin|member|viewer"
                     : "Usage: paraair members remove --cloud-account ID --workspace WS --email E")
             }

@@ -130,4 +130,26 @@ final class CLIParserTests: XCTestCase {
         }
         XCTAssertEqual(arguments.values["cloud-drive-name"], "ParaOS")
     }
+
+    func testMembersNotifyIsASwitchForAddAnywhereAfterTheVerb() throws {
+        let account = "3f0c2a7e-6b1d-4e0a-9c2f-1d2e3f4a5b6c", workspace = "ws_0123456789ABCDEFGHJKMNPQRS"
+        let base = ["--cloud-account", account, "--workspace", workspace]
+        let email = ["--email", "person@example.com"]
+        XCTAssertEqual(try CLIParser.parse(["members", "add"] + base + email).command,
+                       .members(.add(email: "person@example.com", role: .member, notify: false), account: account, workspace: workspace))
+        let notified = CLICommand.members(.add(email: "person@example.com", role: .member, notify: true), account: account, workspace: workspace)
+        for placement in [["members", "add", "--notify"] + base + email, ["members", "add"] + base + ["--notify"] + email,
+                          ["members", "add"] + base + email + ["--notify"], ["members", "add"] + base + email + ["--notify", "--json"]] {
+            XCTAssertEqual(try CLIParser.parse(placement).command, notified, placement.joined(separator: " "))
+        }
+        XCTAssertEqual(try CLIParser.parse(["members", "add", "--notify", "--role", "admin"] + base + email).command,
+                       .members(.add(email: "person@example.com", role: .admin, notify: true), account: account, workspace: workspace))
+        // Only add sends invitations; --notify takes no value, comes once and never stands before the verb.
+        for invalid in [["members", "--notify", "add"] + base + email, ["members", "list", "--notify"] + base,
+                        ["members", "role"] + base + email + ["--role", "viewer", "--notify"], ["members", "remove"] + base + email + ["--notify"],
+                        ["members", "add"] + base + email + ["--notify", "--notify"], ["members", "add"] + base + email + ["--notify=true"],
+                        ["members", "add", "--notify"] + base] {
+            XCTAssertThrowsError(try CLIParser.parse(invalid), invalid.joined(separator: " "))
+        }
+    }
 }
