@@ -495,6 +495,12 @@ struct VolumeCallbackTests {
         try FileManager.default.moveItem(at: elsewhereFolder, to: backendRoot.appendingPathComponent("folder-renamed"))
         let movedFolder = volume.changedElsewhere(try engine.list("/"), in: "/")
         try check(movedFolder.count == 1 && movedFolder.first === knownFolder, "A folder renamed elsewhere wasn't noticed")
+        let inner = DriveItem(path: "/folder-elsewhere/inner/f.txt", identifier: FSItem.Identifier(rawValue: 9_000)!)
+        let innerFolder = DriveItem(path: "/folder-elsewhere/inner", identifier: FSItem.Identifier(rawValue: 9_001)!)
+        volume.adoptForTesting([inner, innerFolder])
+        let ordered = volume.withContents(movedFolder)
+        try check(ordered.map(\.path) == ["/folder-elsewhere/inner/f.txt", "/folder-elsewhere/inner", "/folder-elsewhere"],
+                  "A changed folder's contents aren't dropped first, deepest first: \(ordered.map(\.path))")
         try FileManager.default.removeItem(at: backendRoot.appendingPathComponent("folder-renamed"))
         _ = volume.changedElsewhere(try engine.list("/"), in: "/")
         let rootAttributes = try attributes(root, volume: volume)

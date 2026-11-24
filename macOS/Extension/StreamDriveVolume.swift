@@ -248,6 +248,8 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     /// Files the kernel already knows whose storage version differs in `entries` (a fresh listing of `directory`),
     /// plus known files and folders of `directory` the listing no longer has (renamed or deleted elsewhere). Records the new versions, so each change is
     /// handled once.
+    /// The callback harness registers items the way lookups would.
+    func adoptForTesting(_ items: [DriveItem]) { locked { for item in items { nodes[item.path] = item } } }
     func changedElsewhere(_ entries: [FileEntry], in directory: String) -> [DriveItem] {
         locked {
             var changed: [DriveItem] = []
@@ -268,27 +270,50 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
             return changed
         }
     }
+    /// `items` with every known item inside the folders among them, deepest first: a folder's vnode can't be dropped
+    /// while the kernel still holds items inside it (a folder renamed elsewhere kept its old name on 2026-11-24).
+    func withContents(_ items: [DriveItem]) -> [DriveItem] {
+        locked {
+            var seen = Set<ObjectIdentifier>(), result: [DriveItem] = []
+            func add(_ item: DriveItem) { if seen.insert(ObjectIdentifier(item)).inserted { result.append(item) } }
+            for item in items {
+                let prefix = item.path == "/" ? "/" : item.path + "/"
+                for (path, inner) in nodes where path != item.path && path.hasPrefix(prefix) { add(inner) }
+                add(item)
+            }
+            return result.sorted { $0.path.split(separator: "/").count > $1.path.split(separator: "/").count }
+        }
+    }
     /// Drops what the kernel caches for items changed on another device (macOS 27 and later): an item no app has open
     /// is revoked, so its next use looks it up again and reads fresh attributes and data; an open one is revoked once
-    /// fully closed. Earlier macOS versions have no way to do this.
-    private func dropKernelCaches(_ items: [DriveItem]) {
+    /// fully closed. Items inside a changed folder go first. A folder the kernel refuses is tried once more a second
+    /// later, after its contents are gone. Earlier macOS versions have no way to do this.
+    private func dropKernelCaches(_ items: [DriveItem], retry: Bool = true) {
         guard !items.isEmpty else { return }
         guard #available(macOS 27.0, *) else { return }
+        let ordered = withContents(items)
         invalidationQueue.async { [weak self] in
             guard let self else { return }
-            for item in items {
-                let open = self.locked { () -> Bool in
+            var refused: [DriveItem] = []
+            for item in ordered {
+                let (open, folder) = self.locked { () -> (Bool, Bool) in
                     let isOpen = self.openModes[item.path] != nil
                     item.revokeWhenClosed = isOpen
-                    return isOpen
+                    let prefix = item.path + "/"
+                    return (isOpen, item.listedDirectory || self.nodes.keys.contains { $0.hasPrefix(prefix) })
                 }
                 if open { continue }
                 let error = self.setCacheState(for: item, cacheMode: .none, coherencyType: .noCache, action: .revoke)
                 if let error {
-                    Self.cacheLog.error("revoke failed id=\(item.identifier.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)")
+                    // Usually nothing to drop: the kernel holds no vnode for the item right now.
+                    Self.cacheLog.notice("revoke refused id=\(item.identifier.rawValue, privacy: .public) folder=\(folder) error=\(String(describing: error), privacy: .public)")
+                    if folder { refused.append(item) }
                 } else {
-                    Self.cacheLog.notice("revoked changed item id=\(item.identifier.rawValue, privacy: .public)")
+                    Self.cacheLog.notice("revoked changed item id=\(item.identifier.rawValue, privacy: .public) folder=\(folder)")
                 }
+            }
+            if retry, !refused.isEmpty {
+                self.invalidationQueue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.dropKernelCaches(refused, retry: false) }
             }
         }
     }
