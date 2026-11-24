@@ -9,7 +9,7 @@ The shapes below are taken from the code (`Sources/StreamDriveCLI/`, and the Cor
 - The `paraair` command, with `--json`, as listed here. It is in the app at `ParaAir.app/Contents/Helpers/ParaAirCLI.app/Contents/MacOS/paraair`.
 - `paraair://cloud/sign-in` and `paraair://drive/mount?profile=NAME&folder=STATE_FOLDER`, opened in ParaAir. The CLI's `cloud-sign-in` and `mount` open them and wait for the result; prefer those.
 - Files under the mounted drive, `/Volumes/<Finder name>/…`, read and written like any other files.
-- The rights of the person who is signed in. The CLI never does more than their role and the drive's folder rules allow; folder rules can be changed only by a workspace owner or admin (`access`).
+- The rights of the person who is signed in. The CLI never does more than their role and the drive's folder rules allow; folder rules, members and service credentials can be changed only by a workspace owner or admin (`access`, `members`, `credentials`).
 
 Not part of the contract, and free to change in any release: the files in a state folder (profiles, account records, caches, journals), the Keychain items, the app's settings (`selectedStateRoot`, `knownStateRoots`), the ParaAir Cloud service API (that is [`contract/paraair-cloud-v1/`](../paraair-cloud-v1/), between the service and the Mac client), output without `--json`, help text, the wording of `error` messages, and every command, option or field not listed here.
 
@@ -215,7 +215,7 @@ paraair access remove (PROFILE FOLDER | MOUNTED_PATH) (--email E | --role member
 {"userId": string | null, "email": string | null, "path": string, "access": string, "updatedAt": string}
 ```
 
-`access` is `none`, `read`, `create` or `write`; `create` lets someone add files and folders and change only what they wrote. The most specific rule wins; owners and admins are never limited. Only a workspace owner or admin can list or change rules: exit 12 otherwise.
+With `--credential`, `ID` is a service credential's id (`cred_…`, see [`credentials`](#credentials)); a token passed there is refused (exit 2). `access` is `none`, `read`, `create` or `write`; `create` lets someone add files and folders and change only what they wrote. The most specific rule wins; owners and admins are never limited. Only a workspace owner or admin can list or change rules: exit 12 otherwise.
 
 ### `conflicts`
 
@@ -228,6 +228,60 @@ paraair access remove (PROFILE FOLDER | MOUNTED_PATH) (--email E | --role member
 ```
 
 `state` `conflict` means the file changed elsewhere after this Mac's copy was made. Any other record was refused by storage: `lastErrno` 1 (`EPERM`) for the member's role or a folder rule, 30 (`EROFS`) for a read-only plan or a drive another Mac took over. `lastError` is text for people. `*Nanoseconds` are wall-clock times since 1970. `transactionID` is opaque.
+
+## Workspaces
+
+A workspace's members and service credentials, managed by its owners and admins with their own sign-in. All of these take `--cloud-account ID` (a signed-in account, looked up like `cloud-drives` does; exit 11 otherwise) and `--workspace WS`, the `workspaceId` that `cloud-drives` prints (`ws_` and 26 characters). Exit 12 when the account is a member or viewer there, 14 when it isn't in the workspace (or the workspace is gone), 2 for a malformed option.
+
+### `members`
+
+```
+paraair members list --cloud-account ID --workspace WS --json
+paraair members add --cloud-account ID --workspace WS --email E [--role owner|admin|member|viewer] [--notify] --json
+paraair members role --cloud-account ID --workspace WS --email E --role owner|admin|member|viewer --json
+paraair members remove --cloud-account ID --workspace WS --email E --json
+```
+
+- `list` → `{"workspace": {"id": string, "name": string, "kind": string, "plan": string, "seats": int, "seatsUsed": int}, "members": [Member]}`
+- `add` → `{"member": Member, "added": bool, "notified": bool}`
+- `role` → `{"member": Member}`
+- `remove` → `{"userId": string, "email": string, "removed": true}`
+
+`Member` is `{"userId": string, "email": string, "role": string, "addedAt": string, "status": string}`; every field is always present.
+
+- `kind` (open set): `personal`, `team`. `plan` (open set): `beta`, `personal`, `team`. `role` (open set): `owner`, `admin`, `member`, `viewer`. `status` (open set): `active` (signed in since being added), `invited` (not yet), `disabled`.
+- `add` makes the person a member at once, as `member` unless `--role` says otherwise; an address without an account gets one and can sign in with it. A new member needs a free seat (exit 1 otherwise). `added` is false when the address already was a member with that role; an address that is a member with another role is exit 1 (use `role`). With `--notify` the service emails a newly added person an invitation; `notified` says whether it did (false from a service that predates `--notify`). Without it nothing is emailed.
+- `role` and `remove` find the member by email, case-insensitively: exit 17 (`not_found`) when the address isn't a member, also when they left between that lookup and the change.
+- Only owners make owners, and admins can't change or remove an owner; the service refuses those. The last owner can't be demoted or removed (exit 1).
+- `add` and `remove` are sent once: a retry after a change that went through would read back "already a member" or "not a member". When the answer is lost (a server error or a dropped connection) they exit 1 and the `error` says to check `members list`; do that before trying again. A removed member loses access to the workspace's drives at once.
+
+### `credentials`
+
+A service credential is a login for a backend (a job that writes one folder, say) that sees only the folders whose rules name it (`access set … --credential ID`).
+
+```
+paraair credentials create --cloud-account ID --workspace WS --name NAME --json
+paraair credentials list --cloud-account ID --workspace WS --json
+paraair credentials revoke --cloud-account ID --workspace WS --id CREDENTIAL_ID --json
+```
+
+- `create` → `{"workspaceId": string, "credential": Credential, "token": string}`
+- `list` → `{"workspaceId": string, "credentials": [Credential]}`: revoked ones included, oldest first. Never a token.
+- `revoke` → `{"workspaceId": string, "id": string, "revoked": true}`
+
+`Credential` is:
+
+```
+{"id": string, "name": string, "createdAt": string, "createdBy": string | null,
+ "lastUsedAt": string | null, "revokedAt": string | null}
+```
+
+- `id` is `cred_` and 26 characters. `createdBy` is the email of the owner or admin who made it, `null` once that account is gone. `revokedAt` is `null` while it is active.
+- `token` is `pcs_<id>.` and 43 base64url characters. It is printed once, in the reply to `create` (also without `--json`), and never again: the service keeps only a hash and ParaAir keeps no copy on this Mac. Read it straight from standard output into the backend's secret store and don't log that output. If it is lost, revoke the credential and create another.
+- `--name` is 1–100 characters after trimming, without control characters. A name or id that looks like a token is refused (exit 2) without repeating it, and no error message ever contains a token.
+- A new credential sees nothing until a folder rule names it. `revoke` stops its token at once and deletes its folder rules in every drive of the workspace; revoking a revoked credential succeeds. Exit 17 when the workspace has no credential with that id.
+- At most 20 active credentials per workspace (exit 1 beyond that).
+- `create` is sent once. When its answer is lost it exits 1 and the `error` says to run `credentials list` and revoke any credential you didn't get a token for.
 
 ## Errors
 
@@ -243,10 +297,10 @@ Exit codes:
 | 11 | `not_signed_in` | Not signed in to ParaAir Cloud, or the sign-in has to be renewed in the app |
 | 12 | `forbidden` | The account's role or workspace doesn't allow it |
 | 13 | `extension_disabled` | ParaAir's File System Extension isn't turned on |
-| 14 | `drive_not_found` | No such ParaAir Cloud drive for this account |
+| 14 | `drive_not_found` | No such ParaAir Cloud drive or workspace for this account |
 | 15 | `not_mounted` | The path isn't on a mounted ParaAir drive, or no known profile is mounted there |
 | 16 | `version_conflict` | The file's current version isn't the expected one |
-| 17 | `not_found` | No such file, version or conflict copy (`versions`, `cat-version`, `restore-version`, `conflict-info`) |
+| 17 | `not_found` | No such file, version, conflict copy, service credential or member (`versions`, `cat-version`, `restore-version`, `conflict-info`, `credentials revoke`, `members role`, `members remove`) |
 
 11, 12 and 14 can come from any command that talks to the service. New codes may be added within v1.
 
