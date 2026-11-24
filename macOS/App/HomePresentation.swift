@@ -24,6 +24,8 @@ struct HomeInputs: Equatable {
     var creatingDrive = false
     var error: String?
     var mountMessage: String?
+    /// The drive `mountMessage` is about when it isn't the selected folder's (another folder's drive is mounting).
+    var mountMessageDrive: String?
     /// A waiting folder switch, or a drive in another state folder that didn't connect at login.
     var folderNotice: String?
     var sidebarMessage: String?
@@ -38,8 +40,31 @@ struct HomeInputs: Equatable {
     var updateTitle: String?
     /// For ages such as how long failing uploads have waited.
     var now = Date()
+    /// The drives of the other state folders ParaAir knows (kept for login or remembered). With any, the window lists
+    /// every drive and leads with a summary instead of one drive's state.
+    var otherDrives: [KnownDrive] = []
 
+    /// The selected folder has a drive.
     var hasDrive: Bool { driveName != nil }
+}
+
+/// The drive of a state folder other than the selected one. The selected folder's drive is described by
+/// HomeInputs' own fields.
+struct KnownDrive: Equatable, Identifiable {
+    enum State: Equatable { case connected, connecting, needsSignIn, off }
+    /// The drive's state folder.
+    var id: String
+    var name: String
+    /// "ParaAir Cloud · maya@example.com" or "Cloudflare R2 · studio-footage".
+    var storage: String
+    var state: State
+    /// In the mount table, including while its storage needs sign-in.
+    var mounted = false
+    /// Why it needs sign-in or didn't connect, as a sentence that follows the drive's name.
+    var issue: String?
+
+    /// A mount of this drive that failed, at login or from its Connect button.
+    static let didNotConnect = "Couldn’t open. Choose Connect to try again."
 }
 
 /// Where the drive's files live: a bucket the user connected, or ParaAir Cloud.
@@ -104,19 +129,44 @@ struct HomePresentation: Equatable {
         var action: Action? = nil
         var actionTitle: String? = nil
     }
+    /// One drive in the list: its Finder name, storage, state and the one action that state needs.
+    struct DriveRow: Equatable, Identifiable {
+        /// `selectedDriveID` for the selected folder's drive, otherwise its state folder.
+        var id: String
+        var name: String
+        var storage: String
+        var state: KnownDrive.State
+        var stateTitle: String
+        var tone: Tone
+        var action: Action?
+        var actionTitle: String?
+        /// Why it needs sign-in or didn't connect, as a sentence that follows its name.
+        var issue: String?
+        /// Its folder becomes the selected one first: Storage Settings shows the selected folder's connections.
+        var switchesFolder = false
+    }
+    static let selectedDriveID = "selected"
 
     var status: Status
     var primary: Primary
+    /// False when the drive list carries the actions: several drives and nothing that stops them all.
+    var showsPrimary = true
     var offersCheckAgain = false
     var offersOpenInFinder = false
     var steps: [Step] = []
     var notices: [Notice] = []
+    /// Every drive ParaAir knows, working drives first. Empty while the selected folder's drive is the only one.
+    var drives: [DriveRow] = []
     /// Show the picture of the File System Extensions list with ParaAir's switch on, beside the status.
     var showsSwitchPicture = false
 
     static func make(_ input: HomeInputs) -> HomePresentation {
+        input.otherDrives.isEmpty ? one(input) : several(input)
+    }
+
+    /// The selected folder's drive is the only one, or there is none yet.
+    private static func one(_ input: HomeInputs) -> HomePresentation {
         let drive = input.driveName ?? "your drive"
-        let storageOK = input.hasDrive && input.credentialCheckFinished && input.connectionIssue == nil
         // Known to be off: FSKit answered and ParaAir isn't on. Turning it on comes first in setup, because nothing
         // else depends on it and it is the one step that happens outside ParaAir.
         let extensionOff = input.extensionState != .enabled && input.extensionState != .unchecked
@@ -210,48 +260,170 @@ struct HomePresentation: Equatable {
                            primary: .init(action: .connectDrive, title: "Connect Drive"))
         }
 
-        if !input.mounted {
-            let storageDone = storageOK || (!input.hasDrive && input.readyConnectionName != nil)
+        // The checklist is for a Mac with no drive yet; once there is one, the status says what it needs.
+        if !input.hasDrive {
+            let storageDone = input.readyConnectionName != nil
             let enabled = input.extensionState == .enabled
             // One action per step, in the order setup happens: the switch in System Settings, storage, the drive, Finder.
             result.steps = [
                 .init(id: 1, title: "Turn on ParaAir in System Settings",
                       detail: "General → Login Items & Extensions → By Category → File System Extensions.",
                       state: enabled ? .done : .current),
-                .init(id: 2, title: "Add your storage",
-                      detail: input.hasDrive && input.credentialCheckFinished && input.connectionIssue != nil
-                          ? "Sign in again in Storage Settings." : "ParaAir Cloud, Cloudflare R2 or another S3-compatible bucket.",
-                      state: storageDone ? .done : (enabled && !(input.hasDrive && !input.credentialCheckFinished) ? .current : .upcoming)),
+                .init(id: 2, title: "Add your storage", detail: "ParaAir Cloud, Cloudflare R2 or another S3-compatible bucket.",
+                      state: storageDone ? .done : (enabled ? .current : .upcoming)),
                 .init(id: 3, title: "Create your drive", detail: "Name it however you like.",
-                      state: input.hasDrive ? .done : (enabled && storageDone ? .current : .upcoming)),
-                .init(id: 4, title: "Open it in Finder", detail: "It appears under Locations, like any drive.",
-                      state: enabled && storageOK ? .current : .upcoming),
+                      state: enabled && storageDone ? .current : .upcoming),
+                .init(id: 4, title: "Open it in Finder", detail: "It appears under Locations, like any drive.", state: .upcoming),
             ]
         }
 
         if let error = input.error { result.notices.append(.init(id: "error", text: error, tone: .problem)) }
         if let copies = otherCopiesNotice(input.otherCopies) { result.notices.append(copies) }
-        if let message = input.mountMessage { result.notices.append(.init(id: "mount", text: message, tone: .attention)) }
-        if let notice = input.folderNotice { result.notices.append(.init(id: "folder", text: notice, tone: .attention)) }
-        if let renewal = input.renewalError, input.connectionIssue == nil {
-            result.notices.append(.init(id: "renewal", text: renewal, tone: .attention))
-        }
         // The no-storage status already says what the billing notice would; the notice stays in Storage Settings.
-        if let billing = input.cloudUsage?.billing.notice, input.storageKind == .paraairCloud, result.status.title != Self.noStorageTitle {
-            result.notices.append(billing)
+        result.notices += selectedDriveNotices(input, named: nil, billing: result.status.title != Self.noStorageTitle,
+                                               ownedWhenMounted: false)
+        return result
+    }
+
+    /// Two or more drives, in this folder and others: a summary leads, each drive gets a row with its one action, and
+    /// every problem names its drive. Only what stops every drive (the switch, a first check, a drive being created
+    /// while none is mounted) still leads with a single action.
+    private static func several(_ input: HomeInputs) -> HomePresentation {
+        let rows = driveRows(input)
+        let anyMounted = input.mounted || input.otherDrives.contains { $0.mounted }
+        let extensionOff = input.extensionState != .enabled && input.extensionState != .unchecked
+        var result: HomePresentation
+        if !anyMounted && input.creatingDrive {
+            result = .init(status: .init(title: "Creating your drive…",
+                                         detail: "ParaAir is preparing the drive on this Mac.", tone: .working),
+                           primary: .init(action: .createDrive, title: "Creating…", enabled: false, busy: true))
+        } else if !anyMounted && input.extensionState == .unchecked {
+            result = .init(status: .init(title: "Checking System Settings…",
+                                         detail: "Looking for ParaAir’s file system extension.", tone: .working),
+                           primary: .init(action: .openSystemSettings, title: "Open System Settings", busy: input.checkingExtension))
+        } else if !anyMounted && extensionOff {
+            result = .init(status: extensionStatus(input.extensionState, stillOff: input.extensionStillOff,
+                                                   turnedOff: input.extensionTurnedOff),
+                           primary: .init(action: .openSystemSettings, title: "Open System Settings"),
+                           offersCheckAgain: true)
+            result.showsSwitchPicture = input.extensionState == .disabled
+        } else {
+            // The rows carry every action, so no primary button is drawn; this value only fills the field.
+            result = .init(status: summary(rows), primary: .init(action: .openInFinder, title: "Open in Finder"), showsPrimary: false)
         }
-        if let message = input.sidebarMessage { result.notices.append(.init(id: "sidebar", text: message, tone: .neutral)) }
-        if let owner = input.ownedElsewhere, !input.mounted {
-            result.notices.append(.init(id: "owned-elsewhere", text: "\(owner) took over this drive. It opens read-only on this Mac.", tone: .attention))
+        result.drives = rows
+
+        if let error = input.error { result.notices.append(.init(id: "error", text: error, tone: .problem)) }
+        if let copies = otherCopiesNotice(input.otherCopies) { result.notices.append(copies) }
+        if !input.hasDrive, let connection = input.readyConnectionName {
+            result.notices.append(.init(id: "ready-connection", text: "\(connection) is ready. Create a drive to see it in Finder.",
+                                        tone: .neutral, action: .createDrive, actionTitle: "Create Drive…"))
+        }
+        for row in rows {
+            if let issue = row.issue {
+                result.notices.append(.init(id: "drive-" + row.id, text: "\(row.name): \(issue)", tone: .attention))
+            }
+        }
+        result.notices += selectedDriveNotices(input, named: input.driveName, billing: true, ownedWhenMounted: true)
+        return result
+    }
+
+    /// The selected folder's drive first, then the others in the order ParaAir learned them; working drives move ahead
+    /// of the rest, so a drive that can't connect never hides one that works.
+    private static func driveRows(_ input: HomeInputs) -> [DriveRow] {
+        var drives: [KnownDrive] = []
+        if let name = input.driveName {
+            let state: KnownDrive.State
+            if input.mounted { state = input.connectionIssue == nil ? .connected : .needsSignIn }
+            else if input.mounting || !input.credentialCheckFinished { state = .connecting }
+            else { state = input.connectionIssue == nil ? .off : .needsSignIn }
+            drives.append(KnownDrive(id: selectedDriveID, name: name, storage: input.storageSummary ?? "Saved storage connection",
+                                     state: state, mounted: input.mounted, issue: input.connectionIssue))
+        }
+        drives += input.otherDrives
+        func rank(_ state: KnownDrive.State) -> Int {
+            switch state { case .connected: 0; case .connecting: 1; case .needsSignIn: 2; case .off: 3 }
+        }
+        return drives.enumerated()
+            .sorted { (rank($0.element.state), $0.offset) < (rank($1.element.state), $1.offset) }
+            .map { row($0.element) }
+    }
+
+    private static func row(_ drive: KnownDrive) -> DriveRow {
+        func make(_ title: String, _ tone: Tone, _ action: Action?, _ actionTitle: String?) -> DriveRow {
+            DriveRow(id: drive.id, name: drive.name, storage: drive.storage, state: drive.state, stateTitle: title, tone: tone,
+                     action: action, actionTitle: actionTitle, issue: drive.issue,
+                     switchesFolder: action == .signInAgain && drive.id != selectedDriveID)
+        }
+        switch drive.state {
+        case .connected: return make("Connected", .good, .openInFinder, "Open in Finder")
+        case .connecting: return make("Connecting…", .working, nil, nil)
+        case .needsSignIn: return make("Needs sign-in", .attention, .signInAgain, "Sign In Again…")
+        case .off: return make("Off", drive.issue == nil ? .neutral : .attention, .connectDrive, "Connect")
+        }
+    }
+
+    /// "2 drives connected · R2 Test needs sign-in". "Storage access needed" only when every drive needs sign-in.
+    static func summary(_ rows: [DriveRow]) -> Status {
+        let connected = rows.filter { $0.state == .connected }.count
+        let connecting = rows.filter { $0.state == .connecting }
+        let signIn = rows.filter { $0.state == .needsSignIn }
+        let failed = rows.filter { $0.state == .off && $0.issue != nil }
+        if !rows.isEmpty, signIn.count == rows.count {
+            return .init(title: "Storage access needed",
+                         detail: rows.count == 1 ? "Sign in again in Storage Settings to connect \(rows[0].name)."
+                             : "None of your drives can reach its storage. Sign in again for each one below.",
+                         tone: .problem)
+        }
+        func part(_ drives: [DriveRow], one: String, many: String) -> String? {
+            drives.isEmpty ? nil : drives.count == 1 ? "\(drives[0].name) \(one)" : "\(drives.count) drives \(many)"
+        }
+        let lead = connected > 0 ? (connected == 1 ? "1 drive connected" : "\(connected) drives connected")
+            : connecting.isEmpty ? "Not connected" : nil
+        let title = [lead, part(connecting, one: "is connecting", many: "connecting"),
+                     part(signIn, one: "needs sign-in", many: "need sign-in"),
+                     part(failed, one: "didn’t connect", many: "didn’t connect")].compactMap { $0 }.joined(separator: " · ")
+        let tone: Tone = !signIn.isEmpty || !failed.isEmpty ? .attention : !connecting.isEmpty ? .working : connected > 0 ? .good : .neutral
+        let detail = connected > 0 ? "Files download in pieces as apps read them."
+            : !connecting.isEmpty ? "macOS is opening your drives." : "Connect a drive to use it in Finder."
+        return .init(title: title, detail: detail, tone: tone)
+    }
+
+    /// Notices about the selected folder's drive. `named` puts the drive's name before each one when other drives are
+    /// listed beside it, so a problem never reads as if it were every drive's.
+    private static func selectedDriveNotices(_ input: HomeInputs, named drive: String?, billing showsBilling: Bool,
+                                             ownedWhenMounted: Bool) -> [Notice] {
+        func withName(_ notice: Notice, as name: String?) -> Notice {
+            guard let name else { return notice }
+            var notice = notice
+            notice.text = "\(name): \(notice.text)"
+            return notice
+        }
+        func named(_ notice: Notice) -> Notice { withName(notice, as: drive) }
+        var notices: [Notice] = []
+        if let message = input.mountMessage {
+            notices.append(withName(.init(id: "mount", text: message, tone: .attention), as: drive == nil ? nil : input.mountMessageDrive ?? drive))
+        }
+        if let notice = input.folderNotice { notices.append(.init(id: "folder", text: notice, tone: .attention)) }
+        if let renewal = input.renewalError, input.connectionIssue == nil {
+            notices.append(named(.init(id: "renewal", text: renewal, tone: .attention)))
+        }
+        if let billing = input.cloudUsage?.billing.notice, input.storageKind == .paraairCloud, showsBilling {
+            notices.append(named(billing))
+        }
+        if let message = input.sidebarMessage { notices.append(.init(id: "sidebar", text: message, tone: .neutral)) }
+        if let owner = input.ownedElsewhere, ownedWhenMounted || !input.mounted {
+            notices.append(named(.init(id: "owned-elsewhere", text: "\(owner) took over this drive. It opens read-only on this Mac.",
+                                       tone: .attention)))
         }
         if let activity = input.uploadActivity {
-            result.notices += uploadNotices(activity, cloud: input.storageKind == .paraairCloud, accessIssue: input.connectionIssue != nil,
-                                            owner: input.ownedElsewhere, now: input.now)
+            notices += uploadNotices(activity, cloud: input.storageKind == .paraairCloud, accessIssue: input.connectionIssue != nil,
+                                     owner: input.ownedElsewhere, now: input.now).map { named($0) }
         }
         if let problem = input.indexBackup?.problem {
-            result.notices.append(.init(id: "index-backup", text: problem, tone: .attention))
+            notices.append(named(.init(id: "index-backup", text: problem, tone: .attention)))
         }
-        return result
+        return notices
     }
 
     /// Another registered copy can make macOS use its extension instead of this one's.

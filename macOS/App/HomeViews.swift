@@ -6,6 +6,8 @@ import StreamDriveCore
 /// same code renders in the app and in the offscreen snapshot harness.
 struct HomeActions {
     var perform: (HomePresentation.Action) -> Void = { _ in }
+    /// A drive row's action, by the row's id (HomePresentation.selectedDriveID or the drive's state folder).
+    var drive: (String, HomePresentation.Action) -> Void = { _, _ in }
     var checkAgain: () -> Void = {}
     var showHome: () -> Void = {}
     var openStorageSettings: () -> Void = {}
@@ -57,8 +59,11 @@ struct DriveHomeContent: View {
 
     var body: some View {
         let presentation = self.presentation
+        let listsDrives = !presentation.drives.isEmpty
         VStack(spacing: 0) {
-            DriveHeader(name: input.driveName ?? "ParaAir", icon: details.driveIcon,
+            // With several drives the header is ParaAir's, and its status sums them up; one drive's name or icon
+            // would read as if its state were every drive's.
+            DriveHeader(name: listsDrives ? "ParaAir" : input.driveName ?? "ParaAir", icon: listsDrives ? nil : details.driveIcon,
                         status: presentation.status, iconSize: 56, titleFont: .glideDisplay(.largeTitle))
                 .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 6)
             Form {
@@ -73,10 +78,19 @@ struct DriveHomeContent: View {
                             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .accessibilityLabel("System Settings, File System Extensions: \(ExtensionSetupGuidance.switchName), switched on")
                     }
-                    ActionRow(presentation: presentation, actions: actions, large: true)
+                    if presentation.showsPrimary { ActionRow(presentation: presentation, actions: actions, large: true) }
                 }
                 if let update = input.updateTitle, let install = actions.checkForUpdates {
                     Section { UpdateReadyRow(title: update, install: install) }
+                }
+                if listsDrives {
+                    Section {
+                        ForEach(presentation.drives) { row in
+                            DriveListRow(row: row, canSwitchFolder: details.canChangeStateFolder, perform: actions.drive)
+                        }
+                    } header: {
+                        Text("Drives").font(.glideHeading).foregroundStyle(Glide.ink)
+                    }
                 }
                 if !presentation.notices.isEmpty {
                     Section {
@@ -113,11 +127,13 @@ struct DriveHomeContent: View {
                             Button("Storage Settings…", action: actions.openStorageSettings)
                         }
                     } header: {
-                        Text("Drive").font(.glideHeading).foregroundStyle(Glide.ink)
+                        // Beside other drives, these details are the selected folder's drive: say which one.
+                        Text(listsDrives ? input.driveName ?? "Drive" : "Drive").font(.glideHeading).foregroundStyle(Glide.ink)
+                            .lineLimit(1).truncationMode(.middle)
                     }
                 }
                 Section {
-                    Toggle("Connect the drive when ParaAir opens", isOn: $connectAutomatically)
+                    Toggle(Self.connectAutomaticallyTitle(listsDrives: listsDrives), isOn: $connectAutomatically)
                         .glideControlTint()
                     if let loginItem { LoginItemToggle(model: loginItem) }
                     DisclosureGroup("Advanced", isExpanded: $showsAdvanced) {
@@ -132,6 +148,11 @@ struct DriveHomeContent: View {
         .frame(minWidth: 560, minHeight: 520)
         .onAppear { if startsWithAdvancedOpen { showsAdvanced = true } }
     }
+
+    /// The setting connects the selected folder's drive and the drives kept for login alike.
+    static func connectAutomaticallyTitle(listsDrives: Bool) -> String {
+        listsDrives ? "Connect drives when ParaAir opens" : "Connect the drive when ParaAir opens"
+    }
 }
 
 // MARK: - Menu bar panel
@@ -145,8 +166,9 @@ struct MenuBarPanel: View {
 
     var body: some View {
         let presentation = HomePresentation.make(input)
+        let listsDrives = !presentation.drives.isEmpty
         VStack(alignment: .leading, spacing: 12) {
-            DriveHeader(name: input.driveName ?? "ParaAir", icon: details.driveIcon,
+            DriveHeader(name: listsDrives ? "ParaAir" : input.driveName ?? "ParaAir", icon: listsDrives ? nil : details.driveIcon,
                         status: presentation.status, iconSize: 34, titleFont: .glideDisplay(.title2, weight: .semibold))
             if let update = input.updateTitle, let install = actions.checkForUpdates {
                 UpdateReadyRow(title: update, install: install, compact: true)
@@ -154,13 +176,20 @@ struct MenuBarPanel: View {
             if let notice = presentation.notices.first(where: { $0.tone == .problem || $0.tone == .attention }) {
                 NoticeRow(notice: notice, perform: actions.perform).lineLimit(4)
             }
-            ActionRow(presentation: presentation, actions: actions, large: false)
+            if presentation.showsPrimary { ActionRow(presentation: presentation, actions: actions, large: false) }
+            if listsDrives {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(presentation.drives) { row in
+                        DriveListRow(row: row, compact: true, canSwitchFolder: details.canChangeStateFolder, perform: actions.drive)
+                    }
+                }
+            }
             Divider()
             HStack(spacing: 8) {
                 Button("Show ParaAir", action: actions.showHome)
                 Button("Storage Settings…", action: actions.openStorageSettings)
             }
-            Toggle("Connect the drive when ParaAir opens", isOn: $connectAutomatically)
+            Toggle(DriveHomeContent.connectAutomaticallyTitle(listsDrives: listsDrives), isOn: $connectAutomatically)
                 .toggleStyle(.checkbox)
                 .glideControlTint()
             if let loginItem { LoginItemToggle(model: loginItem, style: .panel) }
@@ -273,6 +302,60 @@ private struct ActionRow: View {
                 Button("Open in Finder") { actions.perform(.openInFinder) }
                     .controlSize(large ? .large : .regular)
             }
+        }
+    }
+}
+
+/// One drive: its Finder name and storage, its state, and the one action that state needs. In the window the state and
+/// the action sit in fixed columns, so they line up from row to row whatever the names; the menu bar panel puts the
+/// state under the name.
+struct DriveListRow: View {
+    let row: HomePresentation.DriveRow
+    var compact = false
+    /// False while a mount or drive creation runs: a row that switches the selected folder waits for it.
+    var canSwitchFolder = true
+    let perform: (String, HomePresentation.Action) -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: compact ? 3 : 2) {
+                Text(row.name).fontWeight(.medium).foregroundStyle(Glide.ink)
+                    .lineLimit(1).truncationMode(.middle)
+                if compact {
+                    stateLabel.font(.caption)
+                } else {
+                    Text(row.storage).font(.caption).foregroundStyle(Glide.quiet)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 8)
+            if !compact {
+                stateLabel.font(.callout).frame(width: 128, alignment: .leading)
+            }
+            action.frame(width: compact ? nil : 132, alignment: .trailing)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var stateLabel: some View {
+        Label {
+            Text(row.stateTitle)
+        } icon: {
+            Image(systemName: StatusLabel.symbol(row.tone)).foregroundStyle(StatusLabel.color(row.tone))
+        }
+        .foregroundStyle(Glide.quiet)
+        .lineLimit(1)
+    }
+
+    @ViewBuilder private var action: some View {
+        if let action = row.action, let title = row.actionTitle {
+            Button(title) { perform(row.id, action) }
+                .controlSize(compact ? .small : .regular)
+                .disabled(row.switchesFolder && !canSwitchFolder)
+                .help(row.switchesFolder ? "Shows \(row.name)’s state folder in ParaAir, then opens Storage Settings." : "")
+        } else if row.state == .connecting {
+            ProgressView().controlSize(.small).accessibilityLabel("\(row.name) is connecting")
         }
     }
 }

@@ -27,22 +27,25 @@ struct UISnapshots {
 
         for (name, input) in homeScenarios {
             for appearance in [NSAppearance.Name.aqua, .darkAqua]
-            where appearance == .aqua || name.hasPrefix("1-") || name.hasPrefix("5-") || name.hasPrefix("9-") {
+            where appearance == .aqua || name.hasPrefix("1-") || name.hasPrefix("5-") || name.hasPrefix("9-") || name.hasPrefix("26-") {
                 let view = DriveHomeContent(input: input, details: details(for: input),
                                             connectAutomatically: .constant(true), actions: HomeActions())
-                try render(view, size: CGSize(width: 620, height: 680), appearance: appearance,
+                // Several drives make a longer window; render all of it.
+                try render(view, size: CGSize(width: 620, height: input.otherDrives.isEmpty ? 680 : 860), appearance: appearance,
                            to: output.appendingPathComponent("home-\(name)-\(suffix(appearance)).png"))
             }
         }
         for (name, input) in homeScenarios
         where ["1-first-run", "3-turn-on", "5-connected", "6-connected-sign-in", "10-cloud-quota-blocked", "11-cloud-signed-out",
                "14-cloud-past-due", "15-cloud-read-only", "16-cloud-pending-deletion", "17-owned-elsewhere",
-               "19-uploads-failing", "20-conflicts", "22-cloud-no-storage"].contains(name) {
+               "19-uploads-failing", "20-conflicts", "22-cloud-no-storage", "26-drives-one-needs-sign-in", "28-drives-all-blocked",
+               "29-drives-connecting", "31-drives-switch-off"].contains(name) {
             let view = MenuBarPanel(input: input, details: details(for: input),
                                     connectAutomatically: .constant(true), actions: HomeActions())
             // Dark too for the states people see most: the menu bar panel follows the system appearance.
             for appearance in [NSAppearance.Name.aqua, .darkAqua]
-            where appearance == .aqua || ["1-first-run", "5-connected", "6-connected-sign-in", "11-cloud-signed-out", "19-uploads-failing"].contains(name) {
+            where appearance == .aqua || ["1-first-run", "5-connected", "6-connected-sign-in", "11-cloud-signed-out", "19-uploads-failing",
+                                          "26-drives-one-needs-sign-in"].contains(name) {
                 try render(view, size: nil, appearance: appearance, to: output.appendingPathComponent("menu-\(name)-\(suffix(appearance)).png"))
             }
         }
@@ -159,6 +162,38 @@ struct UISnapshots {
         var refusedByPlan = readOnly
         refusedByPlan.uploadActivity = UploadActivity(blockedElsewhere: 1, decisions: [
             PendingDecision(path: "/Edits/cut-04.mov", kind: .refused(cloud: true), size: 2_100_000_000, modified: fixtureNow)])
+
+        // Several drives. The Mac issue #35 describes: the selected folder holds an R2 drive whose Cloudflare sign-in
+        // ended, and two ParaAir Cloud drives in folders of their own are mounted and working.
+        var oneNeedsSignIn = drive
+        oneNeedsSignIn.driveName = "R2 Test"
+        oneNeedsSignIn.storageSummary = "Cloudflare R2 · paraair-test"
+        oneNeedsSignIn.mountPath = "/Volumes/R2 Test"
+        oneNeedsSignIn.connectionIssue = "Cloudflare sign-in expired. Sign in again in Storage Settings."
+        oneNeedsSignIn.otherDrives = [fixtureParaOS, fixtureParaOSB]
+        var allConnected = connected
+        allConnected.sidebarMessage = nil
+        allConnected.uploadActivity = UploadActivity(waiting: 2, pendingBytes: 96_000_000)
+        allConnected.otherDrives = [fixtureParaOS]
+        var allBlocked = issue
+        var signedOut = fixtureParaOS
+        signedOut.state = .needsSignIn; signedOut.mounted = false
+        signedOut.issue = "Your ParaAir Cloud sign-in ended. Sign in again in Storage Settings."
+        allBlocked.otherDrives = [signedOut]
+        var oneConnecting = connected
+        oneConnecting.sidebarMessage = nil
+        var connectingOther = fixtureParaOS
+        connectingOther.state = .connecting; connectingOther.mounted = false
+        oneConnecting.otherDrives = [connectingOther]
+        var otherFailed = cloudReady
+        otherFailed.uploadActivity = nil
+        var failedOther = fixtureParaOSB
+        failedOther.state = .off; failedOther.mounted = false; failedOther.issue = KnownDrive.didNotConnect
+        otherFailed.otherDrives = [failedOther, fixtureArchiveOff]
+        var switchOffSeveral = turnOn
+        var paraOSOff = fixtureParaOS
+        paraOSOff.state = .off; paraOSOff.mounted = false
+        switchOffSeveral.otherDrives = [paraOSOff, fixtureArchiveOff]
         return [("1-first-run", firstRun), ("2-storage-ready", ready), ("3-turn-on", turnOn),
                 ("4-checking", checking), ("5-connected", connected), ("6-connected-sign-in", mountedIssue),
                 ("7-sign-in-needed", issue), ("8-connecting", connecting),
@@ -168,8 +203,18 @@ struct UISnapshots {
                 ("17-owned-elsewhere", ownedElsewhere), ("18-index-backup-failing", backupFailing),
                 ("19-uploads-failing", uploadsFailing), ("20-conflicts", conflicts), ("21-cloud-read-only-changes", refusedByPlan),
                 ("22-cloud-no-storage", noStorage), ("23-cloud-trial", trial), ("24-turn-on-first", turnOnFirst),
-                ("25-still-off", stillOff)]
+                ("25-still-off", stillOff), ("26-drives-one-needs-sign-in", oneNeedsSignIn), ("27-drives-connected", allConnected),
+                ("28-drives-all-blocked", allBlocked), ("29-drives-connecting", oneConnecting), ("30-drives-other-failed", otherFailed),
+                ("31-drives-switch-off", switchOffSeveral)]
     }()
+
+    /// Drives of other state folders (folders of their own under Cloud Drives, and an older one kept for login).
+    static let fixtureParaOS = KnownDrive(id: "/Users/maya/Library/Application Support/ParaAir/Cloud Drives/0c62a737",
+                                          name: "ParaOS", storage: "ParaAir Cloud · " + fixtureEmail, state: .connected, mounted: true)
+    static let fixtureParaOSB = KnownDrive(id: "/Users/maya/Library/Application Support/ParaAir/Cloud Drives/5e1f9a20",
+                                           name: "ParaOS-B", storage: "ParaAir Cloud · " + fixtureEmail, state: .connected, mounted: true)
+    static let fixtureArchiveOff = KnownDrive(id: "/Users/maya/Library/Application Support/StreamDrive-archive",
+                                              name: "Archive", storage: "Backblaze B2 · studio-archive", state: .off)
 
     static let fixtureNow = Date(timeIntervalSince1970: 2_000_000_000)
     /// Two conflicts and a change refused after another Mac took over.
@@ -1027,6 +1072,7 @@ struct UISnapshots {
                                                 && $0.action == .reviewChanges },
                "changes a read-only plan refuses name the plan, not another Mac")
         failures += checkUploadActivity()
+        failures += checkDriveList(scenarios)
         let first = HomePresentation.make(scenarios["1-first-run"]!)
         expect(first.primary.action == .addStorage, "first run offers Add Storage")
         expect(first.steps.map(\.state) == [.done, .current, .upcoming, .upcoming], "with the switch on, storage is the current step")
@@ -1040,7 +1086,7 @@ struct UISnapshots {
         expect(ready.steps.map(\.state) == [.done, .done, .current, .upcoming], "ready storage marks the drive step current")
         let turnOn = HomePresentation.make(scenarios["3-turn-on"]!)
         expect(turnOn.primary.action == .openSystemSettings && turnOn.offersCheckAgain, "disabled extension opens System Settings")
-        expect(turnOn.steps.map(\.state) == [.current, .done, .done, .upcoming], "extension step is current")
+        expect(turnOn.steps.isEmpty, "a Mac with a drive has no setup checklist; the status leads with the switch")
         let turnOnFirst = HomePresentation.make(scenarios["24-turn-on-first"]!)
         expect(turnOnFirst.primary.action == .openSystemSettings && turnOnFirst.offersCheckAgain,
                "a new Mac turns ParaAir on before anything else")
@@ -1091,7 +1137,8 @@ struct UISnapshots {
         expect(mountedIssue.status.tone == .attention, "mounted drive with expired access is not shown as healthy")
         let issue = HomePresentation.make(scenarios["7-sign-in-needed"]!)
         expect(issue.primary.action == .signInAgain && issue.status.tone == .problem, "unmounted drive with expired access")
-        expect(issue.steps.map(\.state) == [.done, .current, .done, .upcoming], "expired access returns to the storage step")
+        expect(issue.steps.isEmpty && issue.status.title == "Storage access needed",
+               "one drive that needs sign-in leads with it, without the setup checklist")
         let connecting = HomePresentation.make(scenarios["8-connecting"]!)
         expect(connecting.primary.busy && connecting.notices.contains { $0.id == "mount" }, "connecting shows progress and message")
         var renewal = scenarios["5-connected"]!
@@ -1102,9 +1149,111 @@ struct UISnapshots {
         for (name, input) in homeScenarios {
             let presentation = HomePresentation.make(input)
             let text = ([presentation.status.title, presentation.status.detail, presentation.primary.title]
-                        + presentation.steps.flatMap { [$0.title, $0.detail] } + presentation.notices.map(\.text)).joined(separator: "\n")
+                        + presentation.steps.flatMap { [$0.title, $0.detail] } + presentation.notices.map(\.text)
+                        + presentation.drives.flatMap { [$0.name, $0.storage, $0.stateTitle, $0.actionTitle ?? ""] }).joined(separator: "\n")
             expect(!text.contains("\u{2014}"), "\(name): copy avoids em dashes")
             expect(!text.lowercased().contains("juicefs") && !text.lowercased().contains("metadata"), "\(name): copy avoids engine jargon")
+        }
+        return failures
+    }
+
+    /// Several drives (issue #35): every known drive is listed with its one action, the status sums them up, a drive that
+    /// can't connect never hides one that works, and every problem names its drive.
+    static func checkDriveList(_ scenarios: [String: HomeInputs]) -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: Bool, _ message: String) { if !condition { failures.append("drive list: " + message) } }
+
+        let owner = HomePresentation.make(scenarios["26-drives-one-needs-sign-in"]!)
+        expect(owner.status.title == "2 drives connected · R2 Test needs sign-in" && owner.status.tone == .attention,
+               "one drive needing sign-in beside two working ones: \(owner.status.title)")
+        expect(owner.drives.map(\.name) == ["ParaOS", "ParaOS-B", "R2 Test"], "working drives come first: \(owner.drives.map(\.name))")
+        expect(owner.drives.map(\.stateTitle) == ["Connected", "Connected", "Needs sign-in"]
+               && owner.drives.map(\.actionTitle) == ["Open in Finder", "Open in Finder", "Sign In Again…"],
+               "each drive shows its state and the one action it needs")
+        let r2 = owner.drives.first { $0.name == "R2 Test" }
+        expect(r2?.id == HomePresentation.selectedDriveID && r2?.action == .signInAgain && r2?.switchesFolder == false,
+               "the selected drive signs in where it is")
+        expect(owner.drives.first?.storage == "ParaAir Cloud · " + fixtureEmail, "rows show the storage")
+        expect(!owner.showsPrimary && owner.steps.isEmpty, "the rows carry the actions; no primary button, no checklist")
+        expect(owner.notices.contains { $0.id == "drive-selected" && $0.text == "R2 Test: Cloudflare sign-in expired. Sign in again in Storage Settings." },
+               "the problem notice names its drive")
+        expect(!owner.status.title.contains("Storage access") && !owner.status.detail.contains("sign-in"),
+               "one drive's problem isn't the window's status")
+        expect(HomePresentation.make(scenarios["7-sign-in-needed"]!).status.title == "Storage access needed",
+               "a Mac whose only drive needs sign-in still leads with it")
+
+        let together = HomePresentation.make(scenarios["27-drives-connected"]!)
+        expect(together.status.title == "2 drives connected" && together.status.tone == .good
+               && together.status.detail == "Files download in pieces as apps read them.", "all connected: \(together.status.title)")
+        expect(together.drives.first?.id == HomePresentation.selectedDriveID, "among working drives the selected folder's leads")
+        expect(together.notices.contains { $0.id == "upload-waiting" && $0.text == "Client Footage: 2 files are waiting to upload." },
+               "the selected drive's notices name it beside other drives")
+        var pending = scenarios["27-drives-connected"]!
+        pending.mountMessage = "macOS is still opening the drive. ParaAir will finish setup when it replies."
+        pending.mountMessageDrive = "ParaOS"
+        expect(HomePresentation.make(pending).notices.contains { $0.id == "mount" && $0.text.hasPrefix("ParaOS: macOS is still opening") },
+               "a mount message names the drive that is mounting")
+        var renewal = scenarios["27-drives-connected"]!
+        renewal.renewalError = "ParaAir Cloud couldn’t be reached to renew sign-in. ParaAir keeps trying."
+        renewal.indexBackup = scenarios["18-index-backup-failing"]!.indexBackup
+        let renewalNotices = HomePresentation.make(renewal).notices
+        expect(renewalNotices.contains { $0.id == "renewal" && $0.text.hasPrefix("Client Footage: ParaAir Cloud couldn’t be reached") }
+               && renewalNotices.contains { $0.id == "index-backup" && $0.text.hasPrefix("Client Footage: ParaAir couldn’t back up") },
+               "renewal and index backup notices name their drive")
+
+        let blocked = HomePresentation.make(scenarios["28-drives-all-blocked"]!)
+        expect(blocked.status.title == "Storage access needed" && blocked.status.tone == .problem,
+               "every drive blocked: \(blocked.status.title)")
+        expect(blocked.notices.filter { $0.id.hasPrefix("drive-") }.map(\.text)
+                == ["Client Footage: Cloudflare sign-in expired. Sign in again in Storage Settings.",
+                    "ParaOS: Your ParaAir Cloud sign-in ended. Sign in again in Storage Settings."],
+               "each blocked drive has its own named notice")
+        expect(blocked.drives.first { $0.name == "ParaOS" }?.switchesFolder == true,
+               "signing in to another folder's drive selects that folder first")
+
+        let connecting = HomePresentation.make(scenarios["29-drives-connecting"]!)
+        expect(connecting.status.title == "1 drive connected · ParaOS is connecting" && connecting.status.tone == .working,
+               "a drive still connecting: \(connecting.status.title)")
+        expect(connecting.drives.last?.action == nil && connecting.drives.last?.stateTitle == "Connecting…", "a connecting drive waits")
+
+        let failed = HomePresentation.make(scenarios["30-drives-other-failed"]!)
+        expect(failed.status.title == "1 drive connected · ParaOS-B didn’t connect" && failed.status.tone == .attention,
+               "a drive that didn't open: \(failed.status.title)")
+        expect(failed.drives.map(\.name) == ["ParaAir Cloud", "ParaOS-B", "Archive"]
+               && failed.drives.last?.tone == .neutral && failed.drives.last?.action == .connectDrive
+               && failed.drives[1].tone == .attention, "an Off drive offers Connect; only the failed one asks for attention")
+        expect(failed.notices.contains { $0.text == "ParaOS-B: " + KnownDrive.didNotConnect } && !failed.notices.contains { $0.text.hasPrefix("Archive") },
+               "a drive that is simply off gets no notice")
+
+        let switchOff = HomePresentation.make(scenarios["31-drives-switch-off"]!)
+        expect(switchOff.primary.action == .openSystemSettings && switchOff.showsPrimary && switchOff.offersCheckAgain
+               && switchOff.showsSwitchPicture && switchOff.drives.count == 3 && switchOff.steps.isEmpty,
+               "the switch still leads when it stops every drive, and the drives stay listed")
+
+        var many = scenarios["26-drives-one-needs-sign-in"]!
+        many.otherDrives.append(scenarios["28-drives-all-blocked"]!.otherDrives[0])
+        expect(HomePresentation.make(many).status.title == "2 drives connected · 2 drives need sign-in", "several problems are counted")
+        var elsewhere = HomeInputs()
+        elsewhere.credentialCheckFinished = true; elsewhere.extensionState = .enabled
+        elsewhere.readyConnectionName = "Cloudflare R2"
+        elsewhere.otherDrives = [fixtureParaOS]
+        let onlyOther = HomePresentation.make(elsewhere)
+        expect(onlyOther.status.title == "1 drive connected" && onlyOther.steps.isEmpty && onlyOther.drives.map(\.name) == ["ParaOS"],
+               "a drive in another folder means the Mac is set up, even when the selected folder has none")
+        expect(onlyOther.notices.contains { $0.id == "ready-connection" && $0.action == .createDrive },
+               "saved storage without a drive still offers Create Drive")
+
+        for (name, input) in scenarios {
+            let presentation = HomePresentation.make(input)
+            expect(presentation.steps.isEmpty == (input.hasDrive || !input.otherDrives.isEmpty),
+                   "\(name): the setup checklist shows exactly while the Mac has no drive")
+            expect(presentation.drives.isEmpty == input.otherDrives.isEmpty, "\(name): drives are listed only beside other drives")
+            guard !presentation.drives.isEmpty else { continue }
+            let names = presentation.drives.map(\.name)
+            for notice in presentation.notices where (notice.tone == .attention || notice.tone == .problem)
+                && !["error", "other-copies", "folder"].contains(notice.id) {
+                expect(names.contains { notice.text.hasPrefix($0 + ": ") }, "\(name): \(notice.id) names its drive: \(notice.text)")
+            }
         }
         return failures
     }
