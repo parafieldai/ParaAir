@@ -1056,6 +1056,51 @@ extension CLIApplicationTests {
         XCTAssertTrue(help.contains("paraair members add") && help.contains("--notify"), help)
     }
 
+    /// The calls ParaOS's access reconcile (Parafield-OS #22) makes, each with --state-dir first: their JSON shapes and
+    /// exit codes are a contract with that app.
+    func testParaOSReconcileCallsKeepTheirShapes() throws {
+        let fixture = try cloudFixture(), fake = FakeSystem(), elsewhere = try temporaryDirectory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: elsewhere); _ = fake }
+        try ProfileStore(root: fixture.root).save(DriveProfile(name: "ParaOS", backend: .paraairCloud, blockSize: 4_194_304, cloudIssuer: fixture.account.issuer,
+                                                               cloudAccountID: fixture.account.id, cloudDriveID: CLICloudStub.drive))
+        // The environment points at another folder: --state-dir alone finds the account and the profile.
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": elsewhere.path, "PARAAIR_APP_PATH": "/missing/ParaAir.app"],
+                                 dependencies: fixture.dependencies, system: fake.system)
+        let members = ["--cloud-account", fixture.account.id, "--workspace", CLICloudStub.workspace]
+        func run(_ arguments: [String], exitCode: Int32 = 0) throws -> [String: Any] {
+            let result = app.run(["--state-dir", fixture.root.path] + arguments + ["--json"])
+            XCTAssertEqual(result.exitCode, exitCode, arguments.joined(separator: " ") + "\n" + result.stdout + result.stderr)
+            return try object(result)
+        }
+        let memberKeys: Set<String> = ["userId", "email", "role", "addedAt", "status"]
+
+        let list = try run(["members", "list"] + members)
+        XCTAssertEqual(Set(list.keys), ["workspace", "members"])
+        XCTAssertEqual((list["workspace"] as? [String: Any])?["id"] as? String, CLICloudStub.workspace)
+        for member in try XCTUnwrap(list["members"] as? [[String: Any]]) { XCTAssertEqual(Set(member.keys), memberKeys) }
+
+        let added = try run(["members", "add"] + members + ["--email", "kim@example.test", "--role", "viewer", "--notify"])
+        XCTAssertEqual(Set(added.keys), ["member", "added", "notified"])
+        XCTAssertEqual(Set(try XCTUnwrap(added["member"] as? [String: Any]).keys), memberKeys)
+        XCTAssertEqual(added["added"] as? Bool, true); XCTAssertEqual(added["notified"] as? Bool, true)
+
+        let changed = try run(["members", "role"] + members + ["--email", "kim@example.test", "--role", "member"])
+        XCTAssertEqual(Set(changed.keys), ["member"]); XCTAssertEqual((changed["member"] as? [String: Any])?["role"] as? String, "member")
+
+        XCTAssertEqual(Set(try run(["members", "remove"] + members + ["--email", "kim@example.test"]).keys), ["userId", "email", "removed"])
+        XCTAssertEqual(try run(["members", "remove"] + members + ["--email", "kim@example.test"], exitCode: 17)["code"] as? String, "not_found")
+
+        XCTAssertEqual(Set(try run(["access", "list", "ParaOS", "/"]).keys), ["path", "rules"])
+        XCTAssertEqual(Set(try run(["access", "set", "ParaOS", "/people/kim", "--email", "kim@example.test", "--level", "write"]).keys), ["rule"])
+        XCTAssertEqual(Set(try run(["access", "remove", "ParaOS", "/people/kim", "--email", "kim@example.test"]).keys), ["path", "principal", "removed"])
+
+        XCTAssertEqual(try run(["members", "list", "--cloud-account", fixture.account.id, "--workspace", CLICloudStub.forbiddenWorkspace],
+                               exitCode: 12)["code"] as? String, "forbidden")
+        XCTAssertEqual(try run(["members", "list"] + members + ["--role", "viewer"], exitCode: 2)["code"] as? String, "usage")
+        // A ParaAir without the command answers an unknown command the same way: exit 2, code usage.
+        XCTAssertEqual(try run(["no-such-command", "list"] + members, exitCode: 2)["code"] as? String, "usage")
+    }
+
     func testASecondDriveGetsAStateFolderOfItsOwnSharingTheSignIn() throws {
         let fixture = try cloudFixture(), fake = FakeSystem()
         let home = try temporaryDirectory()
