@@ -325,16 +325,14 @@ struct NoticeRow: View {
     }
 }
 
-/// The plan size leads; the used figure and its bar support it. Rows appear only when
-/// `/v1/me` supplied the values, so a failed summary never shows as zero.
+/// The plan size, then the used figure and its bar, set like every other Drive row. Rows appear
+/// only when `/v1/me` supplied the values, so a failed summary never shows as zero.
 private struct PlanRows: View {
     let usage: CloudUsagePresentation
 
     var body: some View {
         if let plan = usage.planSize {
-            LabeledContent("Plan") {
-                Text(plan).font(.glideDisplay(.title2, weight: .semibold)).monospacedDigit().foregroundStyle(Glide.ink)
-            }
+            LabeledContent("Plan") { Text(plan).monospacedDigit() }
         }
         if let used = usage.usedSize {
             LabeledContent("Used") {
