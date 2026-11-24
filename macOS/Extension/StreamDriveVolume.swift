@@ -10,6 +10,9 @@ final class DriveItem: FSItem {
     /// The storage version of the attributes last given to the kernel (files only). Another device's change shows up
     /// as a listing with a different version, and the kernel's cached attributes and data for this item are dropped.
     var reportedVersion: String?
+    /// A folder some listing has shown: if a later listing of its parent no longer has it (renamed or deleted on
+    /// another device), the kernel's item for it is dropped.
+    var listedDirectory = false
     /// Changed on another device while open here: dropped from the kernel's caches once fully closed.
     var revokeWhenClosed = false
     let identifier: FSItem.Identifier
@@ -241,7 +244,7 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     // MARK: Changes made on another device
 
     /// Files the kernel already knows whose storage version differs in `entries` (a fresh listing of `directory`),
-    /// plus known children of `directory` the listing no longer has. Records the new versions, so each change is
+    /// plus known files and folders of `directory` the listing no longer has (renamed or deleted elsewhere). Records the new versions, so each change is
     /// handled once.
     func changedElsewhere(_ entries: [FileEntry], in directory: String) -> [DriveItem] {
         locked {
@@ -249,14 +252,15 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
             var listed = Set<String>()
             for entry in entries {
                 listed.insert(entry.path)
-                guard entry.kind == .file, let item = nodes[entry.path], let old = item.reportedVersion, old != entry.version else { continue }
+                if entry.kind == .directory { nodes[entry.path]?.listedDirectory = true; continue }
+                guard let item = nodes[entry.path], let old = item.reportedVersion, old != entry.version else { continue }
                 item.reportedVersion = entry.version
                 changed.append(item)
             }
             let prefix = directory == "/" ? "/" : directory + "/"
             for (path, item) in nodes where path != "/" && path.hasPrefix(prefix) && !path.dropFirst(prefix.count).contains("/")
-                && !listed.contains(path) && !Housekeeping.staysLocal(path) && item.reportedVersion != nil {
-                item.reportedVersion = nil
+                && !listed.contains(path) && !Housekeeping.staysLocal(path) && (item.reportedVersion != nil || item.listedDirectory) {
+                item.reportedVersion = nil; item.listedDirectory = false
                 changed.append(item)
             }
             return changed
@@ -309,7 +313,7 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
         }
         let item = node(entry.path)
         result.fileID = item.identifier
-        if entry.kind == .file { locked { item.reportedVersion = entry.version } }
+        locked { if entry.kind == .file { item.reportedVersion = entry.version } else { item.listedDirectory = true } }
         let parent = entry.path == "/" ? "/" : (entry.path as NSString).deletingLastPathComponent
         result.parentID = entry.path == "/" ? .parentOfRoot : node(parent.isEmpty ? "/" : parent).identifier
         let seconds = entry.modifiedNanoseconds / 1_000_000_000

@@ -183,7 +183,7 @@ paraair access set /Volumes/ParaOS/claims --role members --level create --json
 - Changed files read as their new version on macOS 27 and later (FSKit's `DataCacheHandler`).
   - The kernel caches no file data for ParaAir drives. Every read reaches the engine, whose own block cache is keyed by storage version.
   - When a listing, or the refresh marker the app creates, shows that a file the kernel already knows has a new version or is gone, the extension revokes the kernel's item, so its next use reads fresh size, dates and contents.
-  - A file open on this Mac is revoked once it is fully closed. This Mac's own uploads don't count as changes.
+  - The same goes for a known file or folder that a listing no longer has (renamed or deleted elsewhere). A file open on this Mac is revoked once it is fully closed. This Mac’s own uploads don’t count as changes.
   - On macOS 26 the kernel keeps a file's cached size and contents until the drive is remounted.
 - A save the drive's folder rules or the member's role refuse (403) waits for a decision like a read-only drive's change: Review… can save it as a new file (a `create` folder accepts that), export or discard it. It is retried at most every 15 minutes, so a rule granted later lets it through.
 - More exit codes: 15 `not_mounted` (the path isn't on a mounted ParaAir drive, or no known profile is mounted there), 16 `version_conflict`, 17 `not_found`.
