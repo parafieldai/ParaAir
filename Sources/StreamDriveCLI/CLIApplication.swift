@@ -103,6 +103,7 @@ final class CLIApplication {
             let profile = try cloudProfile(name, store: store)
             let destination = try to.map { try canonicalPath($0) }
             let entry = try cloudAPI(profile, root: stateRoot).restore(driveID: profile.cloudDriveID!, nodeID: nodeID, to: destination, idempotencyKey: UUID())
+            (try? open(profile, root: stateRoot))?.changedOutsideMount(entry.path, mountPoint: profile.mountPoint)
             return try render(entry, invocation: invocation, text: "Restored \(displayName(entry.path)).\n")
         case .storedDrives(let connection, let library):
             let drives = try ConnectedDrive.storedDrives(connectionID: connection, stateRoot: stateRoot,
@@ -289,6 +290,8 @@ final class CLIApplication {
                 result.resolution = "export"; result.exportedTo = destination.path
                 message = "Exported this Mac's copy to \(displayName(destination.path)) and removed it from the drive.\n"
             }
+            // The file under the mounted drive changed without the drive's extension doing it.
+            engine.changedOutsideMount(canonical, mountPoint: profile.mountPoint)
             return try render(result, invocation: invocation, text: message)
         case .settings(let name, let conflictCopies):
             var profile = try store.load(name)
@@ -340,8 +343,9 @@ final class CLIApplication {
                 try cloudAPI(profile, root: resolved.root).restoreVersion(driveID: profile.cloudDriveID!, path: resolved.path, version: version,
                                                                          expectedVersion: expected, idempotencyKey: UUID())
             }
-            // This Mac shows the restored contents at once; other Macs learn of it from the change feed.
-            try? open(profile, root: resolved.root).noteStorageChanged(resolved.path)
+            // This Mac shows the restored contents at once, also through its mounted drive; other Macs learn of it
+            // from the change feed.
+            (try? open(profile, root: resolved.root))?.changedOutsideMount(resolved.path, mountPoint: profile.mountPoint)
             let value = RestoreVersionResult(path: entry.path, restoredVersion: version, version: entry.version, size: entry.size)
             return try render(value, invocation: invocation, text: "Restored \(version) of \(displayName(entry.path)) as \(entry.version).\n")
         case .conflictInfo(let target):

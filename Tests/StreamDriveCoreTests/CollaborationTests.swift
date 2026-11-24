@@ -145,6 +145,29 @@ final class CollaborationTests: XCTestCase {
         XCTAssertFalse(page.reset)
     }
 
+    /// The mounted drive's extension drops the kernel's caches for exactly what changed: the feed's paths wait for it
+    /// per folder until taken, a change made outside the mount joins them, and this Mac's own uploads report the
+    /// version they produced.
+    func testChangedPathsWaitForTheMountedDriveAndOwnUploadsReportTheirVersion() throws {
+        let a = try mac("a"), b = try mac("b")
+        var published: [FileEntry] = []
+        a.onPublished = { published.append($0) }
+        _ = try a.create("/records", directory: true)
+        try save(a, "/records/r.json", "1"); XCTAssertTrue(try a.flushUploads().isEmpty)
+        XCTAssertEqual(published.last?.path, "/records/r.json")
+        XCTAssertEqual(published.last?.version, try a.stat("/records/r.json").version, "an upload reports the version it made")
+        _ = try XCTUnwrap(try b.followChanges(consumer: "test"))
+        try save(a, "/records/r.json", "22"); XCTAssertTrue(try a.flushUploads().isEmpty)
+        _ = try a.create("/records/old", directory: true)
+        _ = try XCTUnwrap(try b.followChanges(consumer: "test"))
+        XCTAssertEqual(Set(try b.takeRemoteChanges(in: "/records")), ["/records/r.json", "/records/old"])
+        XCTAssertEqual(try b.takeRemoteChanges(in: "/records"), [], "taken paths are gone")
+        XCTAssertEqual(try b.takeRemoteChanges(in: "/"), [])
+        b.changedOutsideMount("/records/r.json", mountPoint: nil)
+        XCTAssertEqual(try b.takeRemoteChanges(in: "/records"), ["/records/r.json"], "a change outside the mount is named too")
+        XCTAssertFalse(Housekeeping.isParaAirMount(root.path), "a plain folder is never treated as a mounted drive")
+    }
+
     func testVersionHistoryRestoreAndReadingAnOldVersion() throws {
         let a = try mac("a")
         try save(a, "/doc.txt", "first"); XCTAssertTrue(try a.flushUploads().isEmpty)

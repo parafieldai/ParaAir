@@ -251,6 +251,9 @@ private struct Block: Codable {
     var accessed: Int64
 }
 private struct Metadata: Codable { var entry: FileEntry; var verified: Int64 }
+/// A file or folder the change feed (or a change made outside the mount) named, kept until the mounted drive's
+/// extension takes it (takeRemoteChanges) and drops the kernel's caches for it. Older than 10 minutes, it is pruned.
+private struct RemoteChangedPath: Codable { var path: String; var at: Int64 }
 /// A conflict copy this Mac saved (keepMine), stored as ("conflictcopy", copy path): the file it was saved beside, the
 /// version this Mac's change was based on and the version in storage it lost to. Once the copy is uploaded it is sent
 /// to storage that keeps such records (`settled` then), so other Macs can answer conflictCopyInfo too.
@@ -328,6 +331,10 @@ private struct ReadPlan {
 /// Lock order: legacyUploadLock (shared) -> per-path upload lock -> state lock -> memory.
 /// Network calls never run under `memory`; uploads never run under the state lock.
 public final class Engine {
+    /// Called after each upload publishes, outside the state lock, with the entry storage now has: the version this
+    /// Mac's own change produced. The mounted drive's extension records it, so its own upload never reads as a
+    /// change made elsewhere. Set it before uploads start.
+    public var onPublished: ((FileEntry) -> Void)?
     private let backend: StorageBackend
     private let publisher: StorageBackend
     private let root: URL
@@ -1065,6 +1072,7 @@ public final class Engine {
                 continues = (try db.get("journal", path) as Journal?) != nil
             }
             self.published(path, lock: pathLock, sealedAt: sealedAt)
+            onPublished?(published)
         } catch {
             // A namespace errno from the publishing step is ambiguous. Once the commit
             // fence reports this transaction absent, it is a namespace rejection.
@@ -1726,9 +1734,12 @@ public final class Engine {
             try db.transaction {
                 try db.put("feed", "invalidated", RemoteInvalidation(at: now()))
                 if reset { try db.clear("metadata"); try invalidatePins(under: "/"); note("/") }
+                let stale = now() - 600_000_000_000
+                for old in try db.all("remotechanged", as: RemoteChangedPath.self) where old.at < stale { try db.delete("remotechanged", old.path) }
                 for change in changes {
                     for value in [change.path, change.fromPath].compactMap({ $0 }) {
                         guard let path = try? canonicalPath(value), !Housekeeping.staysLocal(path) else { continue }
+                        if path != "/" { try db.put("remotechanged", path, RemoteChangedPath(path: path, at: now())) }
                         if change.kind == "directory" || change.rescan == true { try db.deleteSubtree("metadata", path) }
                         else { try db.delete("metadata", path) }
                         try invalidatePins(under: path)
@@ -1785,6 +1796,29 @@ public final class Engine {
     public func noteStorageChanged(_ value: String) throws {
         let path = try canonicalPath(value)
         try applyRemoteChanges([ParaAirCloudChange(cursor: 1, change: "write", kind: "file", path: path, at: "", author: ParaAirCloudAuthor())])
+    }
+
+    /// After a change made outside the mounted drive (the CLI's restore-version, a conflict decision): forgets what
+    /// this Mac remembers about `path` and, when the drive is mounted at `mountPoint`, creates the refresh marker in its
+    /// folder, so the drive's extension drops the kernel's cached size and contents at once (takeRemoteChanges).
+    public func changedOutsideMount(_ value: String, mountPoint: String?) {
+        guard let path = try? canonicalPath(value) else { return }
+        try? noteStorageChanged(path)
+        if let mountPoint, Housekeeping.isParaAirMount(mountPoint) {
+            _ = Housekeeping.touchRefreshMarker(in: parent(path), mountPoint: mountPoint)
+        }
+    }
+
+    /// The direct children of `folder` that the change feed, or a change made outside the mount, named since the last
+    /// call, taken off the list. The mounted drive's extension drops the kernel's caches for them even when a listing
+    /// doesn't show the change yet.
+    public func takeRemoteChanges(in folder: String) throws -> [String] {
+        let folder = try canonicalPath(folder)
+        return try lock.withLock(timeout: 10) {
+            let taken = try db.all("remotechanged", as: RemoteChangedPath.self).filter { parent($0.path) == folder }.map(\.path)
+            if !taken.isEmpty { try db.transaction { for path in taken { try db.delete("remotechanged", path) } } }
+            return taken
+        }
     }
 
     /// A range of one stored version of a file (ParaAir Cloud `pv:` versions, from the version history), read from

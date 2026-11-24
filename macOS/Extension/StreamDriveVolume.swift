@@ -15,6 +15,8 @@ final class DriveItem: FSItem {
     var listedDirectory = false
     /// Changed on another device while open here: dropped from the kernel's caches once fully closed.
     var revokeWhenClosed = false
+    /// Uptime of the last read-time version check (checkReportedVersion).
+    var versionCheckedAt: UInt64 = 0
     let identifier: FSItem.Identifier
     init(path: String, identifier: FSItem.Identifier) {
         self.path = path; self.identifier = identifier
@@ -294,8 +296,50 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     /// the folder again and drops the kernel's caches for what changed.
     private func recheck(_ directory: String) {
         invalidationQueue.async { [weak self] in
-            guard let self, let engine = self.locked({ self.engine }), let entries = try? engine.list(directory) else { return }
-            self.dropKernelCaches(self.changedElsewhere(entries, in: directory))
+            guard let self, let engine = self.locked({ self.engine }) else { return }
+            // What the feed (or a change outside the mount) named is dropped even if the listing doesn't show it yet.
+            let named = (try? engine.takeRemoteChanges(in: directory)) ?? []
+            let listed: [FileEntry]?
+            do { listed = try engine.list(directory) } catch {
+                listed = nil
+                Self.cacheLog.error("recheck listing failed error=\(String(describing: error), privacy: .public)")
+            }
+            var items = listed.map { self.changedElsewhere($0, in: directory) } ?? []
+            let extra = self.locked { () -> [DriveItem] in
+                named.compactMap { path in
+                    guard let item = self.nodes[path], !items.contains(where: { $0 === item }) else { return nil }
+                    item.reportedVersion = nil
+                    return item
+                }
+            }
+            items += extra
+            Self.cacheLog.notice("recheck entries=\(listed?.count ?? -1) named=\(named.count) changed=\(items.count)")
+            self.dropKernelCaches(items)
+        }
+    }
+    /// After a read: if storage now has a different version than the kernel's cached size belongs to, that size is
+    /// stale (a read could stop short). The item is dropped from the kernel's caches once closed. At most every 2 s per item.
+    private func checkReportedVersion(_ item: FSItem) {
+        guard let node = item as? DriveItem else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let due = locked { () -> Bool in
+            guard node.reportedVersion != nil, now &- node.versionCheckedAt > 2_000_000_000 else { return false }
+            node.versionCheckedAt = now
+            return true
+        }
+        guard due else { return }
+        invalidationQueue.async { [weak self] in
+            guard let self, let engine = self.locked({ self.engine }), let path = try? self.path(node),
+                  let entry = try? engine.stat(path), entry.kind == .file else { return }
+            let stale = self.locked { () -> Bool in
+                guard let reported = node.reportedVersion, reported != entry.version else { return false }
+                node.reportedVersion = entry.version
+                return true
+            }
+            if stale {
+                Self.cacheLog.notice("stale size noticed on read id=\(node.identifier.rawValue, privacy: .public)")
+                self.dropKernelCaches([node])
+            }
         }
     }
     private func changed() { locked { generation &+= 1; listings.removeAll() } }
@@ -351,6 +395,11 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
                 }
                 previous?.cancel()
                 let opened = try self.openEngine(mount.profile, self.stateRoot)
+                // This Mac's own upload gives its file a new storage version; the kernel already has those contents.
+                opened.onPublished = { [weak self] entry in
+                    guard let self, entry.kind == .file else { return }
+                    self.locked { self.nodes[entry.path]?.reportedVersion = entry.version }
+                }
                 _ = try opened.stat("/")
                 let capacity: VolumeCapacity?, capacityUnknown: Bool
                 do { capacity = try opened.capacity(); capacityUnknown = false } catch { capacity = nil; capacityUnknown = true }
@@ -442,14 +491,6 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
         guard let records else { return }
         let paths = Set(records.map(\.path))
         let published = uploadPaths.subtracting(paths)
-        // This Mac's own uploads give its files new storage versions; the kernel already has their contents, so they
-        // must not read as changed elsewhere at the next listing.
-        if !published.isEmpty, let engine = locked({ engine }) {
-            for path in published {
-                guard let entry = try? engine.stat(path), entry.kind == .file else { continue }
-                locked { nodes[path]?.reportedVersion = entry.version }
-            }
-        }
         let counts = UploadCounts(published: published.count, remaining: records.count,
                                   blocked: records.filter { $0.state != "conflict" && $0.lastErrno != nil }.count,
                                   conflicts: records.filter { $0.state == "conflict" }.count)
@@ -711,7 +752,7 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
         concurrently(item, { path, engine in try self.copy(path, engine: engine, offset: offset, length: length, into: destination, copied: &copied) },
                      reply: { result in
             switch result {
-            case .success(let count): replyHandler(count, nil)
+            case .success(let count): replyHandler(count, nil); self.checkReportedVersion(item)
             case .failure(let error): replyHandler(copied, filesystemError(error))
             }
         }, serial: {
