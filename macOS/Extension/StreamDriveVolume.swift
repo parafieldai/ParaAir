@@ -732,9 +732,14 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
                     changed = self.changedElsewhere(listed, in: path)
                     var entries = listed.map { ($0.name, $0) }
                     if requested == nil {
+                        // "." and ".." need only a kind and an identity when no attributes are asked for: asking
+                        // storage for them cost two requests per listing on ParaAir Cloud.
                         let parent = path == "/" ? "/" : (path as NSString).deletingLastPathComponent
-                        entries.insert(("..", try self.storage().stat(parent)), at: 0)
-                        entries.insert((".", try self.storage().stat(path)), at: 0)
+                        func folder(_ at: String) -> FileEntry {
+                            FileEntry(id: 0, path: at, kind: .directory, size: 0, modifiedNanoseconds: 0, version: "")
+                        }
+                        entries.insert(("..", folder(parent)), at: 0)
+                        entries.insert((".", folder(path)), at: 0)
                     }
                     self.locked {
                         self.generation &+= 1

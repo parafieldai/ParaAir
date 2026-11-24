@@ -58,9 +58,11 @@ final class ParaAirCloudEngineTests: XCTestCase {
         fake.seedFile(driveID: account.driveID, path: "/doc.txt", data: Data("cached".utf8))
         let opened = try open()
         XCTAssertEqual(try opened.list("/").map(\.name), ["doc.txt"])
-        fake.injectTransport(.notConnectedToInternet, route: "GET /v1/drives/{d}/list", times: 3)
+        // Within the listing lifetime the saved listing answers and no request is made, so the drive isn't offline.
         XCTAssertEqual(try opened.list("/").map(\.name), ["doc.txt"])
-        XCTAssertTrue(try opened.status().offline)
+        XCTAssertFalse(try opened.status().offline)
+        // Once a change drops it, the listing is fetched again; offline, the last saved one isn't there to fall back on,
+        // so a drive without a listing lifetime (below) covers the offline fallback.
         // A zero metadata lifetime sends every stat to the service, so the offline path is exercised.
         var options = ParaAirCloudBackend.Options(); options.capacityLifetime = 0
         let session = try ParaAirCloudSession(root: root, accountID: record.id, vault: vault, configuration: fake.configuration,
@@ -70,6 +72,7 @@ final class ParaAirCloudEngineTests: XCTestCase {
         })
         let engine = try Engine(backend: backend, stateDirectory: root.appendingPathComponent("volumes/direct"), minFreeBytes: 0,
                                 blockSize: chunk, tuning: EngineTuning(metadataLifetimeNanoseconds: 0))
+        XCTAssertEqual(try engine.list("/").map(\.name), ["doc.txt"])
         let online = try engine.stat("/doc.txt")
         XCTAssertEqual(try engine.read("/doc.txt", offset: 0, length: 6), Data("cached".utf8))
         try session.http().offlineBackoffInterval = 60
@@ -77,6 +80,8 @@ final class ParaAirCloudEngineTests: XCTestCase {
         XCTAssertEqual(try engine.stat("/doc.txt"), online)
         XCTAssertTrue(try engine.status().offline)
         XCTAssertEqual(try engine.read("/doc.txt", offset: 0, length: 6), Data("cached".utf8), "cached content is served offline")
+        fake.injectTransport(.notConnectedToInternet, route: "GET /v1/drives/{d}/list", times: 3)
+        XCTAssertEqual(try engine.list("/").map(\.name), ["doc.txt"], "offline, the saved listing answers")
     }
 
     func testConflictRetainsJournal() throws {
