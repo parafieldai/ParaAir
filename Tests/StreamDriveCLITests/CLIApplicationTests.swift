@@ -36,7 +36,9 @@ private final class CLICloudStub: URLProtocol {
     /// Not valid UTF-8, so cat-version must pass bytes through untouched.
     static let versionBytes = Data([0x7b, 0x22, 0x76, 0x22, 0x3a, 0x31, 0x7d, 0x0a, 0x00, 0xff, 0xfe])
     static var versionHash: String { SHA256.hash(data: versionBytes).map { String(format: "%02x", $0) }.joined() }
-    static func reset() { lock.lock(); logged = []; listed = [(drive, "ParaAir Cloud")]; lock.unlock() }
+    /// Whether the "throttled" create was already answered 429 once.
+    private static var throttled = false
+    static func reset() { lock.lock(); logged = []; listed = [(drive, "ParaAir Cloud")]; throttled = false; lock.unlock() }
     static func list(_ drives: [(id: String, name: String)]) { lock.lock(); listed = drives; lock.unlock() }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == host }
@@ -147,8 +149,17 @@ private final class CLICloudStub: URLProtocol {
             case "member": status = 403; object = ["error": ["code": "forbidden", "message": "x", "requestId": "req_TEST"]]
             case "flaky": status = 500; object = ["error": ["code": "internal", "message": Self.token, "requestId": "req_TEST"]]
             case "bad reply": status = 201; object = ["credential": made, "token": Self.otherToken]
+            case "expired" where request.value(forHTTPHeaderField: "Authorization") == "Bearer pca_test":
+                status = 401; object = ["error": ["code": "unauthorized", "message": "x", "requestId": "req_TEST"]]
+            case "throttled":
+                Self.lock.lock(); let first = !Self.throttled; Self.throttled = true; Self.lock.unlock()
+                if first { status = 429; object = ["error": ["code": "rate_limited", "message": "x", "requestId": "req_TEST", "retryAfterSeconds": 1]] }
+                else { status = 201; object = ["credential": made, "token": Self.token] }
             default: status = 201; object = ["credential": made, "token": Self.token]
             }
+        case "/oauth/token":
+            object = ["access_token": "pca_renewed", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "pcr_renewed",
+                      "scope": "drive offline_access"]
         case "/v1/workspaces/\(Self.workspace)/credentials/\(Self.credential)":
             status = 204; object = [String: Any]()
         default:
@@ -936,6 +947,9 @@ extension CLIApplicationTests {
                     ["credentials", "create"] + base + ["--name", "bell\u{7}"], ["credentials", "create"] + base + ["--name", String(repeating: "n", count: 101)],
                     ["credentials", "create"] + base + ["--name", "x", "--id", id], ["credentials", "revoke"] + base,
                     ["credentials", "revoke"] + base + ["--id", "cred_relay"], ["credentials", "list"] + base + ["extra"],
+                    ["credentials", "revoke"] + base + ["--id", id + "\n"], ["credentials", "revoke"] + base + ["--id", id + "\r\n"],
+                    ["credentials", "list", "--cloud-account", account, "--workspace", ws + "\n"],
+                    ["access", "set", "ParaOS", "/a", "--credential", id + "\n", "--level", "read"],
                     ["access", "set", "ParaOS", "/a", "--credential", "relay", "--level", "read"]] {
             XCTAssertThrowsError(try CLIParser.parse(bad), bad.joined(separator: " "))
         }
@@ -1048,11 +1062,38 @@ extension CLIApplicationTests {
                           ["access", "remove", "ParaOS", "/admin/finance", "--credential", CLICloudStub.token, "--json"],
                           ["credentials", "revoke"] + base + ["--id", CLICloudStub.token],
                           ["credentials", "list"] + base + [CLICloudStub.token],
-                          ["credentials", "create"] + base + ["--name", "x", "--token=" + CLICloudStub.token]] {
+                          ["credentials", "create"] + base + ["--name", "x", "--token=" + CLICloudStub.token],
+                          ["credentials", "create"] + base + ["--name", CLICloudStub.token],
+                          ["credentials", "create"] + base + ["--name", "relay " + CLICloudStub.token, "--json"]] {
             let result = app.run(arguments)
             XCTAssertEqual(result.exitCode, 2, arguments.joined(separator: " ")); clean(result, arguments[0] + " " + arguments[1])
         }
         XCTAssertEqual(CLICloudStub.requests.count, requests, "refused before reaching the service")
+    }
+
+    /// Create is sent again only after answers the service gives before making anything: 401 (with a renewed sign-in)
+    /// and 429. After a 5xx it is not, since the credential may exist.
+    func testCredentialCreateIsSentAgainOnlyAfterAnswersThatMadeNothing() throws {
+        let (app, root, _, _) = try mountedCloud()
+        let account = try XCTUnwrap(CloudAccountStore(root: root).list().accounts.first?.id)
+        let base = ["--cloud-account", account, "--workspace", CLICloudStub.workspace]
+        func posts(_ name: String) -> Int {
+            CLICloudStub.requests.filter {
+                $0.path == "/v1/workspaces/\(CLICloudStub.workspace)/credentials"
+                    && (try? JSONSerialization.jsonObject(with: $0.body) as? [String: String])?["name"] == name
+            }.count
+        }
+        for (name, sent) in [("expired", 2), ("throttled", 2), ("flaky", 1)] {
+            let result = app.run(["credentials", "create"] + base + ["--name", name, "--json"])
+            XCTAssertEqual(posts(name), sent, name)
+            if sent == 2 {
+                XCTAssertEqual(result.exitCode, 0, result.stdout + result.stderr)
+                XCTAssertEqual(result.stdout.components(separatedBy: CLICloudStub.token).count - 1, 1, name)
+            } else {
+                XCTAssertEqual(result.exitCode, 1); XCTAssertFalse(result.stdout.contains(CLICloudStub.token))
+            }
+        }
+        XCTAssertEqual(CLICloudStub.requests.filter { $0.path == "/oauth/token" }.count, 1, "the 401 renewed the sign-in once")
     }
 }
 

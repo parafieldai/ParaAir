@@ -574,12 +574,15 @@ extension ParaAirCloudAPI {
     // MARK: Service credentials (owners and admins of the workspace, with their own sign-in)
 
     /// `POST /v1/workspaces/{ws}/credentials`: a new service credential and its token, which the service shows in this
-    /// reply only. Sent once: the service keeps no idempotency record for it (that would hold the token), so a retry could
-    /// make a second credential. When the outcome is unknown the error says to check the list.
+    /// reply only. The service keeps no idempotency record for it (that would hold the token), so it is never sent again
+    /// after an answer that may mean it was made: a timeout, a 5xx, a lost or malformed reply (`attempts = 1`); the error
+    /// then says to check the list. `perform` sends it again only after a 401 (with a renewed sign-in) or a 429, which the
+    /// service answers before making anything: authentication runs first, and this route never rate-limits after it.
+    /// A name shaped like a token is refused, so a token pasted there is never kept as the credential's name.
     public func createCredential(workspaceID: String, name: String) throws -> ParaAirCloudCreatedCredential {
         struct Body: Decodable { var credential: ParaAirCloudServiceCredential; var token: String }
         do {
-            guard !name.isEmpty else { throw invalidRequest() }
+            guard !name.isEmpty, !name.contains("pcs_cred_") else { throw invalidRequest() }
             var call = Call(method: "POST", path: "/v1/workspaces/\(try checkedWorkspace(workspaceID))/credentials",
                             route: "POST /v1/workspaces/{ws}/credentials", body: try json(["name": name]))
             call.attempts = 1

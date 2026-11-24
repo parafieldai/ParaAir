@@ -484,8 +484,10 @@ enum CLIParser {
         return value
     }
 
-    /// Credential names: 1 to 100 characters after trimming, no control or format characters (the service's rule).
+    /// Credential names: 1 to 100 characters after trimming, no control or format characters (the service's rule). A
+    /// token pasted as the name is refused without repeating it: the service would keep it and list it as the name.
     private static func credentialName(_ value: String) throws -> String {
+        if value.contains("pcs_cred_") { throw usage("--name looks like a credential token; pass a name such as \"finance collector\"") }
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.utf16.count <= 100,
               !name.unicodeScalars.contains(where: { [.control, .format].contains($0.properties.generalCategory) }) else {
