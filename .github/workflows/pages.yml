@@ -61,5 +61,5 @@ jobs:
           .github/deploy-tools/node_modules/.bin/wrangler deploy -c site.wrangler.jsonc
       - name: Check the live feed
         run: |
-          live="$(curl -fsS "https://paraair.parafield.ai/appcast.xml?deploy=$GITHUB_SHA")"
-          diff <(printf '%s\n' "$live") site/appcast.xml > /dev/null || { echo "::error::The live appcast differs from site/appcast.xml"; exit 1; }
+          curl -fsS -o "$RUNNER_TEMP/appcast.xml" "https://paraair.parafield.ai/appcast.xml?deploy=$GITHUB_SHA"
+          cmp -s "$RUNNER_TEMP/appcast.xml" site/appcast.xml || { echo "::error::The live appcast differs from site/appcast.xml"; exit 1; }
