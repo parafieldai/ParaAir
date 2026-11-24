@@ -902,9 +902,11 @@ final class MenuModel: ObservableObject {
         requestContinuation(profile, reason: "continue-setup")
         Task { await refreshExtensionStatus(trigger: "continue-setup") }
     }
+    /// Each time ParaAir comes to the front: checks the switch again while it is off (the person may have turned it
+    /// on in System Settings without coming through ParaAir), and resumes a waiting mount.
     func resumeAfterSettings() {
         let fromSettings = extensionSettingsOpenedAt != nil && extensionState != .enabled
-        guard finderSetup.hasPendingContinuation || fromSettings else { return }
+        guard finderSetup.hasPendingContinuation || extensionState != .enabled else { return }
         Task {
             await refreshExtensionStatus(trigger: "app-active")
             // Back from System Settings with the switch still off: say what usually causes it.
@@ -1017,8 +1019,13 @@ final class MenuModel: ObservableObject {
             extensionSettingsOpenedAt = Date()
             watchExtensionUntilEnabled()
         }
-        if #available(macOS 27.0, *), FSClient.shared.openFileSystemExtensionsSettings() { return }
-        if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
+        // macOS 27: FSKit's own call, then the File System Extensions link; macOS 26: Login Items & Extensions.
+        var link = ExtensionSetupGuidance.loginItemsURL
+        if #available(macOS 27.0, *) {
+            if FSClient.shared.openFileSystemExtensionsSettings() { return }
+            link = ExtensionSetupGuidance.settingsURL
+        }
+        if let url = URL(string: link) {
             if !NSWorkspace.shared.open(url) {
                 mountMessage = "Couldn’t open System Settings. Open General → Login Items & Extensions → By Category → File System Extensions, "
                     + "switch on ParaAir, then return and choose Check again."

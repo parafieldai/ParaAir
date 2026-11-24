@@ -109,6 +109,8 @@ struct HomePresentation: Equatable {
     var offersOpenInFinder = false
     var steps: [Step] = []
     var notices: [Notice] = []
+    /// Show the picture of the File System Extensions list with ParaAir's switch on, beside the status.
+    var showsSwitchPicture = false
 
     static func make(_ input: HomeInputs) -> HomePresentation {
         let drive = input.driveName ?? "your drive"
@@ -130,6 +132,7 @@ struct HomePresentation: Equatable {
             result = .init(status: extensionStatus(input.extensionState, stillOff: input.extensionStillOff),
                            primary: .init(action: .openSystemSettings, title: "Open System Settings"),
                            offersCheckAgain: true)
+            result.showsSwitchPicture = input.extensionState == .disabled
         } else if !input.hasDrive {
             if let connection = input.readyConnectionName {
                 result = .init(status: .init(title: "Storage added",
@@ -294,17 +297,17 @@ struct HomePresentation: Equatable {
     }
 
     /// `stillOff`: the person went to System Settings from here and came back with the switch off. The usual cause on
-    /// macOS 27.2 is the switch in ParaAir's ⓘ sheet, which flips back (ExtensionSetupGuidance).
+    /// macOS 27.2 is the switch under ParaAir Extensions (FSKit Modules), which flips back (ExtensionSetupGuidance).
     private static func extensionStatus(_ state: FinderExtensionState, stillOff: Bool) -> Status {
         switch state {
         case .disabled where stillOff:
             return .init(title: "That switch didn’t save",
-                         detail: "Use the File System Extensions list under By Category. The switch in ParaAir’s ⓘ sheet "
-                             + "turns itself off. Still off there too? Quit and reopen ParaAir, then try again.",
+                         detail: "Use the File System Extensions list under By Category, as pictured. The switch under "
+                             + "ParaAir Extensions turns itself off. Still off there too? Quit and reopen ParaAir, then try again.",
                          tone: .attention)
         case .disabled:
             return .init(title: "Turn on ParaAir in System Settings",
-                         detail: "Choose By Category, then File System Extensions, and switch on ParaAir in that list. "
+                         detail: "Switch on \(ExtensionSetupGuidance.switchName) in the File System Extensions list, as pictured. "
                              + ExtensionSetupGuidance.sheetWarning,
                          tone: .attention)
         case .notDiscovered:

@@ -639,7 +639,7 @@ extension CLIApplicationTests {
         fake.extensionState = "disabled"
         let opened = app.run(["extension-settings"])
         XCTAssertEqual(opened.exitCode, 0); XCTAssertEqual(fake.settingsOpened, 1)
-        XCTAssertTrue(opened.stdout.contains("By Category → File System Extensions") && opened.stdout.contains("ⓘ sheet"), opened.stdout)
+        XCTAssertTrue(opened.stdout.contains("By Category → File System Extensions") && opened.stdout.contains("ParaAir Extensions"), opened.stdout)
         // --wait returns once the person switches it on.
         fake.onSleep = { count in if count == 3 { fake.extensionState = "enabled" } }
         let waited = app.run(["extension-settings", "--wait", "30", "--json"])

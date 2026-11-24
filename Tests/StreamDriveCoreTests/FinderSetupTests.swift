@@ -37,7 +37,8 @@ final class FinderSetupTests: XCTestCase {
 
     func testGuidanceNamesTheListThatWorksAndWarnsAboutTheSheet() {
         XCTAssertTrue(ExtensionSetupGuidance.turnOn.contains("By Category → File System Extensions"))
-        XCTAssertTrue(ExtensionSetupGuidance.turnOn.contains("ⓘ sheet doesn’t stay on"))
+        XCTAssertTrue(ExtensionSetupGuidance.turnOn.contains("ParaAir file system")
+                      && ExtensionSetupGuidance.turnOn.contains("ParaAir Extensions (FSKit Modules) doesn’t stay on"))
         XCTAssertFalse(ExtensionSetupGuidance.turnOn.contains("—"))
     }
 

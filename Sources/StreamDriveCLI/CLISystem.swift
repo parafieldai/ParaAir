@@ -94,10 +94,15 @@ struct CLISystem {
             return OtherAppCopies.sort(registered: registered, current: appPath, exists: { FileManager.default.fileExists(atPath: $0) }).present
         },
         openExtensionSettings: {
+            // macOS 27: FSKit's own call, then the File System Extensions link; macOS 26: Login Items & Extensions.
+            var link = ExtensionSetupGuidance.loginItemsURL
             #if canImport(FSKit)
-            if #available(macOS 27.0, *), FSClient.shared.openFileSystemExtensionsSettings() { return }
+            if #available(macOS 27.0, *) {
+                if FSClient.shared.openFileSystemExtensionsSettings() { return }
+                link = ExtensionSetupGuidance.settingsURL
+            }
             #endif
-            let output = try SystemCommands.run(executable: "/usr/bin/open", arguments: ["x-apple.systempreferences:com.apple.LoginItems-Settings.extension"])
+            let output = try SystemCommands.run(executable: "/usr/bin/open", arguments: [link])
             guard output.exitCode == 0 else {
                 throw DriveError(EIO, "macOS couldn’t open System Settings (exit \(output.exitCode)). Open \(ExtensionSetupGuidance.location) yourself")
             }

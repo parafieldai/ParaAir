@@ -189,6 +189,7 @@ xcrun actool "$root/macOS/Resources/ParaAir.icon" --compile "$icon_out" --platfo
 rm -rf "$icon_out"
 /usr/bin/install -m 644 "$root/macOS/Resources/ParaAirIcon.png" "$app/Contents/Resources/ParaAirIcon.png"
 /usr/bin/install -m 644 "$root/macOS/Resources/ParaAirDriveIcon.png" "$app/Contents/Resources/ParaAirDriveIcon.png"
+/usr/bin/install -m 644 "$root/macOS/Resources/ExtensionSwitch.png" "$app/Contents/Resources/ExtensionSwitch.png"
 /usr/bin/plutil -convert xml1 -o "$cli/Contents/Info.plist" "$root/macOS/CLI/Info.plist"
 if [[ -n "${STREAMDRIVE_CLOUDFLARE_CLIENT_ID:-}" ]]; then
   /usr/bin/plutil -replace StreamDriveCloudflareClientID -string "$STREAMDRIVE_CLOUDFLARE_CLIENT_ID" "$app/Contents/Info.plist"

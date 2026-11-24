@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import StreamDriveCore
 
 /// Callbacks into MenuModel. The views below hold no app state of their own, so the
 /// same code renders in the app and in the offscreen snapshot harness.
@@ -65,6 +66,13 @@ struct DriveHomeContent: View {
                     Text(presentation.status.detail)
                         .foregroundStyle(Glide.quiet)
                         .fixedSize(horizontal: false, vertical: true)
+                    if presentation.showsSwitchPicture, let picture = HomeImages.extensionSwitch {
+                        Image(nsImage: picture)
+                            .resizable().aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: 435)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .accessibilityLabel("System Settings, File System Extensions: \(ExtensionSetupGuidance.switchName), switched on")
+                    }
                     ActionRow(presentation: presentation, actions: actions, large: true)
                 }
                 if let update = input.updateTitle, let install = actions.checkForUpdates {
@@ -429,5 +437,18 @@ private struct AdvancedMenuItems: View {
             Button(actions.credentialTargets.count > 1 ? "Metadata Credential for \(target.id)…" : "Metadata Credential…",
                    action: target.action)
         }
+    }
+}
+
+/// Pictures the home window shows. The snapshot harness points them at the repository's copies.
+enum HomeImages {
+    /// The owner's screenshot of System Settings (macOS 27): File System Extensions with ParaAir file system on.
+    static var extensionSwitch: NSImage? = Bundle.main.url(forResource: "ExtensionSwitch", withExtension: "png").flatMap(load)
+
+    /// A 2x screenshot shown at its point size.
+    static func load(_ url: URL) -> NSImage? {
+        guard let image = NSImage(contentsOf: url), let rep = image.representations.first else { return nil }
+        image.size = NSSize(width: CGFloat(rep.pixelsWide) / 2, height: CGFloat(rep.pixelsHigh) / 2)
+        return image
     }
 }

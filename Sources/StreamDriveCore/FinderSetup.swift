@@ -29,9 +29,16 @@ public enum FinderExtensionState: Equatable, Sendable {
 /// and flips back (docs/ci-cd.md, "Where FSKit enablement lives").
 public enum ExtensionSetupGuidance {
     public static let location = "System Settings → General → Login Items & Extensions → By Category → File System Extensions"
-    public static let sheetWarning = "The switch in ParaAir’s own ⓘ sheet doesn’t stay on."
+    /// The switch's label in that list.
+    public static let switchName = "ParaAir file system"
+    /// The per-app sheet, by the labels a person sees: ⓘ beside "ParaAir Extensions", then "FSKit Modules".
+    public static let sheetWarning = "The switch under ParaAir Extensions (FSKit Modules) doesn’t stay on."
     /// The one-line instruction for a disabled extension.
-    public static let turnOn = "Turn on ParaAir in \(location). \(sheetWarning)"
+    public static let turnOn = "Turn on \(switchName) in \(location). \(sheetWarning)"
+    /// Where System Settings shows the File System Extensions list when FSClient can't open it (macOS 27 and later).
+    public static let settingsURL = "x-apple.systempreferences:com.apple.ExtensionsPreferences?extensionPointIdentifier=com.apple.fskit.fsmodule"
+    /// macOS 26: Login Items & Extensions, where the person chooses By Category.
+    public static let loginItemsURL = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
 }
 
 /// The other copies of the app that LaunchServices knows about. A record whose app is gone is stale and can be

@@ -13,6 +13,8 @@ struct UISnapshots {
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
+        HomeImages.extensionSwitch = HomeImages.load(URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Resources/ExtensionSwitch.png"))
 
         var failures = checkPresentation()
         failures += checkCloudPresentation()
@@ -1038,8 +1040,14 @@ struct UISnapshots {
         expect(turnOnFirst.primary.action == .openSystemSettings && turnOnFirst.offersCheckAgain,
                "a new Mac turns ParaAir on before anything else")
         expect(turnOnFirst.steps.map(\.state) == [.current, .upcoming, .upcoming, .upcoming], "setup starts with the switch")
-        expect(turnOnFirst.status.detail.contains("By Category") && turnOnFirst.status.detail.contains("ⓘ sheet doesn’t stay on"),
-               "the switch step names the list that works and warns about the sheet")
+        expect(turnOnFirst.steps.first?.detail.contains("By Category → File System Extensions") == true
+               && turnOnFirst.status.detail.contains("ParaAir file system")
+               && turnOnFirst.status.detail.contains("ParaAir Extensions (FSKit Modules) doesn’t stay on"),
+               "the switch step names the list and switch that work and warns about the sheet that doesn't")
+        expect(turnOnFirst.showsSwitchPicture, "the switch step shows the picture of the right switch")
+        var notListed = scenarios["24-turn-on-first"]!; notListed.extensionState = .notDiscovered
+        expect(!HomePresentation.make(notListed).showsSwitchPicture, "no picture when macOS hasn't listed ParaAir")
+        expect(!HomePresentation.make(scenarios["5-connected"]!).showsSwitchPicture, "no picture once connected")
         var storageWithSwitchOff = scenarios["2-storage-ready"]!; storageWithSwitchOff.extensionState = .disabled
         expect(HomePresentation.make(storageWithSwitchOff).primary.action == .openSystemSettings,
                "saved storage still waits for the switch first")
@@ -1051,7 +1059,7 @@ struct UISnapshots {
                "re-checking a switch that's off doesn't flicker to a checking state")
         let stillOff = HomePresentation.make(scenarios["25-still-off"]!)
         expect(stillOff.status.title == "That switch didn’t save" && stillOff.status.detail.contains("By Category")
-               && stillOff.status.detail.contains("ⓘ sheet")
+               && stillOff.status.detail.contains("ParaAir Extensions") && stillOff.showsSwitchPicture
                && stillOff.status.detail.contains("Quit and reopen ParaAir"), "coming back with the switch off explains the usual cause")
         expect(stillOff.notices.contains { $0.id == "other-copies" && $0.action == .showOtherCopies && $0.actionTitle == "Show in Finder"
                                            && ($0.text.contains("~/Downloads") || $0.text.contains("/Users/maya/Downloads")) },

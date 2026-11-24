@@ -37,9 +37,11 @@ The product uses Glide, confirmed by the user on October 9: an abstract flight m
 Open ParaAir and follow its four setup steps, one action each: turn ParaAir on in System Settings, add storage, create the drive, open it in Finder.
 
 - **Turning ParaAir on comes first.** It's the only step outside ParaAir, and nothing else depends on it.
-  - **Open System Settings** opens **General → Login Items & Extensions → By Category → File System Extensions**; switch on ParaAir in that list.
-  - The switch in ParaAir's own ⓘ sheet records a choice but never turns the extension on (macOS 27.2, see `docs/ci-cd.md`), so both the app and the CLI warn against it.
-  - After opening System Settings, ParaAir checks every 2 seconds for 5 minutes and moves to the next step by itself.
+  - **Open System Settings** opens the File System Extensions list: FSKit's own call on macOS 27, then the `x-apple.systempreferences:com.apple.ExtensionsPreferences?extensionPointIdentifier=com.apple.fskit.fsmodule` link. On macOS 26 it opens Login Items & Extensions, where the person chooses **By Category → File System Extensions**.
+  - The step shows a screenshot of that list with **ParaAir file system** switched on (`macOS/Resources/ExtensionSwitch.png`, taken on macOS 27).
+  - The switch under **ParaAir Extensions → FSKit Modules** records a choice but never turns the extension on (macOS 27.2, see `docs/ci-cd.md`), so both the app and the CLI warn against it by that name.
+  - Keep the extension's Info.plist unchanged between releases: a changed one makes macOS switch the extension off again, while code-only updates keep it on.
+  - After opening System Settings, ParaAir checks every 2 seconds for 5 minutes, and again whenever it comes to the front while the switch is off, and moves to the next step by itself. A drive that was waiting mounts.
   - If the person comes back with the switch still off, or chooses **Check Again** while it is still off, it says **That switch didn’t save** and points at the By Category list.
 - **Other copies.** ParaAir forgets LaunchServices records of copies that no longer exist. Copies that still exist (a download or a backup) are listed with **Show in Finder**, because macOS can turn on the wrong copy's extension.
 - **Mounting.** The app includes the mount helper and attempts to mount the new drive. **Mount when ParaAir opens**, enabled by default, controls mounting the saved drive on later app launches. macOS requires the extension approval; creating a connection does not bypass it.
