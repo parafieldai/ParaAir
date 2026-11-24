@@ -7,6 +7,22 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>ParaAir updates</description>
     <language>en</language>
     <item>
+      <title>ParaAir 0.1.0 alpha 7</title>
+      <pubDate>Tue, 24 Nov 2026 10:04:47 GMT</pubDate>
+      <sparkle:version>45</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.7</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>ParaAir Cloud folders open right away: a folder listed in the last 30 seconds answers from this Mac instead of waiting on the network, and changes from other Macs still show within seconds.</li>
+<li>Every drive in one window: drives set up in more than one place are all listed, each with its state and one button, and every problem names its drive.</li>
+<li>Workspace owners and admins can manage members and make folder-scoped service credentials with the paraair command.</li>
+<li>The Drive section shows the plan size in the same type as the other rows, and updates now come from paraair.parafield.ai.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.7/ParaAir-0.1.0-alpha.7.zip" length="49425087" type="application/octet-stream" sparkle:edSignature="FQ2O2S8PTpp3oMGEkeMdKCukrK/ZhLpntDhxO0ytRWM5xY6PotSk84UavcrfT/wp6k/JO6AVB83Xui2y2/0BCA=="/>
+    </item>
+    <item>
       <title>ParaAir 0.1.0 alpha 6</title>
       <pubDate>Tue, 24 Nov 2026 01:43:00 GMT</pubDate>
       <sparkle:version>38</sparkle:version>
@@ -59,6 +75,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: LhUU5UELg9hmYxuFuSy9TDZbteGkuceH6MI3KpkcIW+KQ3KUHSox4j8U78W7ogPFl2qRRRrawLvdNKZ86/u8AQ==
-length: 4441
+edSignature: iFXqwb37jyJ5jNmYZFOZzyK5dzC/84r+90JXPJTb9ZAfE+X6yuSVgmimNnjFnh/fv/CY62XeIxRhXG/wxxdoAw==
+length: 5837
 -->
