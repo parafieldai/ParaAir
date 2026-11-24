@@ -325,7 +325,7 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
         let engine = try storage()
         guard path != "/", try engine.takePurgeRequest(path) else { return false }
         do {
-            _ = try engine.stat(path)
+            _ = try engine.statFromStorage(path)
             throw POSIXError(.EBUSY)
         } catch let error as DriveError where error.code == ENOENT {
             locked {

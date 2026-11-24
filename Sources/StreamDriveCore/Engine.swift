@@ -531,6 +531,13 @@ public final class Engine {
     public func stat(_ value: String) throws -> FileEntry {
         try currentEntry(canonicalPath(value))
     }
+    /// The entry as storage has it now, never from cached metadata (a pending local change still answers first).
+    /// ENOENT when storage no longer has it.
+    public func statFromStorage(_ value: String) throws -> FileEntry {
+        let path = try canonicalPath(value)
+        _ = try refreshMetadataIfNeeded(path, force: true)
+        return try currentEntry(path)
+    }
     public func list(_ value: String) throws -> [FileEntry] {
         try list(canonicalPath(value), exceptPin: nil)
     }
