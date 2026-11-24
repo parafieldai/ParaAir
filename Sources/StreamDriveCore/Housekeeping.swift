@@ -35,6 +35,19 @@ public enum Housekeeping {
     /// A remote entry that listings hide.
     static func hides(_ entry: FileEntry) -> Bool { staysLocal(entry.path) }
 
+    /// Whether `mountPoint` is where a ParaAir volume is mounted (statfs), so nothing is ever written into a plain
+    /// folder that merely has the drive's name.
+    public static func isParaAirMount(_ mountPoint: String) -> Bool {
+        var info = statfs()
+        guard statfs(mountPoint, &info) == 0 else { return false }
+        let point = withUnsafePointer(to: &info.f_mntonname) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+        }
+        let type = withUnsafePointer(to: &info.f_fstypename) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MFSNAMELEN)) { String(cString: $0) }
+        }
+        return point == mountPoint && ParaAirBundle.volumeTypes.contains(type.lowercased())
+    }
     /// Makes FSEvents report `folder` (a drive path) as changed: creates the refresh marker in it through the volume
     /// mounted at `mountPoint`, then removes it. The marker stays on this Mac. False when the folder isn't there.
     @discardableResult

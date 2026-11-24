@@ -1,5 +1,6 @@
 import Foundation
 import os
+import Darwin
 import StreamDriveCore
 
 /// Brings other devices' changes to Finder and to apps watching a drive with FSEvents. FSKit has no change
@@ -58,7 +59,18 @@ final class ChangeFeedMonitor {
             let result: Result<(EngineBox, Int), Error> = await Task.detached(priority: .utility) {
                 do {
                     let box = try existing ?? EngineBox(engine: Engine.open(profile: profile, stateRoot: root), profile: profile)
-                    let folders = try box.engine.followChanges(consumer: "app")?.folders ?? []
+                    let batch = try box.engine.followChanges(consumer: "app")
+                    let folders = batch?.folders ?? []
+                    // A folder deleted or moved elsewhere can't be dropped from the kernel's caches like a file. Ask the
+                    // drive to forget it and remove it through the mount: the extension answers without touching
+                    // storage, and only when storage no longer has it, so nothing is ever deleted here.
+                    if Housekeeping.isParaAirMount(mount) {
+                        for path in Engine.foldersGone(batch?.changes ?? []) {
+                            guard (try? box.engine.requestPurge(path)) != nil else { continue }
+                            _ = Darwin.rmdir(mount + path)
+                            try? box.engine.clearPurgeRequest(path)
+                        }
+                    }
                     for folder in folders { Housekeeping.touchRefreshMarker(in: folder, mountPoint: mount) }
                     return .success((box, folders.count))
                 } catch { return .failure(error) }

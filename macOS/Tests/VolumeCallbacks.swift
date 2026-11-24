@@ -474,6 +474,62 @@ struct VolumeCallbackTests {
                                             volume: volume, wanted: standardMask)
         try check(sourceMetadata.accessTime.tv_sec == 200000000 && sourceMetadata.accessTime.tv_nsec == 123456000,
                   "FSKit replaced the recorded access time with modification time")
+        // Another device changes a file the kernel already knows: a fresh listing names it once, and names it again
+        // when it disappears. An unchanged listing names nothing.
+        let elsewhere = backendRoot.appendingPathComponent("changed-elsewhere")
+        try Data("first version".utf8).write(to: elsewhere)
+        let known = try lookup("changed-elsewhere", directory: root, volume: volume)
+        _ = try attributes(known, volume: volume)
+        try check(volume.changedElsewhere(try engine.list("/"), in: "/").isEmpty, "An unchanged listing read as a change elsewhere")
+        try Data("second, longer version".utf8).write(to: elsewhere)
+        let edited = volume.changedElsewhere(try engine.list("/"), in: "/")
+        try check(edited.count == 1 && edited.first === known, "A file changed elsewhere wasn't noticed")
+        try check(volume.changedElsewhere(try engine.list("/"), in: "/").isEmpty, "A change elsewhere was reported twice")
+        try FileManager.default.removeItem(at: elsewhere)
+        let vanished = volume.changedElsewhere(try engine.list("/"), in: "/")
+        try check(vanished.count == 1 && vanished.first === known, "A file deleted elsewhere wasn't noticed")
+        let elsewhereFolder = backendRoot.appendingPathComponent("folder-elsewhere")
+        try FileManager.default.createDirectory(at: elsewhereFolder, withIntermediateDirectories: false)
+        let knownFolder = try lookup("folder-elsewhere", directory: root, volume: volume)
+        try check(volume.changedElsewhere(try engine.list("/"), in: "/").isEmpty, "A listed folder read as a change elsewhere")
+        try FileManager.default.moveItem(at: elsewhereFolder, to: backendRoot.appendingPathComponent("folder-renamed"))
+        let movedFolder = volume.changedElsewhere(try engine.list("/"), in: "/")
+        try check(movedFolder.count == 1 && movedFolder.first === knownFolder, "A folder renamed elsewhere wasn't noticed")
+        let inner = DriveItem(path: "/folder-elsewhere/inner/f.txt", identifier: FSItem.Identifier(rawValue: 9_000)!)
+        let innerFolder = DriveItem(path: "/folder-elsewhere/inner", identifier: FSItem.Identifier(rawValue: 9_001)!)
+        volume.adoptForTesting([inner, innerFolder])
+        // A folder gone from storage that the app asked the drive to forget: its removal through the mount succeeds
+        // here without touching storage. One that storage still has is refused, and stays.
+        try FileManager.default.createDirectory(at: backendRoot.appendingPathComponent("purge-me"), withIntermediateDirectories: false)
+        let purged = try lookup("purge-me", directory: root, volume: volume)
+        try FileManager.default.removeItem(at: backendRoot.appendingPathComponent("purge-me"))
+        try engine.requestPurge("/purge-me")
+        try call { volume.removeItem(purged, named: FSFileName(string: "purge-me"), fromDirectory: root, replyHandler: $0) }
+        try FileManager.default.createDirectory(at: backendRoot.appendingPathComponent("keep-me"), withIntermediateDirectories: false)
+        let kept = try lookup("keep-me", directory: root, volume: volume)
+        try engine.requestPurge("/keep-me")
+        do {
+            try call { volume.removeItem(kept, named: FSFileName(string: "keep-me"), fromDirectory: root, replyHandler: $0) }
+            throw DriveError(EIO, "A purge removed a folder storage still has")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EBUSY) {}
+        try check(FileManager.default.fileExists(atPath: backendRoot.appendingPathComponent("keep-me").path),
+                  "A purge request deleted a folder in storage")
+        // A second removal while the request stands (the app's own, after another one) is refused too, never sent to storage.
+        do {
+            try call { volume.removeItem(kept, named: FSFileName(string: "keep-me"), fromDirectory: root, replyHandler: $0) }
+            throw DriveError(EIO, "A second removal under a purge request reached storage")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EBUSY) {}
+        try engine.clearPurgeRequest("/keep-me")
+        try engine.clearPurgeRequest("/purge-me")
+        // Without a request, removing the folder is an ordinary removal and reaches storage (ParaOS releasing a claim).
+        try call { volume.removeItem(kept, named: FSFileName(string: "keep-me"), fromDirectory: root, replyHandler: $0) }
+        try check(!FileManager.default.fileExists(atPath: backendRoot.appendingPathComponent("keep-me").path),
+                  "An ordinary removal didn't reach storage")
+        let ordered = volume.withContents(movedFolder)
+        try check(ordered.map(\.path) == ["/folder-elsewhere/inner/f.txt", "/folder-elsewhere/inner", "/folder-elsewhere"],
+                  "A changed folder's contents aren't dropped first, deepest first: \(ordered.map(\.path))")
+        try FileManager.default.removeItem(at: backendRoot.appendingPathComponent("folder-renamed"))
+        _ = volume.changedElsewhere(try engine.list("/"), in: "/")
         let rootAttributes = try attributes(root, volume: volume)
         try check(rootAttributes.fileID == .rootDirectory, "Root directory identifier is invalid")
         try check(rootAttributes.parentID == .parentOfRoot, "Root must identify FSKit's parent-of-root sentinel")
@@ -532,6 +588,6 @@ struct VolumeCallbackTests {
         try runIndexBackupChecks(base)
         try runConcurrencyChecks(base)
         try runCapacityChecks(base)
-        print("FSKit callback tests passed: replacement tombstones, removal tombstones, stable IDs, moved descendants, initial size, same-path rename, open-mode tracking, non-blocking synchronize, ordered sync, concurrent reads, rename during read, serial fallback, volume sizes, capacity retried after an offline activation, housekeeping kept local, index backups scheduled")
+        print("FSKit callback tests passed: changes elsewhere, replacement tombstones, removal tombstones, stable IDs, moved descendants, initial size, same-path rename, open-mode tracking, non-blocking synchronize, ordered sync, concurrent reads, rename during read, serial fallback, volume sizes, capacity retried after an offline activation, housekeeping kept local, index backups scheduled")
     }
 }

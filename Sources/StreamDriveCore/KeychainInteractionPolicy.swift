@@ -75,16 +75,17 @@ enum KeychainInteractionPolicy {
     /// locked (overnight, say); "when unlocked" stopped both, and sign-in itself, whenever the screen locked.
     static let accessibility = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
 
-    /// What a failed save says. The Keychain reports a locked Mac as errSecInteractionNotAllowed.
+    /// What a failed save says. The Keychain reports a locked Mac as errSecInteractionNotAllowed, which passes:
+    /// EAGAIN, so callers retry it once the Mac is unlocked instead of treating the item as denied (EACCES).
     static func saveFailure(_ status: OSStatus, _ generic: String) -> DriveError {
         status == errSecInteractionNotAllowed
-            ? DriveError(EACCES, "This Mac is locked, so ParaAir can’t save to the Keychain. Unlock it and try again.")
+            ? DriveError(EAGAIN, "This Mac is locked, so ParaAir can’t save to the Keychain. Unlock it and try again.")
             : DriveError(EACCES, generic)
     }
-    /// What a failed read says, for statuses other than a missing item.
+    /// What a failed read says, for statuses other than a missing item. A locked Mac is EAGAIN, as for saves.
     static func readFailure(_ status: OSStatus, _ generic: String) -> DriveError {
         status == errSecInteractionNotAllowed
-            ? DriveError(EACCES, "This Mac is locked, so ParaAir can’t read its saved credentials. Unlock it to continue.")
+            ? DriveError(EAGAIN, "This Mac is locked, so ParaAir can’t read its saved credentials. Unlock it to continue.")
             : DriveError(EACCES, generic)
     }
 

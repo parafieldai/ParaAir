@@ -53,7 +53,12 @@ extension MenuModel {
         resolvingPath = decision.path
         Task {
             let outcome = await Task.detached(priority: .userInitiated) {
-                Result { try work(try Engine.open(profile: profile, stateRoot: root)) }
+                Result {
+                    let engine = try Engine.open(profile: profile, stateRoot: root)
+                    try work(engine)
+                    // The file under the mounted drive changed without the drive's extension doing it.
+                    engine.changedOutsideMount(decision.path, mountPoint: profile.mountPoint)
+                }
             }.value
             resolvingPath = nil
             if case .failure(let error) = outcome, root == stateRoot {

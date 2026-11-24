@@ -145,6 +145,43 @@ final class CollaborationTests: XCTestCase {
         XCTAssertFalse(page.reset)
     }
 
+    /// The mounted drive's extension drops the kernel's caches for exactly what changed: the feed's paths wait for it
+    /// per folder until taken, a change made outside the mount joins them, and this Mac's own uploads report the
+    /// version they produced.
+    func testChangedPathsWaitForTheMountedDriveAndOwnUploadsReportTheirVersion() throws {
+        let a = try mac("a"), b = try mac("b")
+        var published: [FileEntry] = []
+        a.onPublished = { published.append($0) }
+        _ = try a.create("/records", directory: true)
+        try save(a, "/records/r.json", "1"); XCTAssertTrue(try a.flushUploads().isEmpty)
+        XCTAssertEqual(published.last?.path, "/records/r.json")
+        XCTAssertEqual(published.last?.version, try a.stat("/records/r.json").version, "an upload reports the version it made")
+        _ = try XCTUnwrap(try b.followChanges(consumer: "test"))
+        try save(a, "/records/r.json", "22"); XCTAssertTrue(try a.flushUploads().isEmpty)
+        _ = try a.create("/records/old", directory: true)
+        _ = try XCTUnwrap(try b.followChanges(consumer: "test"))
+        XCTAssertEqual(Set(try b.takeRemoteChanges(in: "/records")), ["/records/r.json", "/records/old"])
+        XCTAssertEqual(try b.takeRemoteChanges(in: "/records"), [], "taken paths are gone")
+        XCTAssertEqual(try b.takeRemoteChanges(in: "/"), [])
+        b.changedOutsideMount("/records/r.json", mountPoint: nil)
+        XCTAssertEqual(try b.takeRemoteChanges(in: "/records"), ["/records/r.json"], "a change outside the mount is named too")
+        XCTAssertFalse(Housekeeping.isParaAirMount(root.path), "a plain folder is never treated as a mounted drive")
+        let author = ParaAirCloudAuthor()
+        XCTAssertEqual(Engine.foldersGone([
+            .init(cursor: 1, change: "delete", kind: "directory", path: "/claims/k1", at: "", author: author),
+            .init(cursor: 2, change: "move", kind: "directory", path: "/people/new", fromPath: "/people/old", at: "", author: author),
+            .init(cursor: 3, change: "delete", kind: "file", path: "/records/r.json", at: "", author: author),
+            .init(cursor: 4, change: "mkdir", kind: "directory", path: "/claims/k2", at: "", author: author),
+            .init(cursor: 5, change: "delete", kind: "directory", path: "/._x", at: "", author: author),
+        ]), ["/claims/k1", "/people/old"], "only folders deleted or moved away, never housekeeping")
+        try b.requestPurge("/claims/k1")
+        XCTAssertTrue(try b.purgeRequested("/claims/k1"))
+        XCTAssertTrue(try b.purgeRequested("/claims/k1"), "a removal doesn't use the request up; the app clears it")
+        XCTAssertFalse(try b.purgeRequested("/claims/k2"))
+        try b.clearPurgeRequest("/claims/k1")
+        XCTAssertFalse(try b.purgeRequested("/claims/k1"))
+    }
+
     func testVersionHistoryRestoreAndReadingAnOldVersion() throws {
         let a = try mac("a")
         try save(a, "/doc.txt", "first"); XCTAssertTrue(try a.flushUploads().isEmpty)
