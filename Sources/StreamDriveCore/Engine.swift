@@ -255,7 +255,7 @@ private struct Metadata: Codable { var entry: FileEntry; var verified: Int64 }
 /// extension takes it (takeRemoteChanges) and drops the kernel's caches for it. Older than 10 minutes, it is pruned.
 private struct RemoteChangedPath: Codable { var path: String; var at: Int64 }
 /// A folder gone from storage that the kernel may still show on this Mac: the app records it, then removes it through
-/// the mount, and the drive's extension answers that removal without touching storage (takePurgeRequest).
+/// the mount, and the drive's extension answers that removal without touching storage (purgeRequested).
 private struct PurgeRequest: Codable { var path: String; var at: Int64 }
 /// A conflict copy this Mac saved (keepMine), stored as ("conflictcopy", copy path): the file it was saved beside, the
 /// version this Mac's change was based on and the version in storage it lost to. Once the copy is uploaded it is sent
@@ -1833,14 +1833,20 @@ public final class Engine {
         let path = try canonicalPath(value)
         try lock.withLock(timeout: 10) { try db.put("purge", path, PurgeRequest(path: path, at: now())) }
     }
-    /// Whether a purge of `path` was asked for in the last 30 seconds; the request is used up either way.
-    public func takePurgeRequest(_ value: String) throws -> Bool {
+    /// Whether a purge of `path` was asked for in the last 30 seconds. Not used up by a removal: while it stands, every
+    /// removal of the folder through the mount is answered without storage (refused if storage still has it), so the
+    /// app's own removal can never reach storage, even if another removal of the same path came first.
+    public func purgeRequested(_ value: String) throws -> Bool {
         let path = try canonicalPath(value)
         return try lock.withLock(timeout: 10) {
             guard let request: PurgeRequest = try db.get("purge", path) else { return false }
-            try db.delete("purge", path)
             return now() - request.at < 30_000_000_000
         }
+    }
+    /// Ends a purge request once the app's removal returned.
+    public func clearPurgeRequest(_ value: String) throws {
+        let path = try canonicalPath(value)
+        try lock.withLock(timeout: 10) { try db.delete("purge", path) }
     }
 
     /// The direct children of `folder` that the change feed, or a change made outside the mount, named since the last

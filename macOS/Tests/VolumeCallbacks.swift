@@ -514,7 +514,17 @@ struct VolumeCallbackTests {
         } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EBUSY) {}
         try check(FileManager.default.fileExists(atPath: backendRoot.appendingPathComponent("keep-me").path),
                   "A purge request deleted a folder in storage")
-        try FileManager.default.removeItem(at: backendRoot.appendingPathComponent("keep-me"))
+        // A second removal while the request stands (the app's own, after another one) is refused too, never sent to storage.
+        do {
+            try call { volume.removeItem(kept, named: FSFileName(string: "keep-me"), fromDirectory: root, replyHandler: $0) }
+            throw DriveError(EIO, "A second removal under a purge request reached storage")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EBUSY) {}
+        try engine.clearPurgeRequest("/keep-me")
+        try engine.clearPurgeRequest("/purge-me")
+        // Without a request, removing the folder is an ordinary removal and reaches storage (ParaOS releasing a claim).
+        try call { volume.removeItem(kept, named: FSFileName(string: "keep-me"), fromDirectory: root, replyHandler: $0) }
+        try check(!FileManager.default.fileExists(atPath: backendRoot.appendingPathComponent("keep-me").path),
+                  "An ordinary removal didn't reach storage")
         let ordered = volume.withContents(movedFolder)
         try check(ordered.map(\.path) == ["/folder-elsewhere/inner/f.txt", "/folder-elsewhere/inner", "/folder-elsewhere"],
                   "A changed folder's contents aren't dropped first, deepest first: \(ordered.map(\.path))")

@@ -323,7 +323,7 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     private func forgetFolderGoneFromStorage(_ item: FSItem) throws -> Bool {
         let path = try path(item)
         let engine = try storage()
-        guard path != "/", try engine.takePurgeRequest(path) else { return false }
+        guard path != "/", try engine.purgeRequested(path) else { return false }
         do {
             _ = try engine.statFromStorage(path)
             throw POSIXError(.EBUSY)

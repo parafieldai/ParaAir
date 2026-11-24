@@ -175,9 +175,11 @@ final class CollaborationTests: XCTestCase {
             .init(cursor: 5, change: "delete", kind: "directory", path: "/._x", at: "", author: author),
         ]), ["/claims/k1", "/people/old"], "only folders deleted or moved away, never housekeeping")
         try b.requestPurge("/claims/k1")
-        XCTAssertTrue(try b.takePurgeRequest("/claims/k1"))
-        XCTAssertFalse(try b.takePurgeRequest("/claims/k1"), "a purge request is used once")
-        XCTAssertFalse(try b.takePurgeRequest("/claims/k2"))
+        XCTAssertTrue(try b.purgeRequested("/claims/k1"))
+        XCTAssertTrue(try b.purgeRequested("/claims/k1"), "a removal doesn't use the request up; the app clears it")
+        XCTAssertFalse(try b.purgeRequested("/claims/k2"))
+        try b.clearPurgeRequest("/claims/k1")
+        XCTAssertFalse(try b.purgeRequested("/claims/k1"))
     }
 
     func testVersionHistoryRestoreAndReadingAnOldVersion() throws {

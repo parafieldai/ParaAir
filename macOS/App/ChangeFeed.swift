@@ -68,7 +68,7 @@ final class ChangeFeedMonitor {
                         for path in Engine.foldersGone(batch?.changes ?? []) {
                             guard (try? box.engine.requestPurge(path)) != nil else { continue }
                             _ = Darwin.rmdir(mount + path)
-                            _ = try? box.engine.takePurgeRequest(path)
+                            try? box.engine.clearPurgeRequest(path)
                         }
                     }
                     for folder in folders { Housekeeping.touchRefreshMarker(in: folder, mountPoint: mount) }
