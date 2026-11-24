@@ -166,6 +166,18 @@ final class CollaborationTests: XCTestCase {
         b.changedOutsideMount("/records/r.json", mountPoint: nil)
         XCTAssertEqual(try b.takeRemoteChanges(in: "/records"), ["/records/r.json"], "a change outside the mount is named too")
         XCTAssertFalse(Housekeeping.isParaAirMount(root.path), "a plain folder is never treated as a mounted drive")
+        let author = ParaAirCloudAuthor()
+        XCTAssertEqual(Engine.foldersGone([
+            .init(cursor: 1, change: "delete", kind: "directory", path: "/claims/k1", at: "", author: author),
+            .init(cursor: 2, change: "move", kind: "directory", path: "/people/new", fromPath: "/people/old", at: "", author: author),
+            .init(cursor: 3, change: "delete", kind: "file", path: "/records/r.json", at: "", author: author),
+            .init(cursor: 4, change: "mkdir", kind: "directory", path: "/claims/k2", at: "", author: author),
+            .init(cursor: 5, change: "delete", kind: "directory", path: "/._x", at: "", author: author),
+        ]), ["/claims/k1", "/people/old"], "only folders deleted or moved away, never housekeeping")
+        try b.requestPurge("/claims/k1")
+        XCTAssertTrue(try b.takePurgeRequest("/claims/k1"))
+        XCTAssertFalse(try b.takePurgeRequest("/claims/k1"), "a purge request is used once")
+        XCTAssertFalse(try b.takePurgeRequest("/claims/k2"))
     }
 
     func testVersionHistoryRestoreAndReadingAnOldVersion() throws {

@@ -317,6 +317,28 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
             }
         }
     }
+    /// The app asked the drive to forget this folder (Engine.requestPurge) and removed it through the mount. Answers
+    /// that removal here, never in storage: true (forgotten) only when storage no longer has the folder; EBUSY when it
+    /// does, so nothing is deleted. Without a request it returns false and the removal is an ordinary one.
+    private func forgetFolderGoneFromStorage(_ item: FSItem) throws -> Bool {
+        let path = try path(item)
+        let engine = try storage()
+        guard path != "/", try engine.takePurgeRequest(path) else { return false }
+        do {
+            _ = try engine.stat(path)
+            throw POSIXError(.EBUSY)
+        } catch let error as DriveError where error.code == ENOENT {
+            locked {
+                let removed = nodes.filter { $0.key == path || $0.key.hasPrefix(path + "/") }
+                for (key, stale) in removed { stale.deleted = true; nodes.removeValue(forKey: key) }
+                moveOpenModes(from: path, to: nil)
+                changed()
+                namespaceGeneration &+= 1
+            }
+            Self.cacheLog.notice("forgot folder gone from storage id=\(((item as? DriveItem)?.identifier.rawValue) ?? 0, privacy: .public)")
+            return true
+        }
+    }
     /// After the app's refresh marker appears in `directory` (it does so for every folder the change feed names), lists
     /// the folder again and drops the kernel's caches for what changed.
     private func recheck(_ directory: String) {
@@ -650,6 +672,7 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
                     replyHandler: @escaping (Error?) -> Void) {
         queue.async {
             do {
+                if try self.forgetFolderGoneFromStorage(item) { replyHandler(nil); return }
                 try self.writable()
                 let path = try self.path(item), entry = try self.storage().stat(path)
                 let change = self.beginChange(from: path, to: nil)

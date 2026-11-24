@@ -254,6 +254,9 @@ private struct Metadata: Codable { var entry: FileEntry; var verified: Int64 }
 /// A file or folder the change feed (or a change made outside the mount) named, kept until the mounted drive's
 /// extension takes it (takeRemoteChanges) and drops the kernel's caches for it. Older than 10 minutes, it is pruned.
 private struct RemoteChangedPath: Codable { var path: String; var at: Int64 }
+/// A folder gone from storage that the kernel may still show on this Mac: the app records it, then removes it through
+/// the mount, and the drive's extension answers that removal without touching storage (takePurgeRequest).
+private struct PurgeRequest: Codable { var path: String; var at: Int64 }
 /// A conflict copy this Mac saved (keepMine), stored as ("conflictcopy", copy path): the file it was saved beside, the
 /// version this Mac's change was based on and the version in storage it lost to. Once the copy is uploaded it is sent
 /// to storage that keeps such records (`settled` then), so other Macs can answer conflictCopyInfo too.
@@ -1806,6 +1809,30 @@ public final class Engine {
         try? noteStorageChanged(path)
         if let mountPoint, Housekeeping.isParaAirMount(mountPoint) {
             _ = Housekeeping.touchRefreshMarker(in: parent(path), mountPoint: mountPoint)
+        }
+    }
+
+    /// Folders the feed reports deleted, or moved away, in `changes`: the kernel may keep showing them, and FSKit can't
+    /// drop a folder's cached entry the way it drops a file's.
+    public static func foldersGone(_ changes: [ParaAirCloudChange]) -> [String] {
+        changes.compactMap { change -> String? in
+            guard change.kind == "directory" else { return nil }
+            if let from = change.fromPath { return from }
+            return change.change == "delete" || change.change == "purge" ? change.path : nil
+        }.filter { !Housekeeping.staysLocal($0) && $0 != "/" }
+    }
+    /// Asks the mounted drive to forget `path`, a folder gone from storage, when it is next removed through the mount.
+    public func requestPurge(_ value: String) throws {
+        let path = try canonicalPath(value)
+        try lock.withLock(timeout: 10) { try db.put("purge", path, PurgeRequest(path: path, at: now())) }
+    }
+    /// Whether a purge of `path` was asked for in the last 30 seconds; the request is used up either way.
+    public func takePurgeRequest(_ value: String) throws -> Bool {
+        let path = try canonicalPath(value)
+        return try lock.withLock(timeout: 10) {
+            guard let request: PurgeRequest = try db.get("purge", path) else { return false }
+            try db.delete("purge", path)
+            return now() - request.at < 30_000_000_000
         }
     }
 

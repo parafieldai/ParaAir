@@ -498,6 +498,23 @@ struct VolumeCallbackTests {
         let inner = DriveItem(path: "/folder-elsewhere/inner/f.txt", identifier: FSItem.Identifier(rawValue: 9_000)!)
         let innerFolder = DriveItem(path: "/folder-elsewhere/inner", identifier: FSItem.Identifier(rawValue: 9_001)!)
         volume.adoptForTesting([inner, innerFolder])
+        // A folder gone from storage that the app asked the drive to forget: its removal through the mount succeeds
+        // here without touching storage. One that storage still has is refused, and stays.
+        try FileManager.default.createDirectory(at: backendRoot.appendingPathComponent("purge-me"), withIntermediateDirectories: false)
+        let purged = try lookup("purge-me", directory: root, volume: volume)
+        try FileManager.default.removeItem(at: backendRoot.appendingPathComponent("purge-me"))
+        try engine.requestPurge("/purge-me")
+        try call { volume.removeItem(purged, named: FSFileName(string: "purge-me"), fromDirectory: root, replyHandler: $0) }
+        try FileManager.default.createDirectory(at: backendRoot.appendingPathComponent("keep-me"), withIntermediateDirectories: false)
+        let kept = try lookup("keep-me", directory: root, volume: volume)
+        try engine.requestPurge("/keep-me")
+        do {
+            try call { volume.removeItem(kept, named: FSFileName(string: "keep-me"), fromDirectory: root, replyHandler: $0) }
+            throw DriveError(EIO, "A purge removed a folder storage still has")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EBUSY) {}
+        try check(FileManager.default.fileExists(atPath: backendRoot.appendingPathComponent("keep-me").path),
+                  "A purge request deleted a folder in storage")
+        try FileManager.default.removeItem(at: backendRoot.appendingPathComponent("keep-me"))
         let ordered = volume.withContents(movedFolder)
         try check(ordered.map(\.path) == ["/folder-elsewhere/inner/f.txt", "/folder-elsewhere/inner", "/folder-elsewhere"],
                   "A changed folder's contents aren't dropped first, deepest first: \(ordered.map(\.path))")
