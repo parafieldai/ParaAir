@@ -144,6 +144,10 @@ final class MenuModel: ObservableObject {
     @Published private(set) var checkingExtension = false
     /// The person came back from System Settings, or chose Check Again, and the extension is still off.
     @Published private(set) var extensionStillOff = false
+    /// On before on this Mac (UserDefaults "extensionWasEnabled"), off now: macOS switched it off, typically on replacement.
+    @Published private(set) var extensionTurnedOff = false
+    /// The home window opened once in this process for a switch macOS turned off.
+    private var shownTurnedOff = false
     /// Other copies of ParaAir that LaunchServices knows about and that still exist.
     @Published private(set) var otherAppCopies: [String] = []
     /// Set when ParaAir opens System Settings for the switch; cleared once the extension is on.
@@ -878,6 +882,16 @@ final class MenuModel: ObservableObject {
             extensionStillOff = false
             extensionSettingsOpenedAt = nil
             extensionWatch?.cancel(); extensionWatch = nil
+            extensionTurnedOff = false
+            UserDefaults.standard.set(true, forKey: "extensionWasEnabled")
+        } else if extensionState == .disabled, UserDefaults.standard.bool(forKey: "extensionWasEnabled") {
+            extensionTurnedOff = true
+            // Show the one-click step at once, once per launch: the drives that were connected wait for it.
+            if !shownTurnedOff {
+                shownTurnedOff = true
+                AppLog.setup.notice("extension was on before and is off now; showing the switch step")
+                windowRequest = "connections"
+            }
         }
         AppLog.setup.notice("extension refresh trigger=\(trigger, privacy: .public) state=\(String(describing: self.extensionState), privacy: .public) matchingModules=\(self.matchingModuleCount)")
         resumePendingSetup(trigger: "extension-" + trigger)

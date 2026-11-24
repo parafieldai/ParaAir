@@ -49,6 +49,7 @@ extension MenuModel {
             extensionState: extensionState,
             checkingExtension: checkingExtension,
             extensionStillOff: extensionStillOff,
+            extensionTurnedOff: extensionTurnedOff,
             otherCopies: otherAppCopies,
             mounted: profile.map(isMounted) ?? false,
             mounting: mounting,

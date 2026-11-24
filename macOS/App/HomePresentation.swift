@@ -15,6 +15,8 @@ struct HomeInputs: Equatable {
     var checkingExtension = false
     /// The person came back from System Settings, or chose Check Again, and the extension is still off.
     var extensionStillOff = false
+    /// The extension was on before on this Mac and is off now: macOS switched it off, typically when ParaAir was replaced.
+    var extensionTurnedOff = false
     /// Other copies of ParaAir on this Mac that LaunchServices knows about (OtherAppCopies.present).
     var otherCopies: [String] = []
     var mounted = false
@@ -129,7 +131,8 @@ struct HomePresentation: Equatable {
                                          detail: "Looking for ParaAir’s file system extension.", tone: .working),
                            primary: .init(action: .openSystemSettings, title: "Open System Settings", enabled: false, busy: true))
         } else if !input.mounted && !input.mounting && extensionOff {
-            result = .init(status: extensionStatus(input.extensionState, stillOff: input.extensionStillOff),
+            result = .init(status: extensionStatus(input.extensionState, stillOff: input.extensionStillOff,
+                                                   turnedOff: input.extensionTurnedOff),
                            primary: .init(action: .openSystemSettings, title: "Open System Settings"),
                            offersCheckAgain: true)
             result.showsSwitchPicture = input.extensionState == .disabled
@@ -196,7 +199,7 @@ struct HomePresentation: Equatable {
                                          detail: "Looking for ParaAir’s file system extension.", tone: .working),
                            primary: .init(action: .openSystemSettings, title: "Open System Settings", enabled: false, busy: true))
         } else if input.extensionState != .enabled {
-            result = .init(status: extensionStatus(input.extensionState, stillOff: false),
+            result = .init(status: extensionStatus(input.extensionState, stillOff: false, turnedOff: false),
                            primary: .init(action: .openSystemSettings, title: "Open System Settings"),
                            offersCheckAgain: true)
         } else {
@@ -298,8 +301,13 @@ struct HomePresentation: Equatable {
 
     /// `stillOff`: the person went to System Settings from here and came back with the switch off. The usual cause on
     /// macOS 27.2 is the switch under ParaAir Extensions (FSKit Modules), which flips back (ExtensionSetupGuidance).
-    private static func extensionStatus(_ state: FinderExtensionState, stillOff: Bool) -> Status {
+    private static func extensionStatus(_ state: FinderExtensionState, stillOff: Bool, turnedOff: Bool) -> Status {
         switch state {
+        case .disabled where turnedOff && !stillOff:
+            return .init(title: "ParaAir’s switch is off again",
+                         detail: "macOS can switch it off when ParaAir is replaced. Switch on \(ExtensionSetupGuidance.switchName) "
+                             + "in the File System Extensions list, as pictured. Your drive connects by itself once it’s on.",
+                         tone: .attention)
         case .disabled where stillOff:
             return .init(title: "That switch didn’t save",
                          detail: "Use the File System Extensions list under By Category, as pictured. The switch under "

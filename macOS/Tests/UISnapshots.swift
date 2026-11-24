@@ -1064,6 +1064,13 @@ struct UISnapshots {
         expect(stillOff.notices.contains { $0.id == "other-copies" && $0.action == .showOtherCopies && $0.actionTitle == "Show in Finder"
                                            && ($0.text.contains("~/Downloads") || $0.text.contains("/Users/maya/Downloads")) },
                "another copy of ParaAir is named with a way to find it")
+        var turnedOff = scenarios["3-turn-on"]!; turnedOff.extensionTurnedOff = true
+        let offAgain = HomePresentation.make(turnedOff)
+        expect(offAgain.status.title == "ParaAir’s switch is off again" && offAgain.status.detail.contains("connects by itself")
+               && offAgain.showsSwitchPicture && offAgain.primary.action == .openSystemSettings,
+               "a switch macOS turned off after an update says so and offers the one-click step")
+        turnedOff.extensionStillOff = true
+        expect(HomePresentation.make(turnedOff).status.title == "That switch didn’t save", "a failed attempt still explains the sheet")
         var mountedWithCopy = scenarios["5-connected"]!; mountedWithCopy.otherCopies = ["/a/ParaAir.app", "/b/ParaAir.app"]
         expect(HomePresentation.make(mountedWithCopy).notices.contains { $0.id == "other-copies" && $0.text.hasPrefix("2 other copies") },
                "several other copies are counted")
