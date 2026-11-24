@@ -1,6 +1,6 @@
 # ParaAir
 
-Last updated: 2026-10-18
+Last updated: 2026-11-24
 
 A development implementation of a CLI-first streaming drive for macOS 26+, with cloud object storage as the primary deployment and self-hosted NAS storage as an optional backend. A Swift FSKit extension presents the filesystem to Finder. A pinned JuiceFS engine supplies managed metadata and object storage. Reads fetch touched blocks, writes first enter a durable local journal, and explicit pinning downloads offline content.
 
@@ -180,6 +180,11 @@ paraair access set /Volumes/ParaOS/claims --role members --level create --json
 - `changes --json` prints one JSON object per line, flushed as it comes: with `--follow`, first `{"following": true, "cursor": N}`, then each change as the service sends it, `{cursor, change, kind, path, fromPath?, rescan?, version, at, author}` (`change`: create, write, delete, move, restore, mkdir, purge; `version` is null for deletes; `rescan: true` means list that folder's subtree again), and `{"reset": true, "cursor": N}` when changes after your cursor were pruned (30 days): rescan, then go on. Without `--since` or `--follow` it prints `{"cursor": N}`. Only changes at or under the given folder are printed. Before printing a page it drops this Mac's cached metadata for those paths, so a read through the mount right after the line gets the new contents. Offline or with a busy service, `--follow` waits (up to a minute between tries) and goes on.
 - `access list` → `{path, rules: [{role | userId, email | credential, name, path, access, updatedAt}]}` (rules on, above and inside the folder); `access set … --level none|read|create|write` → `{rule}`; `access remove` → `{path, principal, removed}`. Owners and admins only (exit 12 otherwise).
 - Changes from other devices also reach Finder on their own: while a ParaAir Cloud drive is mounted, the app follows its change feed every 3 seconds, drops cached metadata for what changed and creates and removes `.paraair-refresh` in each changed folder through the mount, so FSEvents reports the folder.
+- Changed files read as their new version on macOS 27 and later (FSKit's `DataCacheHandler`).
+  - The kernel caches no file data for ParaAir drives. Every read reaches the engine, whose own block cache is keyed by storage version.
+  - When a listing, or the refresh marker the app creates, shows that a file the kernel already knows has a new version or is gone, the extension revokes the kernel's item, so its next use reads fresh size, dates and contents.
+  - A file open on this Mac is revoked once it is fully closed. This Mac's own uploads don't count as changes.
+  - On macOS 26 the kernel keeps a file's cached size and contents until the drive is remounted.
 - A save the drive's folder rules or the member's role refuse (403) waits for a decision like a read-only drive's change: Review… can save it as a new file (a `create` folder accepts that), export or discard it. It is retried at most every 15 minutes, so a rule granted later lets it through.
 - More exit codes: 15 `not_mounted` (the path isn't on a mounted ParaAir drive, or no known profile is mounted there), 16 `version_conflict`, 17 `not_found`.
 

@@ -474,6 +474,20 @@ struct VolumeCallbackTests {
                                             volume: volume, wanted: standardMask)
         try check(sourceMetadata.accessTime.tv_sec == 200000000 && sourceMetadata.accessTime.tv_nsec == 123456000,
                   "FSKit replaced the recorded access time with modification time")
+        // Another device changes a file the kernel already knows: a fresh listing names it once, and names it again
+        // when it disappears. An unchanged listing names nothing.
+        let elsewhere = backendRoot.appendingPathComponent("changed-elsewhere")
+        try Data("first version".utf8).write(to: elsewhere)
+        let known = try lookup("changed-elsewhere", directory: root, volume: volume)
+        _ = try attributes(known, volume: volume)
+        try check(volume.changedElsewhere(try engine.list("/"), in: "/").isEmpty, "An unchanged listing read as a change elsewhere")
+        try Data("second, longer version".utf8).write(to: elsewhere)
+        let edited = volume.changedElsewhere(try engine.list("/"), in: "/")
+        try check(edited.count == 1 && edited.first === known, "A file changed elsewhere wasn't noticed")
+        try check(volume.changedElsewhere(try engine.list("/"), in: "/").isEmpty, "A change elsewhere was reported twice")
+        try FileManager.default.removeItem(at: elsewhere)
+        let vanished = volume.changedElsewhere(try engine.list("/"), in: "/")
+        try check(vanished.count == 1 && vanished.first === known, "A file deleted elsewhere wasn't noticed")
         let rootAttributes = try attributes(root, volume: volume)
         try check(rootAttributes.fileID == .rootDirectory, "Root directory identifier is invalid")
         try check(rootAttributes.parentID == .parentOfRoot, "Root must identify FSKit's parent-of-root sentinel")
@@ -532,6 +546,6 @@ struct VolumeCallbackTests {
         try runIndexBackupChecks(base)
         try runConcurrencyChecks(base)
         try runCapacityChecks(base)
-        print("FSKit callback tests passed: replacement tombstones, removal tombstones, stable IDs, moved descendants, initial size, same-path rename, open-mode tracking, non-blocking synchronize, ordered sync, concurrent reads, rename during read, serial fallback, volume sizes, capacity retried after an offline activation, housekeeping kept local, index backups scheduled")
+        print("FSKit callback tests passed: changes elsewhere, replacement tombstones, removal tombstones, stable IDs, moved descendants, initial size, same-path rename, open-mode tracking, non-blocking synchronize, ordered sync, concurrent reads, rename during read, serial fallback, volume sizes, capacity retried after an offline activation, housekeeping kept local, index backups scheduled")
     }
 }

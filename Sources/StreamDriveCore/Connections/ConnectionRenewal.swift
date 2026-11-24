@@ -146,8 +146,9 @@ public actor ConnectionRenewal {
             }
         }
         if error is URLError { return .transientFailure }
+        // EAGAIN: the Keychain was locked (KeychainInteractionPolicy); the next pass after unlocking reads it.
         if let error = error as? DriveError,
-           [ENETDOWN, ENETUNREACH, EHOSTUNREACH, ECONNRESET, ECONNREFUSED, ETIMEDOUT, ENOTCONN].contains(error.code) {
+           [ENETDOWN, ENETUNREACH, EHOSTUNREACH, ECONNRESET, ECONNREFUSED, ETIMEDOUT, ENOTCONN, EAGAIN].contains(error.code) {
             return .transientFailure
         }
         return .failed
@@ -189,6 +190,7 @@ public actor ConnectionRenewal {
         if let error = error as? DriveError, error.code == EACCES {
             return "Saved credentials are unavailable to this build. Automatic access is paused until the connection is updated. No password dialog will be opened."
         }
+        if let error = error as? DriveError, error.code == EAGAIN { return error.message }
         if error is DriveError { return "Connection credentials or registration are unavailable. Open Storage settings to review access." }
         return "Storage authorization could not be renewed. Existing credentials were retained."
     }

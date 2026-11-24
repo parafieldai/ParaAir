@@ -19,10 +19,14 @@ private actor RenewalTransport: OAuthTransport {
 private final class DeniedRenewalVault: ConnectionVault, @unchecked Sendable {
     private let lock = NSLock()
     private var attempts = 0
+    /// The code each read fails with: EACCES denied, EAGAIN a locked Mac (KeychainInteractionPolicy).
+    private let code: Int32
+    init(code: Int32 = EACCES) { self.code = code }
     var readCount: Int { lock.lock(); defer { lock.unlock() }; return attempts }
     func load(id: String) throws -> ConnectionSecrets {
         lock.lock(); attempts += 1; lock.unlock()
-        throw DriveError(EACCES, "Credential access denied")
+        throw DriveError(code, code == EAGAIN ? "This Mac is locked, so ParaAir can’t read its saved credentials. Unlock it to continue."
+                                               : "Credential access denied")
     }
     func save(_ secrets: ConnectionSecrets, id: String) throws { }
     func remove(id: String) throws { }
@@ -46,6 +50,21 @@ final class OAuthRenewalTests: XCTestCase {
         XCTAssertEqual(vault.readCount, 2, "An explicit connection update permits one new attempt")
         let networkRequests = await transport.count
         XCTAssertEqual(networkRequests, 0)
+    }
+    /// Started while the screen was locked: the read is retried on every pass, so renewal resumes once the Mac is
+    /// unlocked, and it doesn't stop the drive from mounting later.
+    func testALockedKeychainIsRetriedNotCachedAsDenied() async throws {
+        let root = try fixture(), store = ConnectionStore(root: root), vault = DeniedRenewalVault(code: EAGAIN)
+        let connection = record()
+        try store.save(connection)
+        let renewal = ConnectionRenewal(root: root, vault: vault, transport: RenewalTransport([]))
+        for _ in 0..<3 {
+            let report = await renewal.renewDueConnections()
+            XCTAssertEqual(report.outcomes[connection.id], .transientFailure)
+            XCTAssertEqual(report.errors[connection.id], "This Mac is locked, so ParaAir can’t read its saved credentials. Unlock it to continue.")
+        }
+        XCTAssertEqual(vault.readCount, 3, "A locked Keychain is asked again on every pass")
+        XCTAssertFalse(RenewalOutcome.transientFailure.blocksAutoMount)
     }
     private func fixture(registration: Bool = true) throws -> URL {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

@@ -140,12 +140,13 @@ final class SharedKeychainTests: XCTestCase {
     func testALockedMacIsNamedInsteadOfAGenericFailure() {
         let locked = RecordingKeychainClient(data: nil, readStatus: errSecInteractionNotAllowed, addStatus: errSecInteractionNotAllowed)
         let vault = KeychainConnectionVault(infoDictionary: configured, client: locked)
+        // EAGAIN, not EACCES: a locked Mac is temporary, and renewal retries it after unlock instead of caching a denial.
         XCTAssertThrowsError(try vault.save(.init(binding: "fixture"), id: connectionID)) {
-            XCTAssertEqual(($0 as? DriveError)?.code, EACCES)
+            XCTAssertEqual(($0 as? DriveError)?.code, EAGAIN)
             XCTAssertEqual(($0 as? DriveError)?.message, "This Mac is locked, so ParaAir can’t save to the Keychain. Unlock it and try again.")
         }
         XCTAssertThrowsError(try vault.load(id: connectionID)) {
-            XCTAssertEqual(($0 as? DriveError)?.code, EACCES)
+            XCTAssertEqual(($0 as? DriveError)?.code, EAGAIN)
             XCTAssertEqual(($0 as? DriveError)?.message, "This Mac is locked, so ParaAir can’t read its saved credentials. Unlock it to continue.")
         }
         XCTAssertThrowsError(try KeychainSecretStore(infoDictionary: configured, client: locked).metadataURL(for: "fixture")) {

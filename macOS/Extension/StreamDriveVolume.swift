@@ -7,6 +7,11 @@ import OSLog
 final class DriveItem: FSItem {
     var path: String
     var deleted = false
+    /// The storage version of the attributes last given to the kernel (files only). Another device's change shows up
+    /// as a listing with a different version, and the kernel's cached attributes and data for this item are dropped.
+    var reportedVersion: String?
+    /// Changed on another device while open here: dropped from the kernel's caches once fully closed.
+    var revokeWhenClosed = false
     let identifier: FSItem.Identifier
     init(path: String, identifier: FSItem.Identifier) {
         self.path = path; self.identifier = identifier
@@ -90,6 +95,10 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     private var uploadCounts: UploadCounts?
     private static let uploadLog = Logger(subsystem: "dev.streamdrive.app.filesystem", category: "upload")
     private static let indexLog = Logger(subsystem: "dev.streamdrive.app.filesystem", category: "index")
+    private static let cacheLog = Logger(subsystem: "dev.streamdrive.app.filesystem", category: "cache")
+    /// Kernel cache changes for items another device changed. Never the serial queue and never under `stateLock`:
+    /// the kernel may call back into the volume while it applies one.
+    private let invalidationQueue = DispatchQueue(label: "dev.streamdrive.filesystem.invalidate", qos: .utility)
     var isOpenCloseInhibited = false
 
     init(stateRoot: URL, mountResource: FinderMountResource, readOnly: Bool, engine: Engine? = nil,
@@ -228,6 +237,63 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
         }
     }
     private func writable() throws { if locked({ readOnly }) { throw POSIXError(.EROFS) } }
+
+    // MARK: Changes made on another device
+
+    /// Files the kernel already knows whose storage version differs in `entries` (a fresh listing of `directory`),
+    /// plus known children of `directory` the listing no longer has. Records the new versions, so each change is
+    /// handled once.
+    func changedElsewhere(_ entries: [FileEntry], in directory: String) -> [DriveItem] {
+        locked {
+            var changed: [DriveItem] = []
+            var listed = Set<String>()
+            for entry in entries {
+                listed.insert(entry.path)
+                guard entry.kind == .file, let item = nodes[entry.path], let old = item.reportedVersion, old != entry.version else { continue }
+                item.reportedVersion = entry.version
+                changed.append(item)
+            }
+            let prefix = directory == "/" ? "/" : directory + "/"
+            for (path, item) in nodes where path != "/" && path.hasPrefix(prefix) && !path.dropFirst(prefix.count).contains("/")
+                && !listed.contains(path) && !Housekeeping.staysLocal(path) && item.reportedVersion != nil {
+                item.reportedVersion = nil
+                changed.append(item)
+            }
+            return changed
+        }
+    }
+    /// Drops what the kernel caches for items changed on another device (macOS 27 and later): an item no app has open
+    /// is revoked, so its next use looks it up again and reads fresh attributes and data; an open one is revoked once
+    /// fully closed. Earlier macOS versions have no way to do this.
+    private func dropKernelCaches(_ items: [DriveItem]) {
+        guard !items.isEmpty else { return }
+        guard #available(macOS 27.0, *) else { return }
+        invalidationQueue.async { [weak self] in
+            guard let self else { return }
+            for item in items {
+                let open = self.locked { () -> Bool in
+                    let isOpen = self.openModes[item.path] != nil
+                    item.revokeWhenClosed = isOpen
+                    return isOpen
+                }
+                if open { continue }
+                let error = self.setCacheState(for: item, cacheMode: .none, coherencyType: .noCache, action: .revoke)
+                if let error {
+                    Self.cacheLog.error("revoke failed id=\(item.identifier.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)")
+                } else {
+                    Self.cacheLog.notice("revoked changed item id=\(item.identifier.rawValue, privacy: .public)")
+                }
+            }
+        }
+    }
+    /// After the app's refresh marker appears in `directory` (it does so for every folder the change feed names), lists
+    /// the folder again and drops the kernel's caches for what changed.
+    private func recheck(_ directory: String) {
+        invalidationQueue.async { [weak self] in
+            guard let self, let engine = self.locked({ self.engine }), let entries = try? engine.list(directory) else { return }
+            self.dropKernelCaches(self.changedElsewhere(entries, in: directory))
+        }
+    }
     private func changed() { locked { generation &+= 1; listings.removeAll() } }
     private func attributes(_ entry: FileEntry, wanted: FSItem.GetAttributesRequest? = nil, engine: Engine? = nil) throws -> FSItem.Attributes {
         let result = FSItem.Attributes()
@@ -241,7 +307,9 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
         if wanted == nil || wanted!.isAttributeWanted(.allocSize) {
             result.allocSize = UInt64(max(0, try (engine ?? storage()).allocatedLocalBytes(entry.path)))
         }
-        result.fileID = node(entry.path).identifier
+        let item = node(entry.path)
+        result.fileID = item.identifier
+        if entry.kind == .file { locked { item.reportedVersion = entry.version } }
         let parent = entry.path == "/" ? "/" : (entry.path as NSString).deletingLastPathComponent
         result.parentID = entry.path == "/" ? .parentOfRoot : node(parent.isEmpty ? "/" : parent).identifier
         let seconds = entry.modifiedNanoseconds / 1_000_000_000
@@ -369,7 +437,16 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     private func logUploads(_ records: [UploadRecord]?) {
         guard let records else { return }
         let paths = Set(records.map(\.path))
-        let counts = UploadCounts(published: uploadPaths.subtracting(paths).count, remaining: records.count,
+        let published = uploadPaths.subtracting(paths)
+        // This Mac's own uploads give its files new storage versions; the kernel already has their contents, so they
+        // must not read as changed elsewhere at the next listing.
+        if !published.isEmpty, let engine = locked({ engine }) {
+            for path in published {
+                guard let entry = try? engine.stat(path), entry.kind == .file else { continue }
+                locked { nodes[path]?.reportedVersion = entry.version }
+            }
+        }
+        let counts = UploadCounts(published: published.count, remaining: records.count,
                                   blocked: records.filter { $0.state != "conflict" && $0.lastErrno != nil }.count,
                                   conflicts: records.filter { $0.state == "conflict" }.count)
         uploadPaths = paths
@@ -446,6 +523,9 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
                 }
                 self.changed()
                 replyHandler(self.node(path), FSFileName(string: entry.name), nil)
+                if type == .file, name.string == Housekeeping.refreshName {
+                    self.recheck((path as NSString).deletingLastPathComponent)
+                }
             } catch { replyHandler(nil, nil, filesystemError(error)) }
         }
     }
@@ -553,8 +633,11 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
             do {
                 let path = try self.path(directory)
                 let snapshotKey = path + (requested == nil ? "#names" : "#attributes")
+                var changed: [DriveItem] = []
                 if cookie.rawValue == 0 {
-                    var entries = try self.storage().list(path).map { ($0.name, $0) }
+                    let listed = try self.storage().list(path)
+                    changed = self.changedElsewhere(listed, in: path)
+                    var entries = listed.map { ($0.name, $0) }
                     if requested == nil {
                         let parent = path == "/" ? "/" : (path as NSString).deletingLastPathComponent
                         entries.insert(("..", try self.storage().stat(parent)), at: 0)
@@ -582,6 +665,7 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
                     if !packed { break }
                 }
                 replyHandler(FSDirectoryVerifier(rawValue: listing.generation), nil)
+                self.dropKernelCaches(changed)
             } catch { replyHandler(verifier, filesystemError(error)) }
         }
     }
@@ -600,8 +684,15 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
         // a durable journal record; the uploader publishes the file once it is closed
         // and idle. fsync/synchronize are the explicit remote durability boundary.
         queue.async {
-            if let path = try? self.path(item) { self.locked { self.openModes[path] = modes.isEmpty ? nil : modes } }
+            var revoke = false
+            if let path = try? self.path(item) {
+                self.locked {
+                    self.openModes[path] = modes.isEmpty ? nil : modes
+                    if modes.isEmpty, let node = item as? DriveItem, node.revokeWhenClosed { node.revokeWhenClosed = false; revoke = true }
+                }
+            }
             replyHandler(nil)
+            if revoke, let node = item as? DriveItem { self.dropKernelCaches([node]) }
         }
     }
     func read(from item: FSItem, at offset: off_t, length: Int, into buffer: FSMutableFileDataBuffer,
@@ -665,5 +756,26 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
                 replyHandler(completed, nil)
             } catch { replyHandler(completed, filesystemError(error)) }
         }
+    }
+}
+
+/// The kernel caches no file data for ParaAir drives (macOS 27 and later): every read comes to the engine, which keeps
+/// its own block cache keyed by storage version, so a file another device changed reads as the new version. Without
+/// this conformance the kernel caches pages as it sees fit and never learns of changes made elsewhere.
+/// Write access isn't cached either; writes reach the journal as before.
+@available(macOS 27.0, *)
+extension StreamDriveVolume: FSVolume.DataCacheHandler {
+    func open(_ item: FSItem, modes: FSVolume.OpenModes, cacheMode: FSVolume.DataCacheMode, context: FSContext,
+              replyHandler: @escaping (FSOpenItemResult?, Error?) -> Void) {
+        openItem(item, modes: modes) { error in
+            replyHandler(error == nil ? FSOpenItemResult(grantedCoherency: .noCache) : nil, error)
+        }
+    }
+    func close(_ item: FSItem, context: FSContext, replyHandler: @escaping () -> Void) {
+        closeItem(item, modes: []) { _ in replyHandler() }
+    }
+    func upgrade(_ item: FSItem, cacheMode: FSVolume.DataCacheMode, context: FSContext,
+                 replyHandler: @escaping (FSUpgradeItemResult?, Error?) -> Void) {
+        replyHandler(FSUpgradeItemResult(grantedCoherency: .noCache), nil)
     }
 }
