@@ -6,7 +6,7 @@ A development implementation of a CLI-first streaming drive for macOS 26+, with 
 
 **ParaAir now opens in Finder and appears in Favorites and Locations at `/Volumes/ParaAir` on this Mac.** The October 9 fix supplies the mandatory FSKit flags/access-time attributes; native mounting, bookmark resolution, directory listing and a real sidebar click pass with the existing R2 connection. The native API is the default on macOS 27+ with its entitlement; macOS 26 retains the helper route. Local tests, the bounded R2 backend test and earlier mounted range reads pass. This is a development alpha; other cloud/NAS backends, media applications and a notarized clean-Mac installation remain unvalidated. Remaining release gates are listed under [Acceptance matrix and remaining gates](#acceptance-matrix-and-remaining-gates).
 
-ParaAir Cloud, a hosted subscription that removes provider accounts and bucket setup, has a beta client in this repository; its service is not in this repository and is not deployed. See [ParaAir Cloud (beta) client](#paraair-cloud-beta-client). [`pricing/`](pricing/) holds the reproducible cost model used to compare storage providers. The early-access page in [`site/`](site/) is published at [paraair.parafield.ai](https://paraair.parafield.ai/).
+ParaAir Cloud, a hosted subscription that removes provider accounts and bucket setup, has a beta client in this repository; its service lives in a private repository and runs, invite-only, at `cloud.parafield.ai`. See [ParaAir Cloud (beta) client](#paraair-cloud-beta-client). The early-access page in [`site/`](site/) is published at [paraair.parafield.ai](https://paraair.parafield.ai/).
 
 ParaAir is licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE).
 
@@ -90,7 +90,7 @@ bash scripts/render-ui-snapshots.sh .runtime/ui-snapshots
 
 ParaAir Cloud is invite-only storage from Parafield Inc. The Mac talks to it over HTTPS with OAuth tokens only: no bucket, provider key or database credential is stored on the Mac, and JuiceFS is not involved. Files are uploaded as 4 MiB content-addressed chunks; reads fetch only the chunks they touch, with a short-lived read token.
 
-**The service is not in this repository.** Its Worker lives in an ignored `cloud/` folder until it has a private home, and nothing is deployed. The public API contract the client implements is [`contract/paraair-cloud-v1/`](contract/paraair-cloud-v1/). Unit tests use an in-memory fake of the same contract; `scripts/cloud-e2e.sh` runs the client end to end against the Worker under local `wrangler dev` (sign-in, drive attach and create, upload, range reads, partial overwrite, conflict, quota, trash restore through the CLI, token refresh, sign-out). Nothing has run against a deployed service.
+**The service is not in this repository.** Its Worker lives in a private repository and runs, invite-only, at `cloud.parafield.ai`. The public API contract the client implements is [`contract/paraair-cloud-v1/`](contract/paraair-cloud-v1/). Unit tests use an in-memory fake of the same contract; `scripts/cloud-e2e.sh` runs the client end to end against the Worker under local `wrangler dev` (sign-in, drive attach and create, upload, range reads, partial overwrite, conflict, quota, trash restore through the CLI, token refresh, sign-out).
 
 A build shows the ParaAir Cloud section in Storage Settings only when it knows a service address (Info.plist `ParaAirCloudBaseURL`). Without one the section says ParaAir Cloud isn't available in this build and offers no buttons. With one:
 
@@ -209,14 +209,14 @@ A service credential is a login for a backend (a job that collects records, a re
 
 ```sh
 paraair cloud-drives --cloud-account ID --json                      # the drive's workspaceId
-paraair credentials create --cloud-account ID --workspace WS --name "finance collector" --json
-paraair access set ParaOS /admin/finance --credential cred_… --level write --json   # or --level create
+paraair credentials create --cloud-account ID --workspace WS --name "report collector" --json
+paraair access set MyDrive /shared/reports --credential cred_… --level write --json   # or --level create
 paraair credentials list --cloud-account ID --workspace WS --json
 paraair credentials revoke --cloud-account ID --workspace WS --id cred_… --json
 ```
 
 1. `credentials create` → `{workspaceId, credential: {id, name, createdAt, createdBy, lastUsedAt, revokedAt}, token}`. The token, `pcs_cred_….<secret>`, is in this output only, once, on standard output (the text form prints it on a line of its own with a warning). The service keeps a hash and ParaAir keeps no copy, in the state folder, Keychain or logs, so it can't be shown again: pipe it straight into the backend's secret store (`… --json | jq -r .token`), and if it is lost, revoke the credential and make another. It is never sent again after an answer that may mean the credential was made (a timeout, a server error, a lost or malformed reply), so a failure can't leave a second credential behind; the error then says to check `credentials list` and revoke any you have no token for. Only a 401 (sent again with a renewed sign-in) or a 429 makes it send again; the service gives those answers before making anything. A `--name` that looks like a token is refused (exit 2) without being repeated. At most 20 active credentials per workspace.
-2. A new credential sees nothing. `access set … --credential ID --level write` lets it read and change everything at and under one folder (`/admin/finance` here); `--level create` lets it read, add files and folders and change only files it wrote, without moving or deleting anything; `read` only reads. Only its own rules apply (rules for `members` or `viewers` don't), and it can't manage credentials or rules or purge. `--credential` takes the id (`cred_…`); a token there is refused (exit 2) without being repeated.
+2. A new credential sees nothing. `access set … --credential ID --level write` lets it read and change everything at and under one folder (`/shared/reports` here); `--level create` lets it read, add files and folders and change only files it wrote, without moving or deleting anything; `read` only reads. Only its own rules apply (rules for `members` or `viewers` don't), and it can't manage credentials or rules or purge. `--credential` takes the id (`cred_…`); a token there is refused (exit 2) without being repeated.
 3. The backend sends the token as `Authorization: Bearer` on that workspace's drive routes (`/v1/drives/{d}/…`, see the service's API). Versions it writes show `author: {credential, name, createdBy}` in `versions`, and `access list` shows its rules as `credential:cred_… (name)`.
 4. `credentials list` → `{workspaceId, credentials: [...]}`, revoked ones included, never a token; the text form prints `id, active or revoked <time>, last used, name`. `credentials revoke --id ID` → `{workspaceId, id, revoked}`: the token stops working at once and the credential's folder rules are deleted in every drive of the workspace. Revoking twice succeeds.
 

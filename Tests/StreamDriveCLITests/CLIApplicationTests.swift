@@ -1116,7 +1116,7 @@ extension CLIApplicationTests {
         }
     }
 
-    /// The calls ParaOS's access reconcile (Parafield-OS #22) makes, each with --state-dir first: their JSON shapes and
+    /// The calls a client app's access reconcile makes, each with --state-dir first: their JSON shapes and
     /// exit codes are a contract with that app.
     func testParaOSReconcileCallsKeepTheirShapes() throws {
         let fixture = try cloudFixture(), fake = FakeSystem(), elsewhere = try temporaryDirectory()
