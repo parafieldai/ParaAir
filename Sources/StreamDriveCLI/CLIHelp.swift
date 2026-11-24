@@ -113,9 +113,11 @@ enum CLIHelp {
             when following, then {cursor, change, kind, path, fromPath?, rescan?, version, at, author} per change,
             and {"reset": true, "cursor": N} when changes after your cursor were pruned (rescan, then go on).
             change is create, write, delete, move, restore, mkdir or purge; rescan asks to list that folder again.
-            Only changes at or under FOLDER (or the mounted path's folder) are printed. This Mac's caches drop each
-            path before its line is printed, so reading it through the mount right after gets the new contents.
-            Offline or busy service: --follow waits and goes on.
+            Only changes at or under FOLDER (or the mounted path's folder) are printed. ParaAir's own caches drop each
+            path before its line is printed; macOS may still show a mounted file's old contents for a while (on
+            macOS 26 until the drive is mounted again).
+            Offline or busy service: once following, --follow waits and goes on; without --since, failing to get the
+            first cursor ends it.
             """ + "\n"
         case "access":
             return """

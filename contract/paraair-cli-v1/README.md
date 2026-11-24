@@ -63,7 +63,7 @@ So an integration should:
 - `accounts[].state`: `signedIn` or `signedOut`. `workspaceIds` come from drives attached on this Mac; `cloud-drives` asks the service.
 - `profiles[].backend` (open set): `paraairCloud`, `juicefs`, `local`. Integrations work with `paraairCloud`.
 - `healthy`: mounted, no uploads that keep failing, and not in use on another Mac. Connectivity isn't read here.
-- `knownToApp`: the app has learned this state folder (it mounts the drive at login). A mount request teaches it a folder `connect --new-state-folder` made.
+- `knownToApp`: the app has learned this state folder and keeps its sign-in renewed. It doesn't mean the drive mounts by itself: the app mounts drives when it opens only while the person's **Mount when ParaAir opens** setting is on, which isn't reported here. Use `mount` to mount it now. A mount request teaches the app a folder `connect --new-state-folder` made.
 
 ### `extension-settings`
 
@@ -191,8 +191,8 @@ Tell the lines apart by their keys: `following`, `reset`, `change`, or a lone `c
 - `change` (open set): `create`, `write`, `delete`, `move`, `restore`, `mkdir`, `purge`. `kind`: `file` or `directory`. `fromPath` is present for a move. `version` is `null` for deletes. `rescan: true` asks you to list that folder's subtree again. Treat an unknown `change` like `rescan` of its path's folder.
 - Only changes at or under the folder (or the mounted path's folder) are printed; a move is printed when either end is there.
 - Persist the `cursor` of the last line you handled and pass it as `--since` next time; the CLI keeps no cursor for you.
-- Before a page is printed, this Mac drops its cached metadata for those paths, so reading a path through the mount right after its line gets the new contents.
-- Offline or with the service briefly unavailable, `--follow` waits (up to a minute between tries) and goes on. Any other failure ends the command: with `--json` the error object follows the last line and may span several lines. Read lines until the process exits; on a non-zero exit, parse whatever followed the last complete line as the error object.
+- Before a page is printed, ParaAir drops its own cached metadata for those paths. What macOS caches for a mounted file isn't refreshed at that moment: on macOS 27 the mounted drive reads a changed file fresh once its folder is listed again or the app's refresh marker shows the change (see [The mounted drive](#the-mounted-drive)); on macOS 26 macOS can keep a file's old size and contents until the drive is mounted again. So a read through the mount right after a line may still return the old contents. `cat-version` with the line's `version` reads exactly that version.
+- Once it has printed its `following` line, `--follow` waits out being offline or a briefly unavailable service (up to a minute between tries) and goes on. Without `--since` it first asks the service for the current cursor, and a failure there, offline included, ends the command before the `following` line: start it again later, or pass the cursor you saved as `--since`, which starts following at once. Any other failure ends the command: with `--json` the error object follows the last line and may span several lines. Read lines until the process exits; on a non-zero exit, parse whatever followed the last complete line as the error object.
 
 ### `access`
 
@@ -262,3 +262,4 @@ With `--json`, a failure prints this to standard output, and the process exits w
 
 - A drive the app mounts is at `/Volumes/<Finder name>`; `setup-status` reports its `mountPoint`. Read and write it like any folder. Writes upload in the background; a change that can't upload waits in `conflicts`.
 - While a ParaAir Cloud drive is mounted, the app follows its change feed every 3 seconds and briefly creates and removes `.paraair-refresh` in each folder that changed, so FSEvents reports the folder. Ignore that name.
+- On macOS 27 a file another device changed reads as its new version once its folder is listed again or that marker appears. On macOS 26 macOS keeps a file's cached size and contents until the drive is mounted again.
