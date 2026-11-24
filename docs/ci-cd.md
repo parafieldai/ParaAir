@@ -24,7 +24,7 @@ Status: committed on 2026-10-13. The first pull request is the first real run. S
                                                      squash merge to main (ruleset "main")
                                                                      │
           push to main ──> ci.yml again (saves caches)                │
-          push to main touching site/** ──> pages.yml ──[production: reviewer]──> Cloudflare Pages "paraair"
+          push to main touching site/** ──> pages.yml ──[production: reviewer]──> Worker "paraair-site"
           admin pushes tag v* (ruleset "release tags")
              └──> release.yml ──[release: reviewer]──> sign, notarize, staple ──> DRAFT GitHub Release
                                                                        (operator publishes, then runs
@@ -108,7 +108,7 @@ The disk image is built by `scripts/make-dmg.sh` for both hand-made and CI relea
 
 From v0.1.0-alpha.2 the app updates itself with [Sparkle](https://sparkle-project.org) 2.10.0. `scripts/fetch-sparkle.sh` downloads that exact release and checks its SHA-256. `build-app.sh` links it, embeds it without its XPC services (they exist for sandboxed apps; ParaAir isn't sandboxed) and signs its `Autoupdate` tool, `Updater.app` and the framework with the app's identity before the app itself. Builds without `PARAAIR_RELEASE_TAG` never start the updater.
 
-- **Feed.** `https://paraair.pages.dev/appcast.xml`, the file `site/appcast.xml`, deployed with the site. Archives are the release zips on GitHub.
+- **Feed.** `https://paraair.parafield.ai/appcast.xml`, the file `site/appcast.xml`, deployed with the site. Builds up to alpha 6 have `https://paraair.pages.dev/appcast.xml` built in; that old Pages project (the owner's personal Cloudflare account) has to keep answering for them (see Site). Archives are the release zips on GitHub.
 - **Signatures.** Every archive and the feed itself are signed with one EdDSA key (`SURequireSignedFeed`, `SUVerifyUpdateBeforeExtraction`). The public key is `SUPublicEDKey` in `macOS/App/Info.plist`. The private key lives only in the release Mac's login Keychain under the Sparkle account `paraair`. Back it up with `generate_keys --account paraair -x <file>` into the password manager and delete the file. Losing it means no installed copy can ever accept another update.
 - **Publishing an update.** After the zip is notarized and stapled, run `python3 -I scripts/make-appcast.py --app <stapled app> --archive dist/ParaAir-<version>.zip --tag vX.Y.Z[-stage.N] --notes <notes.html>`. It reads the version and build from the app, signs the archive, puts the entry first, re-signs the feed and verifies it; `--check` validates a feed. Publish the GitHub Release first, then deploy the site with the new feed, so the feed never points at a missing archive. CI does not sign the feed yet: that needs the private key as a `release` secret (`sign_update --ed-key-file`).
 - **Drives during an update.** The file system extension serving every mounted drive runs from the bundle an update replaces. So ParaAir ejects all its drives before installing: when Sparkle relaunches the app, and on any quit while an update is waiting to install on quit (`applicationShouldTerminate`). A newer copy opened from the disk image ejects them too, before it replaces the installed one. A drive with open files keeps the update waiting and says so (`UpdateGate`). Files waiting to upload stay on the Mac and upload once the drive reconnects.
@@ -133,7 +133,11 @@ From v0.1.0-alpha.2 the app updates itself with [Sparkle](https://sparkle-projec
 
 ### Site (`.github/workflows/pages.yml`)
 
-Trigger: a push to `main` that changes `site/**`, `scripts/check-site.py`, `.github/deploy-tools/**` or the workflow, or **Run workflow** on `main`. Runs `check-site.py`, then waits for approval on `production`, installs the pinned Wrangler and runs `wrangler pages deploy site --project-name=paraair --branch=main` with the commit hash and subject.
+Trigger: a push to `main` that changes `site/**`, `site.wrangler.jsonc`, `scripts/check-site.py`, `.github/deploy-tools/**` or the workflow, or **Run workflow** on `main`. Runs `check-site.py`, then waits for approval on `production`, installs the pinned Wrangler, runs `wrangler deploy -c site.wrangler.jsonc` and checks that the live appcast equals `site/appcast.xml`.
+
+- **Where it runs (since 2026-11-24).** `site/` is the static assets of the Worker `paraair-site` in Parafield's Cloudflare account, at the custom domain `https://paraair.parafield.ai` (`_headers` applies as on Pages). Wrangler 4.135 no longer creates Pages projects, so a static-assets Worker replaces the old Pages project `paraair` (`paraair.pages.dev`, the owner's personal account).
+- **By hand.** From public `main`: `cloud/node_modules/.bin/wrangler deploy -c site.wrangler.jsonc` with a wrangler login of Parafield's account, then check the live pages and appcast with curl.
+- **Old address.** alpha 3 to alpha 6 check `https://paraair.pages.dev/appcast.xml`. The old project must keep answering: with a `_redirects` of `/appcast.xml https://paraair.parafield.ai/appcast.xml 301` and `/* https://paraair.parafield.ai/:splat 301` if Sparkle follows a cross-host redirect for the feed, otherwise with a full copy of `site/`. Only the owner's personal Cloudflare login can deploy there.
 
 ### Secrets and variables
 
@@ -166,8 +170,7 @@ The three profiles are the ones `scripts/prepare-signing.py validate` already ac
 
 | Name | Source |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare > My Profile > API Tokens > custom token, permission Account > Cloudflare Pages > Edit, limited to the account that owns the `paraair` project |
-| `CLOUDFLARE_ACCOUNT_ID` | that account's ID (dashboard sidebar) |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare > My Profile > API Tokens > custom token for Parafield's account only: Account > Workers Scripts > Edit, and Zone `parafield.ai` > Workers Routes > Edit. The account ID is in `site.wrangler.jsonc`. |
 
 ## Repository settings
 

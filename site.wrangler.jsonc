@@ -1,0 +1,12 @@
+// The landing page and the update feed: site/ served as static assets by the Worker "paraair-site" in Parafield's
+// Cloudflare account, at https://paraair.parafield.ai (docs/ci-cd.md, "Site"). Deployed by .github/workflows/pages.yml,
+// or by hand with `wrangler deploy -c site.wrangler.jsonc` from main. The account ID is not a secret.
+{
+  "name": "paraair-site",
+  "account_id": "8a8c2293ec2934f604f00baf3dc3e3fc",
+  "compatibility_date": "2026-11-01",
+  "assets": { "directory": "./site", "html_handling": "auto-trailing-slash" },
+  "routes": [{ "pattern": "paraair.parafield.ai", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false
+}

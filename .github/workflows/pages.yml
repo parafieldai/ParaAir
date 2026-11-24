@@ -1,11 +1,11 @@
-# Landing page deploy (CD): site/ -> Cloudflare Pages project "paraair" (https://paraair.pages.dev).
-# See docs/ci-cd.md, "Site".
+# Landing page and update feed deploy (CD): site/ -> the Worker "paraair-site" (static assets) in Parafield's Cloudflare
+# account, at https://paraair.parafield.ai. Configuration: site.wrangler.jsonc. See docs/ci-cd.md, "Site".
 #
 # Trigger: a push to main that touches site/ (or this deploy setup), or "Run workflow" on main.
 # The job waits for a required reviewer on the "production" environment.
-# Secrets (environment secrets of "production"):
-#   CLOUDFLARE_API_TOKEN   API token with Account > Cloudflare Pages > Edit on the ParaAir account only
-#   CLOUDFLARE_ACCOUNT_ID  that account's ID
+# Secret (environment secret of "production"):
+#   CLOUDFLARE_API_TOKEN   API token for Parafield's account only: Account > Workers Scripts > Edit and
+#                          Zone parafield.ai > Workers Routes > Edit (the custom domain already exists)
 # Wrangler and its whole dependency tree come from .github/deploy-tools/package-lock.json
 # (npm ci, install scripts off), so nothing unpinned runs while the token is in the environment.
 name: Pages
@@ -15,6 +15,7 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "site.wrangler.jsonc"
       - "scripts/check-site.py"
       - ".github/deploy-tools/**"
       - ".github/workflows/pages.yml"
@@ -35,7 +36,7 @@ jobs:
     timeout-minutes: 15
     environment:
       name: production
-      url: https://paraair.pages.dev
+      url: https://paraair.parafield.ai
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,16 +49,17 @@ jobs:
           package-manager-cache: false
       - name: Install the pinned Wrangler
         run: npm ci --prefix .github/deploy-tools --ignore-scripts --no-audit --no-fund
-      - name: Deploy site/ to Cloudflare Pages
+      - name: Deploy site/ to the paraair-site Worker (paraair.parafield.ai)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
         run: |
-          if [[ -z "$CLOUDFLARE_API_TOKEN" || -z "$CLOUDFLARE_ACCOUNT_ID" ]]; then
-            echo "::error::Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID as secrets of the production environment."
+          if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then
+            echo "::error::Set CLOUDFLARE_API_TOKEN as a secret of the production environment (see docs/ci-cd.md, Site)."
             exit 1
           fi
-          .github/deploy-tools/node_modules/.bin/wrangler pages deploy site \
-            --project-name=paraair --branch=main --commit-hash="$GITHUB_SHA" \
-            --commit-message="$(git log -1 --format=%s "$GITHUB_SHA")"
+          .github/deploy-tools/node_modules/.bin/wrangler deploy -c site.wrangler.jsonc
+      - name: Check the live feed
+        run: |
+          live="$(curl -fsS "https://paraair.parafield.ai/appcast.xml?deploy=$GITHUB_SHA")"
+          diff <(printf '%s\n' "$live") site/appcast.xml > /dev/null || { echo "::error::The live appcast differs from site/appcast.xml"; exit 1; }

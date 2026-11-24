@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 /// Glide brand tokens for SwiftUI. Values come from BrandIconGeometry.palette and the website
-/// (site/styles.css), so the app, the icon, the menu mark and paraair.pages.dev share one system:
+/// (site/styles.css), so the app, the icon, the menu mark and paraair.parafield.ai share one system:
 /// charcoal paper and warm ink in Dark mode, the reverse in Light, sage as the accent.
 enum Glide {
     static let charcoal = color(0)

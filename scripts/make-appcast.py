@@ -65,7 +65,7 @@ def empty_feed():
             f'<rss version="2.0" xmlns:sparkle="{SPARKLE}">\n'
             "  <channel>\n"
             "    <title>ParaAir</title>\n"
-            "    <link>https://paraair.pages.dev/appcast.xml</link>\n"
+            "    <link>https://paraair.parafield.ai/appcast.xml</link>\n"
             "    <description>ParaAir updates</description>\n"
             "    <language>en</language>\n"
             "  </channel>\n"
