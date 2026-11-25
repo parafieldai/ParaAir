@@ -60,6 +60,12 @@ jobs:
           fi
           .github/deploy-tools/node_modules/.bin/wrangler deploy -c site.wrangler.jsonc
       - name: Check the live feed
+        # A new upload can take a few seconds to reach every location; the first read right after the deploy may still
+        # get the previous feed. Retry for up to a minute before calling it a mismatch.
         run: |
-          curl -fsS -o "$RUNNER_TEMP/appcast.xml" "https://paraair.parafield.ai/appcast.xml?deploy=$GITHUB_SHA"
-          cmp -s "$RUNNER_TEMP/appcast.xml" site/appcast.xml || { echo "::error::The live appcast differs from site/appcast.xml"; exit 1; }
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            curl -fsS -o "$RUNNER_TEMP/appcast.xml" "https://paraair.parafield.ai/appcast.xml?deploy=$GITHUB_SHA&try=$attempt" \
+              && cmp -s "$RUNNER_TEMP/appcast.xml" site/appcast.xml && { echo "The live appcast matches (try $attempt)"; exit 0; }
+            sleep 5
+          done
+          echo "::error::The live appcast still differs from site/appcast.xml after a minute"; exit 1
