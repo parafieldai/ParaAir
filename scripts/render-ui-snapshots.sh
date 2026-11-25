@@ -12,13 +12,13 @@ mkdir -p "$root/.build/uiux"
 xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macos26.0" \
   -sdk "$(xcrun --sdk macosx --show-sdk-path)" -module-cache-path "$root/.build/uiux/ModuleCache" \
   -I "$products" -I "$root/Sources/CSQLite" \
-  "$root/macOS/App/BrandIconGeometry.swift" "$root/macOS/App/GlideStyle.swift" \
+  "$root/macOS/App/BrandIconGeometry.swift" "$root/macOS/App/AirStyle.swift" "$root/macOS/App/AboutView.swift" \
   "$root/macOS/App/HomePresentation.swift" "$root/macOS/App/HomeViews.swift" \
   "$root/macOS/App/ConnectionsView.swift" "$root/macOS/App/CloudAccountModel.swift" \
   "$root/macOS/App/CloudAccountSection.swift" "$root/macOS/App/CloudBillingPresentation.swift" "$root/macOS/App/CloudMembers.swift" "$root/macOS/App/CloudAccountDeletion.swift" \
   "$root/macOS/App/CloudPlanViews.swift" "$root/macOS/App/DriveActivity.swift" \
   "$root/macOS/App/LoginItem.swift" "$root/macOS/App/RecoverDrivePrompt.swift" "$root/macOS/App/ChangesReview.swift" \
-  "$root/macOS/App/LegalLinks.swift" \
+  "$root/macOS/App/LegalLinks.swift" "$root/macOS/App/DriveAppearance.swift" "$root/macOS/App/DriveAppearanceView.swift" \
   "$root/macOS/Tests/UISnapshots.swift" \
   "$products/StreamDriveCore.o" -lsqlite3 -o "$root/.build/uiux/ui-snapshots"
 "$root/.build/uiux/ui-snapshots" "$out"

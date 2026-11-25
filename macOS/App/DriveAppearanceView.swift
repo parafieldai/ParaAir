@@ -20,30 +20,38 @@ struct DriveAppearanceView: View {
         _customIcon = State(initialValue: try? DriveAppearance(stateRoot: stateRoot).customPNG(profile))
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Drive appearance").font(.glideDisplay(.title)).foregroundStyle(Glide.ink)
-            HStack(spacing: 22) {
-                Image(nsImage: preview).resizable().scaledToFit().frame(width: 80, height: 80)
-                VStack(alignment: .leading, spacing: 10) {
-                    TextField("Finder name", text: $driveName).textFieldStyle(.roundedBorder)
-                    HStack {
+        VStack(alignment: .leading, spacing: 22) {
+            Text("Drive appearance").airDisplay(Air.Size.title).foregroundStyle(Air.ink)
+            HStack(alignment: .center, spacing: 22) {
+                Image(nsImage: preview).resizable().scaledToFit()
+                    .frame(width: 72, height: 72)
+                    .frame(width: 104, height: 104)
+                    .background(AirSurface(radius: 22))
+                    .id(customIcon)
+                    .airTransition(.words)
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField("Finder name", text: $driveName).airField()
+                    HStack(spacing: Air.Space.sm) {
                         Button("Choose image…") { chooseImage() }
                         Button("Use default icon") { customIcon = nil; iconChanged = true }
                             .disabled(customIcon == nil)
                     }
+                    .controlSize(.small)
                 }
             }
+            .airAnimation(AirMotion.settle, value: customIcon)
             Text("The name updates in Finder’s sidebar. The volume name updates on the next mount. Your chosen icon appears in ParaAir; Finder may keep its system sidebar icon.")
-                .font(.callout).foregroundStyle(Glide.quiet)
-            if let error { Text(error).font(.callout).foregroundStyle(Glide.problem).textSelection(.enabled) }
-            HStack {
+                .font(.callout).foregroundStyle(Air.quiet)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error { Text(error).font(.callout).foregroundStyle(Air.problem).textSelection(.enabled) }
+            HStack(spacing: Air.Space.sm) {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") { save() }.keyboardShortcut(.defaultAction).buttonStyle(.glideProminent)
+                Button("Save") { save() }.keyboardShortcut(.defaultAction).buttonStyle(.airProminent)
             }
         }
-        .padding(24).frame(width: 460)
-        .glideSurface()
+        .padding(28).frame(width: 470)
+        .airSurface()
     }
     private var preview: NSImage {
         if let customIcon, let image = NSImage(data: customIcon) { return image }

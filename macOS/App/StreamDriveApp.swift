@@ -19,18 +19,12 @@ struct StreamDriveApp: App {
     var body: some Scene {
         Window("ParaAir", id: "connections") {
             // Paper behind the title bar too, so the window reads as one surface.
-            DriveHomeView(model: model).containerBackground(Glide.paper, for: .window)
+            DriveHomeView(model: model).containerBackground(Air.paper, for: .window)
         }.defaultSize(width: 620, height: 640)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About ParaAir") {
-                    // The standard panel, with the release stage beside the version: "0.1.0 alpha 2 (148)".
-                    let version = AppVersionText.current
-                    var options: [NSApplication.AboutPanelOptionKey: Any] = [.applicationVersion: version.title]
-                    if let build = version.build { options[.version] = build }
-                    options[.credits] = LegalLinks.aboutCredits()
-                    NSApp.orderFrontStandardAboutPanel(options: options)
-                }
+                // ParaAir's own About window: the release stage beside the version ("0.1.0 alpha 2"), the build, the legal pages.
+                AboutMenuButton()
             }
             CommandGroup(after: .appInfo) {
                 if model.updater.isAvailable { CheckForUpdatesButton(updater: model.updater) }
@@ -45,8 +39,15 @@ struct StreamDriveApp: App {
                             onSaved: { model.offerDrive($0) },
                             onCloudDriveReady: { model.adoptStateRoot($0) })
                 .id(model.stateRoot)
-                .containerBackground(Glide.paper, for: .window)
+                .containerBackground(Air.paper, for: .window)
         }.defaultSize(width: 680, height: 730)
+        Window("About ParaAir", id: "about") {
+            AboutView().containerBackground(Air.paper, for: .window)
+        }
+        .windowResizability(.contentSize)
+        .windowStyle(.hiddenTitleBar)
+        .restorationBehavior(.disabled)
+        .defaultPosition(.center)
         MenuBarExtra {
             MenuBarPanel(input: model.homeInputs(), details: model.homeDetails(),
                          connectAutomatically: $model.mountOnLaunch,

@@ -367,27 +367,28 @@ struct CloudMembersSection: View {
     let account: CloudAccount
 
     var body: some View {
-        Section {
+        AirSection {
             if model.rules.canManage {
                 content
             } else {
                 Text("Only owners and admins of \(workspace.name) can see and change its members.")
-                    .foregroundStyle(Glide.quiet)
+                    .foregroundStyle(Air.quiet)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } header: {
             HStack {
-                Text("Members").font(.glideHeading).foregroundStyle(Glide.ink)
+                Text("Members")
                 Spacer()
                 if model.rules.canManage, model.members != nil {
                     if model.refreshing { ProgressView().controlSize(.small) }
-                    Button("Refresh", action: model.reload).disabled(model.work != nil || model.refreshing).controlSize(.small)
+                    Button("Refresh", action: model.reload).disabled(model.work != nil || model.refreshing)
+                        .buttonStyle(.airText).controlSize(.small)
                 }
             }
         } footer: {
             if model.rules.canManage {
                 Text("Members read and change files, viewers only read them. Admins also manage members and folder access.")
-                    .foregroundStyle(Glide.quiet)
+                    .foregroundStyle(Air.quiet)
             }
         }
         .onAppear { model.show(workspace: workspace, account: account) }
@@ -416,7 +417,7 @@ struct CloudMembersSection: View {
         case .idle, .loading:
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
-                Text("Loading members…").foregroundStyle(Glide.quiet)
+                Text("Loading members…").foregroundStyle(Air.quiet)
             }
         case .failed(let message):
             ErrorLine(text: message)
@@ -443,9 +444,8 @@ struct CloudMembersSection: View {
                     Text(seats.line).monospacedDigit()
                 }
                 if let fraction = seats.fraction {
-                    ProgressView(value: fraction)
-                        .tint(seats.full ? Glide.attention : Glide.controlTint)
-                        .accessibilityLabel(seats.line)
+                    AirMeter(fraction: fraction, tone: seats.full ? Air.attention : Air.ink)
+                        .padding(.top, 4)
                 }
             }
             .accessibilityElement(children: .combine)
@@ -462,18 +462,17 @@ struct CloudMembersSection: View {
                 TextField("Invite by email", text: $model.email, prompt: Text(verbatim: "name@example.com"))
                     .textContentType(.emailAddress)
                     .onSubmit { model.invite() }
-                Picker("Role", selection: $model.inviteRole) {
+                    .airField()
+                AirMenuPicker("Role", selection: $model.inviteRole, value: CloudMemberText.role(model.inviteRole)) {
                     ForEach(model.rules.inviteRoles, id: \.self) { Text(CloudMemberText.role($0)).tag($0) }
                 }
-                .labelsHidden()
-                .fixedSize()
                 Button("Invite") { model.invite() }
+                    .buttonStyle(.airProminent)
                     .disabled(!model.canInvite)
                 if model.work == .inviting { ProgressView().controlSize(.small) }
             }
             .disabled(full || model.work != nil)
             Toggle("Email them an invitation", isOn: $model.notify)
-                .glideControlTint()
                 .disabled(full || model.work != nil)
         }
     }
@@ -493,16 +492,14 @@ private struct MemberRow: View {
             HStack(spacing: 10) {
                 if busy { ProgressView().controlSize(.small) }
                 if choices.isEmpty {
-                    Text(CloudMemberText.role(member.role)).foregroundStyle(Glide.quiet)
+                    Text(CloudMemberText.role(member.role)).foregroundStyle(Air.quiet)
                 } else {
-                    Picker("Role", selection: Binding(
+                    AirMenuPicker("Role of \(member.email)", selection: Binding(
                         get: { ParaAirCloudMemberRole(rawValue: member.role) ?? .member },
-                        set: { change($0) })) {
+                        set: { change($0) }), value: CloudMemberText.role(member.role)) {
                         ForEach(choices, id: \.self) { Text(CloudMemberText.role($0)).tag($0) }
                     }
-                    .labelsHidden()
-                    .fixedSize()
-                    .accessibilityLabel("Role of \(member.email)")
+                    .controlSize(.small)
                     .disabled(work != nil)
                 }
                 if rules.canRemove(member) {

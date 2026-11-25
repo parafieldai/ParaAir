@@ -52,6 +52,17 @@ struct UISnapshots {
         }
         try renderLoginItem(output: output)
         try renderReview(output: output)
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(AboutView(version: AppVersionText(title: "0.1.0 alpha 10", build: "59")), size: nil, appearance: appearance,
+                       to: output.appendingPathComponent("about-\(suffix(appearance)).png"))
+        }
+        let appearanceRoot = FileManager.default.temporaryDirectory.appendingPathComponent("paraair-ui-appearance-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: appearanceRoot) }
+        let footage = DriveProfile(name: "Client-Footage", backend: .paraairCloud, blockSize: 4_194_304, displayName: "Client Footage")
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(DriveAppearanceView(profile: footage, stateRoot: appearanceRoot) { _ in }, size: nil, appearance: appearance,
+                       to: output.appendingPathComponent("appearance-\(suffix(appearance)).png"))
+        }
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("paraair-ui-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -90,12 +101,7 @@ struct UISnapshots {
                 expect(FileManager.default.fileExists(atPath: site.appendingPathComponent(page.id + ".html").path), "site has \(page.id).html")
             }
         }
-        let credits = LegalLinks.aboutCredits()
-        var links: [URL] = []
-        credits.enumerateAttribute(.link, in: NSRange(location: 0, length: credits.length)) { value, _, _ in
-            if let url = value as? URL { links.append(url) }
-        }
-        expect(links == LegalLinks.about.map(\.url), "the About panel links every About page")
+        expect(AboutView.pages == LegalLinks.about, "the About window links every About page")
         return failures
     }
 
@@ -1978,14 +1984,17 @@ struct UISnapshots {
         try bitmap.representation(using: .png, properties: [:])?.write(to: url)
     }
 
-    /// The prominent button sits beside native push buttons, so it must match their height.
+    /// The ink button sits beside glass ones in a row, so both take the capsule height for their control size.
     @MainActor
     static func checkButtonHeights() -> [String] {
         var failures: [String] = []
         for (name, size) in [("small", ControlSize.small), ("regular", .regular), ("large", .large), ("extraLarge", .extraLarge)] {
-            let glide = NSHostingView(rootView: Button("Open System Settings") {}.buttonStyle(.glideProminent).controlSize(size)).fittingSize.height
-            let native = NSHostingView(rootView: Button("Check Again") {}.controlSize(size)).fittingSize.height
-            if glide != native { failures.append("button height (\(name)): prominent \(glide) vs native \(native)") }
+            let ink = NSHostingView(rootView: Button("Open System Settings") {}.buttonStyle(.airProminent).controlSize(size)).fittingSize.height
+            let glass = NSHostingView(rootView: Button("Check Again") {}.buttonStyle(.airGlass).controlSize(size)).fittingSize.height
+            let expected = AirButtonMetrics(size).height
+            if ink != expected || glass != expected {
+                failures.append("button height (\(name)): ink \(ink), glass \(glass), expected \(expected)")
+            }
         }
         return failures
     }
@@ -2070,7 +2079,8 @@ struct UISnapshots {
 
     @MainActor
     static func render<V: View>(_ view: V, size: CGSize?, appearance: NSAppearance.Name, to url: URL) throws {
-        let host = NSHostingView(rootView: view.environment(\.controlActiveState, .key))
+        // Ambient motion (the airflow drift, the working shimmer) holds still, so captures show the resting frame.
+        let host = NSHostingView(rootView: view.environment(\.controlActiveState, .key).environment(\.airAmbientMotion, false))
         let frameSize = size ?? host.fittingSize
         host.frame = NSRect(origin: .zero, size: frameSize)
         let window = KeyLookingWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)

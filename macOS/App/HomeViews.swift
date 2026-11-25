@@ -60,93 +60,110 @@ struct DriveHomeContent: View {
     var body: some View {
         let presentation = self.presentation
         let listsDrives = !presentation.drives.isEmpty
-        VStack(spacing: 0) {
+        AirPage(field: true) {
             // With several drives the header is ParaAir's, and its status sums them up; one drive's name or icon
             // would read as if its state were every drive's.
-            DriveHeader(name: listsDrives ? "ParaAir" : input.driveName ?? "ParaAir", icon: listsDrives ? nil : details.driveIcon,
-                        status: presentation.status, iconSize: 56, titleFont: .glideDisplay(.largeTitle))
-                .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 6)
-            Form {
-                Section {
+            VStack(alignment: .leading, spacing: 0) {
+                DriveHeader(name: listsDrives ? "ParaAir" : input.driveName ?? "ParaAir", icon: listsDrives ? nil : details.driveIcon,
+                            status: presentation.status, size: .window)
+                VStack(alignment: .leading, spacing: 0) {
                     Text(presentation.status.detail)
-                        .foregroundStyle(Glide.quiet)
+                        .foregroundStyle(Air.quiet)
                         .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 380, alignment: .leading)
+                        .padding(.top, Air.Space.md)
+                        .id(presentation.status.detail)
+                        .airTransition(.words)
                     if presentation.showsSwitchPicture, let picture = HomeImages.extensionSwitch {
                         Image(nsImage: picture)
                             .resizable().aspectRatio(contentMode: .fit)
                             .frame(maxWidth: 435)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .clipShape(RoundedRectangle(cornerRadius: Air.Radius.inset, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: Air.Radius.inset, style: .continuous).strokeBorder(Air.cardEdge))
+                            .padding(.top, Air.Space.lg)
                             .accessibilityLabel("System Settings, File System Extensions: \(ExtensionSetupGuidance.switchName), switched on")
                     }
-                    if presentation.showsPrimary { ActionRow(presentation: presentation, actions: actions, large: true) }
-                }
-                if let update = input.updateTitle, let install = actions.checkForUpdates {
-                    Section { UpdateReadyRow(title: update, install: install) }
-                }
-                if listsDrives {
-                    Section {
-                        ForEach(presentation.drives) { row in
-                            DriveListRow(row: row, perform: actions.drive)
-                        }
-                    } header: {
-                        Text("Drives").font(.glideHeading).foregroundStyle(Glide.ink)
+                    if presentation.showsPrimary {
+                        ActionRow(presentation: presentation, actions: actions, large: true).padding(.top, 20)
                     }
                 }
-                if !presentation.notices.isEmpty {
-                    Section {
-                        ForEach(presentation.notices) { NoticeRow(notice: $0, perform: actions.perform) }
+                .padding(.leading, DriveHeader.Size.window.textInset)
+            }
+            .padding(.top, 6)
+
+            if let update = input.updateTitle, let install = actions.checkForUpdates {
+                AirSection { UpdateReadyRow(title: update, install: install) }
+            }
+            if listsDrives {
+                AirSection {
+                    ForEach(presentation.drives) { row in
+                        DriveListRow(row: row, perform: actions.drive)
                     }
-                }
-                if !presentation.steps.isEmpty {
-                    Section {
-                        ForEach(presentation.steps) { StepRow(step: $0) }
-                    } header: {
-                        Text("Setup").font(.glideHeading).foregroundStyle(Glide.ink)
-                    }
-                }
-                if input.hasDrive {
-                    Section {
-                        LabeledContent("Storage", value: details.storageSummary ?? "Saved storage connection")
-                        if let cloud = input.cloudUsage {
-                            PlanRows(usage: CloudUsagePresentation.make(cloud.workspace, state: cloud.state))
-                            CloudBillingRows(billing: cloud.billing)
-                        }
-                        LabeledContent("In Finder") {
-                            Text(input.mounted ? (details.mountPath ?? "Mounted") : "Not connected")
-                                .font(input.mounted ? .body.monospaced() : .body)
-                                .textSelection(.enabled)
-                        }
-                        HStack {
-                            // Not again here when the drive status already leads with choosing a plan.
-                            if let controls = input.cloudUsage?.billing.controls.filter({ $0.action != .choosePlan || presentation.primary.action != .choosePlan }),
-                               !controls.isEmpty {
-                                CloudBillingButtons(controls: controls, allowsProminence: false, perform: actions.billing)
-                            }
-                            Button("Drive Appearance…", action: actions.editAppearance)
-                                .disabled(!details.canEditAppearance)
-                            Button("Storage Settings…", action: actions.openStorageSettings)
-                        }
-                    } header: {
-                        // Beside other drives, these details are the selected folder's drive: say which one.
-                        Text(listsDrives ? input.driveName ?? "Drive" : "Drive").font(.glideHeading).foregroundStyle(Glide.ink)
-                            .lineLimit(1).truncationMode(.middle)
-                    }
-                }
-                Section {
-                    Toggle(Self.connectAutomaticallyTitle(listsDrives: listsDrives), isOn: $connectAutomatically)
-                        .glideControlTint()
-                    if let loginItem { LoginItemToggle(model: loginItem) }
-                    DisclosureGroup("Advanced", isExpanded: $showsAdvanced) {
-                        AdvancedControls(input: input, details: details, actions: actions,
-                                         checkUpdatesAutomatically: checkUpdatesAutomatically)
-                    }
+                } header: {
+                    Text("Drives")
                 }
             }
-            .formStyle(.grouped)
+            if !presentation.notices.isEmpty {
+                AirSection {
+                    ForEach(presentation.notices) { NoticeRow(notice: $0, perform: actions.perform) }
+                }
+            }
+            if !presentation.steps.isEmpty {
+                AirSection {
+                    ForEach(presentation.steps) { StepRow(step: $0) }
+                } header: {
+                    Text("Setup")
+                }
+            }
+            if input.hasDrive {
+                AirSection {
+                    LabeledContent("Storage", value: details.storageSummary ?? "Saved storage connection")
+                    if let cloud = input.cloudUsage {
+                        PlanRows(usage: CloudUsagePresentation.make(cloud.workspace, state: cloud.state))
+                        CloudBillingRows(billing: cloud.billing)
+                    }
+                    LabeledContent("In Finder") {
+                        Text(input.mounted ? (details.mountPath ?? "Mounted") : "Not connected")
+                            .font(input.mounted ? .body.monospaced() : .body)
+                            .textSelection(.enabled)
+                    }
+                    HStack(spacing: Air.Space.sm) {
+                        // Not again here when the drive status already leads with choosing a plan.
+                        if let controls = input.cloudUsage?.billing.controls.filter({ $0.action != .choosePlan || presentation.primary.action != .choosePlan }),
+                           !controls.isEmpty {
+                            CloudBillingButtons(controls: controls, allowsProminence: false, perform: actions.billing)
+                        }
+                        Button("Drive Appearance…", action: actions.editAppearance)
+                            .disabled(!details.canEditAppearance)
+                        Button("Storage Settings…", action: actions.openStorageSettings)
+                    }
+                } header: {
+                    // Beside other drives, these details are the selected folder's drive: say which one.
+                    Text(listsDrives ? input.driveName ?? "Drive" : "Drive")
+                        .lineLimit(1).truncationMode(.middle)
+                }
+            }
+            AirSection {
+                Toggle(Self.connectAutomaticallyTitle(listsDrives: listsDrives), isOn: $connectAutomatically)
+                if let loginItem { LoginItemToggle(model: loginItem) }
+                DisclosureGroup("Advanced", isExpanded: $showsAdvanced) {
+                    AdvancedControls(input: input, details: details, actions: actions,
+                                     checkUpdatesAutomatically: checkUpdatesAutomatically)
+                }
+            }
         }
-        .glideSurface()
+        // Rows, notices and sections that come and go settle into place; the headline's words blur across.
+        .airAnimation(AirMotion.settle, value: Self.motionKey(presentation))
+        .airSurface()
         .frame(minWidth: 560, minHeight: 520)
         .onAppear { if startsWithAdvancedOpen { showsAdvanced = true } }
+    }
+
+    /// What changes the layout: the status and the lists' members.
+    static func motionKey(_ presentation: HomePresentation) -> [String] {
+        [presentation.status.title, presentation.status.detail, presentation.primary.title]
+            + presentation.drives.map { "\($0.id):\($0.stateTitle)" } + presentation.notices.map(\.id)
+            + presentation.steps.map { "\($0.id):\($0.state)" }
     }
 
     /// The setting connects the selected folder's drive and the drives kept for login alike.
@@ -167,9 +184,9 @@ struct MenuBarPanel: View {
     var body: some View {
         let presentation = HomePresentation.make(input)
         let listsDrives = !presentation.drives.isEmpty
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             DriveHeader(name: listsDrives ? "ParaAir" : input.driveName ?? "ParaAir", icon: listsDrives ? nil : details.driveIcon,
-                        status: presentation.status, iconSize: 34, titleFont: .glideDisplay(.title2, weight: .semibold))
+                        status: presentation.status, size: .panel)
             if let update = input.updateTitle, let install = actions.checkForUpdates {
                 UpdateReadyRow(title: update, install: install, compact: true)
             }
@@ -178,22 +195,24 @@ struct MenuBarPanel: View {
             }
             if presentation.showsPrimary { ActionRow(presentation: presentation, actions: actions, large: false) }
             if listsDrives {
-                VStack(alignment: .leading, spacing: 10) {
+                AirRows(padding: 14) {
                     ForEach(presentation.drives) { row in
                         DriveListRow(row: row, compact: true, perform: actions.drive)
                     }
                 }
             }
-            Divider()
-            HStack(spacing: 8) {
+            PanelRule()
+            HStack(spacing: Air.Space.sm) {
                 Button("Show ParaAir", action: actions.showHome)
                 Button("Storage Settings…", action: actions.openStorageSettings)
             }
-            Toggle(DriveHomeContent.connectAutomaticallyTitle(listsDrives: listsDrives), isOn: $connectAutomatically)
-                .toggleStyle(.checkbox)
-                .glideControlTint()
-            if let loginItem { LoginItemToggle(model: loginItem, style: .panel) }
-            Divider()
+            .controlSize(.small)
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(DriveHomeContent.connectAutomaticallyTitle(listsDrives: listsDrives), isOn: $connectAutomatically)
+                if let loginItem { LoginItemToggle(model: loginItem, style: .panel) }
+            }
+            .controlSize(.small)
+            PanelRule()
             HStack {
                 Menu("More") {
                     AdvancedMenuItems(input: input, details: details, actions: actions)
@@ -201,43 +220,101 @@ struct MenuBarPanel: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 Spacer()
-                Button("Quit ParaAir", action: actions.quit)
+                Button("Quit ParaAir", action: actions.quit).buttonStyle(.airText)
             }
         }
-        .padding(16)
+        .padding(18)
         .frame(width: 320)
-        .glideSurface()
+        .airFieldBackground(150)
+        .airAnimation(AirMotion.settle, value: DriveHomeContent.motionKey(presentation))
+        .airSurface()
     }
+}
+
+/// A hairline across the panel.
+private struct PanelRule: View {
+    var body: some View { Rectangle().fill(Air.rule).frame(height: 1).accessibilityHidden(true) }
 }
 
 // MARK: - Shared pieces
 
+/// The drive's name over its state, set as one two-tone headline: the name in ink, the state quiet beside its tone's
+/// symbol. When the state changes, the new words come out of a blur.
 private struct DriveHeader: View {
+    enum Size {
+        case window, panel
+        var display: CGFloat { self == .window ? Air.Size.hero : Air.Size.panel }
+        var icon: CGFloat { self == .window ? 46 : 30 }
+        var gap: CGFloat { self == .window ? 16 : 12 }
+        /// Where the text column starts, so what follows the header lines up under the name.
+        var textInset: CGFloat { icon + gap }
+    }
+
     let name: String
     let icon: NSImage?
     let status: HomePresentation.Status
-    let iconSize: CGFloat
-    let titleFont: Font
+    let size: Size
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .top, spacing: size.gap) {
             Group {
                 if let icon {
                     Image(nsImage: icon).resizable().scaledToFit()
                 } else {
                     // The bare mark, as in the website's masthead: no tile behind it.
-                    GlideMark(badge: false).padding(iconSize * 0.12)
+                    ParaAirMark(badge: false).padding(size.icon * 0.08)
                 }
             }
-            .frame(width: iconSize, height: iconSize)
+            .frame(width: size.icon, height: size.icon)
+            .padding(.top, size == .window ? 4 : 1)
             .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(name).font(titleFont).foregroundStyle(Glide.ink).lineLimit(1).truncationMode(.middle)
-                StatusLabel(status: status)
+            VStack(alignment: .leading, spacing: size == .window ? 1 : 3) {
+                Text(name)
+                    .airDisplay(size.display)
+                    .foregroundStyle(Air.ink)
+                    .lineLimit(1).truncationMode(.middle)
+                    .minimumScaleFactor(0.8)
+                    .airClearsField()
+                statusLine
+                    .airClearsField()
+                    .id(status.title)
+                    .airTransition(.words)
             }
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var statusLine: some View {
+        if size == .window {
+            // The state at the name's size when it fits on one line; long states step down rather than stack.
+            ViewThatFits(in: .horizontal) {
+                StatusHeadline(status: status, size: size.display).fixedSize()
+                StatusHeadline(status: status, size: 23).fixedSize()
+                StatusHeadline(status: status, size: 19).fixedSize(horizontal: false, vertical: true)
+            }
+        } else {
+            StatusLabel(status: status).font(.system(size: 13))
+        }
+    }
+}
+
+/// The headline's second line: the tone's symbol, then the state in the quiet tone.
+private struct StatusHeadline: View {
+    let status: HomePresentation.Status
+    let size: CGFloat
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: size * 0.28) {
+            Image(systemName: StatusLabel.symbol(status.tone))
+                .font(.system(size: size * 0.58, weight: .semibold))
+                .foregroundStyle(StatusLabel.color(status.tone))
+                .accessibilityHidden(true)
+            Text(status.title)
+                .airDisplay(size, weight: .regular)
+                .foregroundStyle(Air.quiet)
+                .airShimmer(status.tone == .working)
+        }
     }
 }
 
@@ -246,12 +323,12 @@ struct StatusLabel: View {
 
     var body: some View {
         Label {
-            Text(status.title)
+            Text(status.title).airShimmer(status.tone == .working)
         } icon: {
             Image(systemName: Self.symbol(status.tone)).foregroundStyle(Self.color(status.tone))
         }
         .font(.callout)
-        .foregroundStyle(Glide.quiet)
+        .foregroundStyle(Air.quiet)
     }
 
     static func symbol(_ tone: HomePresentation.Tone) -> String {
@@ -266,11 +343,11 @@ struct StatusLabel: View {
 
     static func color(_ tone: HomePresentation.Tone) -> Color {
         switch tone {
-        case .good: return Glide.good
-        case .working: return .secondary
-        case .attention: return Glide.attention
-        case .problem: return Glide.problem
-        case .neutral: return .secondary
+        case .good: return Air.good
+        case .working: return Air.quiet
+        case .attention: return Air.attention
+        case .problem: return Air.problem
+        case .neutral: return Air.quiet
         }
     }
 }
@@ -287,8 +364,7 @@ private struct ActionRow: View {
             } label: {
                 Text(presentation.primary.title)
             }
-            .buttonStyle(.glideProminent)
-            .controlSize(large ? .large : .regular)
+            .buttonStyle(.airProminent)
             .keyboardShortcut(.defaultAction)
             .disabled(!presentation.primary.enabled)
             if presentation.primary.busy {
@@ -296,34 +372,34 @@ private struct ActionRow: View {
             }
             if presentation.offersCheckAgain {
                 Button("Check Again", action: actions.checkAgain)
-                    .controlSize(large ? .large : .regular)
             }
             if presentation.offersOpenInFinder {
                 Button("Open in Finder") { actions.perform(.openInFinder) }
-                    .controlSize(large ? .large : .regular)
             }
         }
+        .controlSize(large ? .large : .regular)
     }
 }
 
 /// One drive: its Finder name and storage, its state, and the one action that state needs. In the window the state and
 /// the action sit in fixed columns, so they line up from row to row whatever the names; the menu bar panel puts the
-/// state under the name.
+/// state under the name. Hovering a row in the window tints it.
 struct DriveListRow: View {
     let row: HomePresentation.DriveRow
     var compact = false
     let perform: (String, HomePresentation.Action) -> Void
     @State private var confirmingRemoval = false
+    @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: compact ? 3 : 2) {
-                Text(row.name).fontWeight(.medium).foregroundStyle(Glide.ink)
+                Text(row.name).fontWeight(.medium).foregroundStyle(Air.ink)
                     .lineLimit(1).truncationMode(.middle)
                 if compact {
                     stateLabel.font(.caption)
                 } else {
-                    Text(row.storage).font(.caption).foregroundStyle(Glide.quiet)
+                    Text(row.storage).font(.caption).foregroundStyle(Air.quiet)
                         .lineLimit(1).truncationMode(.middle)
                 }
             }
@@ -338,6 +414,16 @@ struct DriveListRow: View {
                 more.frame(width: 22)
             }
         }
+        .background {
+            if !compact {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Air.muted.opacity(hovering ? 0.7 : 0))
+                    .padding(.horizontal, -10).padding(.vertical, -6)
+                    .accessibilityHidden(true)
+            }
+        }
+        .onHover { inside in withAnimation(AirMotion.hover) { hovering = inside } }
+        .airTransition(.item)
         .accessibilityElement(children: .contain)
         .contextMenu {
             if row.removable { Button("Remove from List…") { confirmingRemoval = true } }
@@ -370,18 +456,18 @@ struct DriveListRow: View {
 
     private var stateLabel: some View {
         Label {
-            Text(row.stateTitle)
+            Text(row.stateTitle).airShimmer(row.state == .connecting)
         } icon: {
             Image(systemName: StatusLabel.symbol(row.tone)).foregroundStyle(StatusLabel.color(row.tone))
         }
-        .foregroundStyle(Glide.quiet)
+        .foregroundStyle(Air.quiet)
         .lineLimit(1)
     }
 
     @ViewBuilder private var action: some View {
         if let action = row.action, let title = row.actionTitle {
             let button = Button(title) { perform(row.id, action) }
-                .controlSize(compact ? .small : .regular)
+                .controlSize(.small)
                 .disabled(!row.enabled)
             if row.switchesFolder {
                 button.help("Shows \(row.name)’s state folder in ParaAir, then opens Storage Settings.")
@@ -407,13 +493,14 @@ struct UpdateReadyRow: View {
             Label {
                 Text("\(title) is ready to install.").fixedSize(horizontal: false, vertical: true)
             } icon: {
-                Image(systemName: "arrow.down.circle.fill").foregroundStyle(Glide.good)
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(Air.good)
             }
             .font(.callout)
             if !compact { Spacer(minLength: 0) }
             Button("Install Update…", action: install)
-                .controlSize(compact ? .small : .regular)
+                .controlSize(.small)
         }
+        .airTransition(.item)
         .accessibilityElement(children: .contain)
     }
 }
@@ -439,10 +526,12 @@ struct NoticeRow: View {
             }
         }
         .font(.callout)
+        .foregroundStyle(Air.ink)
+        .airTransition(.item)
     }
 }
 
-/// The plan size, then the used figure and its bar, set like every other Drive row. Rows appear
+/// The plan size, then the used figure and its meter, set like every other Drive row. Rows appear
 /// only when `/v1/me` supplied the values, so a failed summary never shows as zero.
 private struct PlanRows: View {
     let usage: CloudUsagePresentation
@@ -460,10 +549,8 @@ private struct PlanRows: View {
             LabeledContent("Used") {
                 HStack(spacing: 10) {
                     if let fraction = usage.fraction {
-                        ProgressView(value: fraction)
-                            .tint(fraction >= 1 ? Glide.attention : Glide.controlTint)
+                        AirMeter(fraction: fraction, tone: fraction >= 1 ? Air.attention : Air.ink)
                             .frame(width: 120)
-                            .accessibilityHidden(true)
                     }
                     Text(used).monospacedDigit().frame(minWidth: 64, alignment: .trailing)
                 }
@@ -472,23 +559,34 @@ private struct PlanRows: View {
     }
 }
 
+/// One setup step, numbered like a list of steps on the website: the number, the step and its note, and a mark for
+/// where the step stands.
 private struct StepRow: View {
     let step: HomePresentation.Step
 
     var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .firstTextBaseline, spacing: Air.Space.lg) {
+            Text(String(format: "%02d", step.id))
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .foregroundStyle(Air.quiet)
+                .frame(width: 20, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(step.title)
-                    .fontWeight(step.state == .current ? .semibold : .regular)
-                    .foregroundStyle(step.state == .upcoming ? .secondary : .primary)
-                Text(step.detail).font(.caption).foregroundStyle(Glide.quiet)
+                    .font(.system(size: 14, weight: step.state == .current ? .semibold : .medium))
+                    .tracking(-0.1)
+                    .foregroundStyle(step.state == .upcoming ? Air.quiet : Air.ink)
+                Text(step.detail).font(.callout).foregroundStyle(Air.quiet)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-        } icon: {
-            switch step.state {
-            case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(Glide.good)
-            case .current: Image(systemName: "arrow.right.circle.fill").foregroundStyle(Glide.ink)
-            case .upcoming: Image(systemName: "circle").foregroundStyle(.tertiary)
+            Spacer(minLength: 0)
+            Group {
+                switch step.state {
+                case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(Air.good)
+                case .current: Image(systemName: "arrow.right.circle.fill").foregroundStyle(Air.ink)
+                case .upcoming: Image(systemName: "circle").foregroundStyle(Air.quiet.opacity(0.6))
+                }
             }
+            .font(.system(size: 15))
         }
         .accessibilityElement(children: .combine)
         .accessibilityValue(step.state == .done ? "Done" : step.state == .current ? "Next step" : "Not yet")
@@ -502,12 +600,12 @@ private struct AdvancedControls: View {
     var checkUpdatesAutomatically: Binding<Bool>?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: Air.Space.sm) {
                 Button("File System Extension Settings…", action: actions.openExtensionSettings)
                 if input.mounted { Button("Add to Finder Sidebar", action: actions.addToSidebar) }
             }
-            HStack {
+            HStack(spacing: Air.Space.sm) {
                 Button("Choose State Folder…", action: actions.chooseStateFolder)
                     .disabled(!details.canChangeStateFolder)
                 ForEach(actions.credentialTargets) { target in
@@ -525,16 +623,14 @@ private struct AdvancedControls: View {
             LabeledContent("Version") {
                 HStack(spacing: 10) {
                     Text(details.version).monospacedDigit().textSelection(.enabled)
-                    if let check = actions.checkForUpdates { Button("Check for Updates…", action: check) }
+                    if let check = actions.checkForUpdates { Button("Check for Updates…", action: check).controlSize(.small) }
                 }
             }
             if let checkUpdatesAutomatically {
                 Toggle("Check for updates automatically", isOn: checkUpdatesAutomatically)
-                    .toggleStyle(.checkbox)
-                    .glideControlTint()
             }
         }
-        .padding(.top, 6)
+        .controlSize(.small)
     }
 }
 

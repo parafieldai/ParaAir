@@ -26,32 +26,36 @@ struct ChangesReviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Changes to Review").font(.glideHeading).foregroundStyle(Glide.ink)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Changes to Review").airDisplay(Air.Size.title).foregroundStyle(Air.ink)
                 Text("These changes can’t upload by themselves. Choose what to keep for each file; until then, your copy stays on this Mac.")
-                    .foregroundStyle(Glide.quiet)
+                    .foregroundStyle(Air.quiet)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 12)
-            Form {
-                if decisions.isEmpty {
-                    Label("Nothing left to review.", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(Glide.quiet)
-                } else {
-                    ForEach(decisions) { decision in
-                        ReviewRow(decision: decision, detail: detail(decision), busy: busyPath == decision.path,
-                                  enabled: busyPath == nil, actions: actions)
+            .padding(.horizontal, Air.Space.xl).padding(.top, 22).padding(.bottom, Air.Space.lg)
+            ScrollView {
+                AirRows {
+                    if decisions.isEmpty {
+                        Label("Nothing left to review.", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(Air.quiet)
+                            .airTransition(.item)
+                    } else {
+                        ForEach(decisions) { decision in
+                            ReviewRow(decision: decision, detail: detail(decision), busy: busyPath == decision.path,
+                                      enabled: busyPath == nil, actions: actions)
+                        }
                     }
                 }
+                .padding(.horizontal, Air.Space.xl).padding(.bottom, Air.Space.xl)
             }
-            .formStyle(.grouped)
+            .airAnimation(AirMotion.settle, value: decisions.map(\.path))
             HStack {
                 Spacer()
-                Button("Done", action: actions.done).buttonStyle(.glideProminent).keyboardShortcut(.defaultAction)
+                Button("Done", action: actions.done).buttonStyle(.airProminent).keyboardShortcut(.defaultAction)
             }
-            .padding(.horizontal, 20).padding(.bottom, 16).padding(.top, 4)
+            .padding(.horizontal, Air.Space.xl).padding(.bottom, 18).padding(.top, 4)
         }
-        .glideSurface()
+        .airSurface()
         .frame(width: 640, height: 420)
     }
 
@@ -86,12 +90,12 @@ private struct ReviewRow: View {
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: decision.kind == .conflict ? "doc.on.doc" : "lock.doc")
                 .font(.title3)
-                .foregroundStyle(Glide.attention)
+                .foregroundStyle(Air.attention)
                 .frame(width: 22)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(decision.name).fontWeight(.semibold).foregroundStyle(Glide.ink).lineLimit(1).truncationMode(.middle)
-                Text(detail).font(.caption).foregroundStyle(Glide.quiet).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Text(decision.name).fontWeight(.semibold).foregroundStyle(Air.ink).lineLimit(1).truncationMode(.middle)
+                Text(detail).font(.caption).foregroundStyle(Air.quiet).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             if busy { ProgressView().controlSize(.small).accessibilityLabel("Working on \(decision.name)") }
@@ -107,6 +111,7 @@ private struct ReviewRow: View {
         }
         .controlSize(.small)
         .disabled(!enabled)
+        .airTransition(.item)
         .accessibilityElement(children: .contain)
     }
 }

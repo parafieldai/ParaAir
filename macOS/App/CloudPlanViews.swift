@@ -26,7 +26,7 @@ struct CloudBillingButtons: View {
     var body: some View {
         ForEach(controls) { control in
             if control.prominent && allowsProminence {
-                Button(control.title) { perform(control.action) }.buttonStyle(.glideProminent).disabled(disabled)
+                Button(control.title) { perform(control.action) }.buttonStyle(.airProminent).disabled(disabled)
             } else {
                 Button(control.title) { perform(control.action) }.disabled(disabled)
             }
@@ -93,9 +93,9 @@ struct CloudPlanSheet: View {
             }
             LegalLinksRow(pages: LegalLinks.plans)
         }
-        .padding(24)
+        .padding(28)
         .frame(width: 640, alignment: .leading)
-        .glideSurface()
+        .airSurface()
         .onChange(of: model.quote) { _, _ in agrees = false }
         .onChange(of: model.offer) { _, _ in adoptOffer() }
         .confirmationDialog("Start over with a new payment page?", isPresented: $confirmingStartOver, titleVisibility: .visible) {
@@ -118,10 +118,10 @@ struct CloudPlanSheet: View {
 
     private func header(_ title: String, _ detail: String?) -> some View {
         HStack(alignment: .center, spacing: 12) {
-            GlideMark(badge: false).frame(width: 30, height: 30)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.glideDisplay(.title)).foregroundStyle(Glide.ink)
-                if let detail { Text(detail).foregroundStyle(Glide.quiet).fixedSize(horizontal: false, vertical: true) }
+            ParaAirMark(badge: false).frame(width: 30, height: 30)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).airDisplay(Air.Size.title).foregroundStyle(Air.ink)
+                if let detail { Text(detail).foregroundStyle(Air.quiet).fixedSize(horizontal: false, vertical: true) }
             }
         }
         .accessibilityElement(children: .combine)
@@ -147,7 +147,7 @@ struct CloudPlanSheet: View {
             if offer.sells(.personal) || offer.sells(.team) {
                 cards(offer)
             } else {
-                Text("Plans can’t be bought right now.").foregroundStyle(Glide.quiet)
+                Text("Plans can’t be bought right now.").foregroundStyle(Air.quiet)
                 HStack { Spacer(); Button("Close", role: .cancel) { model.closePlans() }.keyboardShortcut(.cancelAction) }
             }
         } else {
@@ -162,7 +162,7 @@ struct CloudPlanSheet: View {
             } else {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
-                    Text("Loading plans…").foregroundStyle(Glide.quiet)
+                    Text("Loading plans…").foregroundStyle(Air.quiet)
                 }
                 HStack { Spacer(); Button("Cancel", role: .cancel) { model.closePlans() }.keyboardShortcut(.cancelAction) }
             }
@@ -171,13 +171,8 @@ struct CloudPlanSheet: View {
 
     @ViewBuilder private func cards(_ offer: ParaAirCloudBillingOffer) -> some View {
         let priced = offer.unitAmountCents(plan, interval) != nil
-        Picker("Billing period", selection: $interval) {
-            Text("Monthly").tag(ParaAirCloudBilling.Interval.month)
-            Text("Yearly").tag(ParaAirCloudBilling.Interval.year)
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
+        AirSegmented("Billing period", selection: $interval,
+                      options: [(ParaAirCloudBilling.Interval.month, "Monthly"), (.year, "Yearly")])
         HStack(alignment: .top, spacing: 12) {
             PlanCard(option: choice.personal,
                      offer: CloudPlanOffer.make(.personal, interval: interval, seats: 1, offer: offer) ?? .unpriced(.personal, interval: interval),
@@ -202,13 +197,14 @@ struct CloudPlanSheet: View {
         if plan == .team, let target {
             HStack(spacing: 12) {
                 if choice.team.workspaces.count > 1 {
-                    Picker("Team workspace", selection: $teamWorkspaceID) {
+                    AirMenuPicker("Team workspace", selection: $teamWorkspaceID,
+                                  value: choice.team.workspaces.first { $0.id == teamWorkspaceID }?.name ?? target.name) {
                         ForEach(choice.team.workspaces) { Text($0.name).tag(Optional($0.id)) }
                     }
-                    .frame(maxWidth: 300)
+                    .frame(maxWidth: 300, alignment: .leading)
                 }
                 Text("Choose at least one seat for each member of \(target.name).")
-                    .font(.callout).foregroundStyle(Glide.quiet).fixedSize(horizontal: false, vertical: true)
+                    .font(.callout).foregroundStyle(Air.quiet).fixedSize(horizontal: false, vertical: true)
             }
         }
         HStack {
@@ -221,7 +217,7 @@ struct CloudPlanSheet: View {
                 model.loadQuote(selection, force: true)
                 step = .review
             }
-            .buttonStyle(.glideProminent)
+            .buttonStyle(.airProminent)
             .keyboardShortcut(.defaultAction)
             .disabled(target == nil || !priced)
         }
@@ -247,7 +243,7 @@ struct CloudPlanSheet: View {
         } else {
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
-                Text("Loading the plan terms…").foregroundStyle(Glide.quiet)
+                Text("Loading the plan terms…").foregroundStyle(Air.quiet)
             }
         }
         if case .failed(let message) = model.checkout { ErrorLine(text: message) }
@@ -268,7 +264,7 @@ struct CloudPlanSheet: View {
                     consent: ParaAirCloudCheckoutConsent(disclosureVersion: shown.offer.disclosureVersion, autoRenew: agrees, terms: agrees),
                     trialDays: shown.offer.quote?.trialDays ?? 0))
             }
-            .buttonStyle(.glideProminent)
+            .buttonStyle(.airProminent)
             .keyboardShortcut(.defaultAction)
             .disabled(shown == nil || !agrees || working || model.pendingCheckout != nil)
         }
@@ -291,8 +287,8 @@ struct CloudPlanSheet: View {
             DisclosureGroup(isExpanded: $showsFullTerms) { fullTerms(terms).padding(.top, 6) } label: { Text("Show full terms") }
         }
         Toggle(isOn: $agrees) { Text(Self.consentText(terms.consent)).fixedSize(horizontal: false, vertical: true) }
-            .toggleStyle(.checkbox)
-            .glideControlTint()
+            .toggleStyle(.airCheckbox)
+            .tint(Air.ink)
             .disabled(working)
     }
 
@@ -304,16 +300,15 @@ struct CloudPlanSheet: View {
             VStack(alignment: .leading, spacing: 5) {
                 ForEach(Array(terms.bullets.enumerated()), id: \.offset) { _, bullet in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text("•").foregroundStyle(Glide.quiet).accessibilityHidden(true)
+                        Text("•").foregroundStyle(Air.quiet).accessibilityHidden(true)
                         Text(bullet).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Glide.surface))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Glide.rule))
+        .background(AirSurface(radius: Air.Radius.inset, raised: false))
         .accessibilityElement(children: .combine)
     }
 
@@ -324,6 +319,9 @@ struct CloudPlanSheet: View {
         }
         let unsafe = text.runs.compactMap { run in run.link.map { $0.scheme?.lowercased() == "https" ? nil : run.range } ?? nil }
         for range in unsafe { text[range].link = nil }
+        // Links read as the app's other links: ink, underlined (the Toggle's tint sets the ink).
+        let links = text.runs.compactMap { run in run.link == nil ? nil : run.range }
+        for range in links { text[range].underlineStyle = .single }
         return text
     }
 
@@ -342,8 +340,8 @@ struct CloudPlanSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 if let limit = workspace?.plan?.storageLimitBytes, limit > 0 {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(CloudUsagePresentation.format(limit)).font(.system(size: 34, weight: .medium, design: .serif)).monospacedDigit()
-                        Text("of storage").font(.callout).foregroundStyle(Glide.quiet)
+                        Text(CloudUsagePresentation.format(limit)).airDisplay(Air.Size.figure).monospacedDigit()
+                        Text("of storage").font(.callout).foregroundStyle(Air.quiet)
                     }
                 }
                 let period = billing.interval == .year ? "Billed yearly" : billing.interval == .month ? "Billed monthly" : nil
@@ -351,7 +349,7 @@ struct CloudPlanSheet: View {
                     ? [billing.trialEndsAt.map { "Free trial until \(CloudBillingPresentation.format($0))." }, period.map { $0 + " after that." }]
                     : [period.map { $0 + "." }, billing.currentPeriodEnd.map { "Renews \(CloudBillingPresentation.format($0))." }]
                 Text(lines.compactMap { $0 }.joined(separator: " "))
-                    .foregroundStyle(Glide.quiet)
+                    .foregroundStyle(Air.quiet)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine)
@@ -369,7 +367,7 @@ struct CloudPlanSheet: View {
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
                 Text((model.pendingCheckout?.trialDays ?? 0) > 0 ? "Waiting for your trial to start…" : "Waiting for the payment to go through…")
-                    .foregroundStyle(Glide.quiet)
+                    .foregroundStyle(Air.quiet)
             }
             .accessibilityElement(children: .combine)
         }
@@ -381,7 +379,7 @@ struct CloudPlanSheet: View {
             }
             Spacer()
             Button("Done") { model.closePlans() }
-                .buttonStyle(.glideProminent)
+                .buttonStyle(.airProminent)
                 .keyboardShortcut(.defaultAction)
         }
     }
@@ -397,29 +395,32 @@ private struct PlanCard<Footer: View>: View {
     @ViewBuilder let footer: () -> Footer
 
     var body: some View {
-        let ink: HierarchicalShapeStyle = option.available ? .primary : .secondary
+        let ink = option.available ? Air.ink : Air.quiet
+        let chosen = selected && option.available
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
-                Text(offer.name).font(.headline)
+                Text(offer.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(ink)
                 Spacer(minLength: 8)
-                Image(systemName: selected && option.available ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(selected && option.available ? Glide.ink : Color.secondary)
+                Image(systemName: chosen ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(chosen ? Air.ink : Air.quiet)
                     .accessibilityHidden(true)
             }
             Text(offer.size)
-                .font(.system(size: 34, weight: .medium, design: .serif))
+                .airDisplay(Air.Size.figure)
                 .monospacedDigit()
                 .foregroundStyle(ink)
-            Text(offer.sizeCaption).font(.callout).foregroundStyle(Glide.quiet).lineLimit(1)
+                .padding(.top, 2)
+            Text(offer.sizeCaption).font(.callout).foregroundStyle(Air.quiet).lineLimit(1)
             Text(offer.price)
-                .font(.title3.weight(.medium))
+                .font(.system(size: 16, weight: .medium))
+                .tracking(-0.2)
                 .monospacedDigit()
                 .foregroundStyle(ink)
                 .padding(.top, 10)
-            Text(offer.detail).font(.callout).foregroundStyle(Glide.quiet).lineLimit(1)
+            Text(offer.detail).font(.callout).foregroundStyle(Air.quiet).lineLimit(1)
             Group {
                 if let reason = option.reason {
-                    Label(reason, systemImage: "info.circle").font(.callout).foregroundStyle(Glide.quiet).lineLimit(2)
+                    Label(reason, systemImage: "info.circle").font(.callout).foregroundStyle(Air.quiet).lineLimit(2)
                 } else {
                     footer()
                 }
@@ -427,12 +428,13 @@ private struct PlanCard<Footer: View>: View {
             .frame(minHeight: 30, alignment: .bottomLeading)
             .padding(.top, 8)
         }
-        .padding(14)
+        .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Glide.surface))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(selected && option.available ? Glide.ink : Glide.rule, lineWidth: selected && option.available ? 2 : 1))
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(AirSurface())
+        .overlay(RoundedRectangle(cornerRadius: Air.Radius.card, style: .continuous)
+            .strokeBorder(Air.ink, lineWidth: 1.5).opacity(chosen ? 1 : 0))
+        .airAnimation(AirMotion.hover, value: chosen)
+        .contentShape(RoundedRectangle(cornerRadius: Air.Radius.card, style: .continuous))
         .onTapGesture { if option.available { select() } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(offer.name), \(offer.size), \(offer.price)")

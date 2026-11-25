@@ -246,7 +246,7 @@ struct CloudAccountDeletionBanner: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 } icon: {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Glide.attention)
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Air.attention)
                 }
                 Spacer(minLength: 0)
                 Button("Cancel Deletion", action: model.cancel).disabled(model.busy)
@@ -263,15 +263,16 @@ struct CloudAccountDeletionSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Delete your ParaAir Cloud account?")
-                .font(.glideHeading).foregroundStyle(Glide.ink)
+                .airDisplay(Air.Size.title).foregroundStyle(Air.ink)
+                .fixedSize(horizontal: false, vertical: true)
             switch model.state {
             case .idle, .loading:
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
-                    Text("Checking what closing the account changes…").foregroundStyle(Glide.quiet)
+                    Text("Checking what closing the account changes…").foregroundStyle(Air.quiet)
                 }
             case .unsupported:
-                Text("This ParaAir Cloud service can’t delete accounts yet.").foregroundStyle(Glide.quiet)
+                Text("This ParaAir Cloud service can’t delete accounts yet.").foregroundStyle(Air.quiet)
             case .failed(let message):
                 ErrorLine(text: message)
                 Button("Try Again") { model.refresh() }
@@ -287,12 +288,13 @@ struct CloudAccountDeletionSheet: View {
                     .keyboardShortcut(.cancelAction)
                     .disabled(model.busy)
                 Button("Delete Account", role: .destructive, action: model.request)
+                    .buttonStyle(.airProminent)
                     .disabled(!model.canConfirm)
             }
         }
-        .padding(24)
+        .padding(28)
         .frame(width: 520)
-        .glideSurface()
+        .airSurface()
     }
 
     @ViewBuilder private func details(_ status: ParaAirCloudAccountDeletion) -> some View {
@@ -301,13 +303,13 @@ struct CloudAccountDeletionSheet: View {
                 ForEach(status.workspaces) { workspace in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(workspace.name).fontWeight(.medium)
-                        Text(CloudAccountDeletionText.workspace(workspace)).font(.callout).foregroundStyle(Glide.quiet)
+                        Text(CloudAccountDeletionText.workspace(workspace)).font(.callout).foregroundStyle(Air.quiet)
                     }
                 }
             }
         }
         Text("Your email address, sign-ins and invitations are deleted too. Billing records stay, as the Privacy Policy says.")
-            .font(.callout).foregroundStyle(Glide.quiet)
+            .font(.callout).foregroundStyle(Air.quiet)
             .fixedSize(horizontal: false, vertical: true)
         if status.blockers.isEmpty {
             Text(CloudAccountDeletionText.grace(status.graceDays))
@@ -319,6 +321,7 @@ struct CloudAccountDeletionSheet: View {
                     .textContentType(.emailAddress)
                     .onSubmit(model.request)
                     .disabled(model.busy)
+                    .airField()
             }
         } else {
             VStack(alignment: .leading, spacing: 8) {
@@ -326,7 +329,7 @@ struct CloudAccountDeletionSheet: View {
                     Label {
                         Text(CloudAccountDeletionText.blocker(blocker, in: status)).fixedSize(horizontal: false, vertical: true)
                     } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Glide.attention)
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Air.attention)
                     }
                     .font(.callout)
                 }

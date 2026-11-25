@@ -40,7 +40,7 @@ python3 scripts/check-site.py
 
 None of these install, register, mount or sign anything, and none needs network access to your storage. `scripts/build-app.sh` without signing variables produces an ad hoc build for local testing only.
 
-If you change the UI, attach before/after PNGs from `render-ui-snapshots.sh` to the pull request. CI uploads the same set as the `ui-snapshots` artifact.
+If you change the UI, follow [docs/app-design.md](docs/app-design.md) (colours, type, controls and motion all come from `macOS/App/AirStyle.swift`) and attach before/after PNGs from `render-ui-snapshots.sh` to the pull request. CI uploads the same set as the `ui-snapshots` artifact.
 
 ## What CI runs on a pull request
 

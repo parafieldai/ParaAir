@@ -26,7 +26,7 @@ struct ConnectionsView: View {
     }
 
     var body: some View {
-        Form {
+        AirPage {
             CloudAccountSection(model: cloud) { root in
                 onCloudDriveReady(root)
                 openWindow(id: "connections")
@@ -38,7 +38,7 @@ struct ConnectionsView: View {
             }
 
             if !model.savedConnections.isEmpty {
-                Section {
+                AirSection {
                     ForEach(model.savedConnections) { connection in
                         SavedConnectionRow(connection: connection, busy: model.isBusy,
                                            use: { model.use(connection) },
@@ -47,34 +47,39 @@ struct ConnectionsView: View {
                     }
                 } header: {
                     HStack {
-                        Text("Saved storage").font(.glideHeading).foregroundStyle(Glide.ink)
+                        Text("Saved storage")
                         Spacer()
-                        Button("Refresh", action: model.reload).disabled(model.isBusy).controlSize(.small)
+                        Button("Refresh", action: model.reload).disabled(model.isBusy)
+                            .buttonStyle(.airText).controlSize(.small)
                     }
                 } footer: {
                     Text("Disconnecting stops this Mac from reaching that storage. Files waiting to upload and the local cache stay on this Mac.")
-                        .foregroundStyle(Glide.quiet)
                 }
             }
 
-            Section {
+            AirSection {
                 if let reconnect = model.reconnectTarget {
                     LabeledContent("Signing in again to", value: reconnect.name)
                     Button("Add Different Storage Instead", action: model.beginNewConnection).disabled(model.isBusy)
                 }
-                Picker("Provider", selection: Binding(get: { model.provider }, set: { model.selectProvider($0) })) {
-                    ForEach(ConnectionProvider.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.disabled(model.isBusy || model.isReconnecting)
-                TextField("Name", text: $model.connectionName, prompt: Text("Shown in ParaAir"))
-                    .disabled(model.isBusy)
+                LabeledContent("Provider") {
+                    AirMenuPicker("Provider", selection: Binding(get: { model.provider }, set: { model.selectProvider($0) }),
+                                  value: model.provider.title) {
+                        ForEach(ConnectionProvider.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                }
+                .disabled(model.isBusy || model.isReconnecting)
+                AirFieldRow(title: "Name") {
+                    TextField("Name", text: $model.connectionName, prompt: Text("Shown in ParaAir"))
+                }
+                .disabled(model.isBusy)
             } header: {
-                Text(model.isReconnecting ? "Sign in again" : "Add your own storage").font(.glideHeading).foregroundStyle(Glide.ink)
+                Text(model.isReconnecting ? "Sign in again" : "Add your own storage")
             } footer: {
                 Text("Choose your storage, authorize access, then pick the bucket ParaAir should use.")
-                    .foregroundStyle(Glide.quiet)
             }
 
-            Section {
+            AirSection {
                 Group {
                     switch model.provider {
                     case .cloudflareR2: cloudflareFields
@@ -84,10 +89,10 @@ struct ConnectionsView: View {
                 }.disabled(model.isBusy)
             }
 
-            Section {
+            AirSection {
                 HStack(spacing: 10) {
                     Button("Verify and Save", action: model.verifyAndSave)
-                        .buttonStyle(.glideProminent)
+                        .buttonStyle(.airProminent)
                         .keyboardShortcut(.defaultAction)
                         .disabled(model.isBusy || !model.canVerify)
                     if model.isBusy {
@@ -96,20 +101,20 @@ struct ConnectionsView: View {
                     }
                 }
                 Label {
-                    Text(model.status).fixedSize(horizontal: false, vertical: true)
+                    Text(model.status).fixedSize(horizontal: false, vertical: true).airShimmer(model.isBusy)
                 } icon: {
-                    Image(systemName: model.isBusy ? "clock.fill" : "info.circle").foregroundStyle(Glide.quiet)
+                    Image(systemName: model.isBusy ? "clock.fill" : "info.circle").foregroundStyle(Air.quiet)
                 }
-                .font(.callout).foregroundStyle(Glide.quiet)
+                .font(.callout).foregroundStyle(Air.quiet)
                 if let authorizationURL = model.publicAuthorizationURL {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Browser sign-in link").font(.caption)
+                        Text("Browser sign-in link").font(.caption).foregroundStyle(Air.quiet)
                         HStack {
                             BrowserSignInLinkField(value: authorizationURL.absoluteString)
-                            Button("Copy Link", action: model.copyAuthorizationLink)
+                            Button("Copy Link", action: model.copyAuthorizationLink).controlSize(.small)
                         }
                         Text("Paste this link into the browser profile you want to authorize.")
-                            .font(.caption).foregroundStyle(Glide.quiet)
+                            .font(.caption).foregroundStyle(Air.quiet)
                     }
                 }
                 if model.showDriveHomeAction {
@@ -119,14 +124,16 @@ struct ConnectionsView: View {
                     Label {
                         Text(error).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     } icon: {
-                        Image(systemName: "xmark.octagon.fill").foregroundStyle(Glide.problem)
+                        Image(systemName: "xmark.octagon.fill").foregroundStyle(Air.problem)
                     }
                     .font(.callout)
+                    .airTransition(.item)
                 }
             }
         }
-        .formStyle(.grouped)
-        .glideSurface()
+        .airAnimation(AirMotion.settle, value: [model.provider.title, model.status, model.error ?? "", String(model.isBusy),
+                                                String(model.savedConnections.count)])
+        .airSurface()
         .frame(minWidth: 620, idealWidth: 680, minHeight: 620)
         .onAppear {
             model.reload(); applyReconnectRequest()
@@ -162,13 +169,20 @@ struct ConnectionsView: View {
         if let connection = model.savedConnections.first(where: { $0.id == id }) { model.reconnect(connection) }
     }
 
+    static func jurisdictionTitle(_ jurisdiction: CloudflareR2Provider.Jurisdiction) -> String {
+        switch jurisdiction {
+        case .standard: return "Standard"
+        case .eu: return "European Union"
+        case .us: return "United States"
+        }
+    }
+
     private var cloudflareFields: some View {
         Group {
-            Picker("Connect with", selection: Binding(get: { model.cloudflareAccess }, set: { model.selectCloudflareAccess($0) })) {
-                Text("R2 API token").tag(ConnectionsModel.CloudflareAccess.apiToken)
-                Text("Cloudflare sign-in").tag(ConnectionsModel.CloudflareAccess.browser)
+            LabeledContent("Connect with") {
+                AirSegmented("Connect with", selection: Binding(get: { model.cloudflareAccess }, set: { model.selectCloudflareAccess($0) }),
+                             options: [(ConnectionsModel.CloudflareAccess.apiToken, "R2 API token"), (.browser, "Cloudflare sign-in")])
             }
-            .pickerStyle(.segmented)
             .disabled(model.isBusy || model.isReconnecting)
             switch model.cloudflareAccess {
             case .apiToken: r2TokenFields
@@ -181,22 +195,29 @@ struct ConnectionsView: View {
     private var r2TokenFields: some View {
         Group {
             LabeledContent {
-                GlideLink("Open R2 in Cloudflare", destination: URL(string: "https://dash.cloudflare.com/?to=/:account/r2/overview")!)
+                AirLink("Open R2 in Cloudflare", destination: URL(string: "https://dash.cloudflare.com/?to=/:account/r2/overview")!)
             } label: {
                 Text("R2 API token")
                 Text("In R2, choose Manage API tokens and create one with Object Read & Write for this bucket. Cloudflare shows the secret only once.")
             }
-            TextField("Account ID", text: $model.r2AccountID, prompt: Text("32 characters, shown in R2"))
-            Picker("Bucket location", selection: $model.r2Jurisdiction) {
-                Text("Standard").tag(CloudflareR2Provider.Jurisdiction.standard)
-                Text("European Union").tag(CloudflareR2Provider.Jurisdiction.eu)
-                Text("United States").tag(CloudflareR2Provider.Jurisdiction.us)
+            AirFieldRow(title: "Account ID") {
+                TextField("Account ID", text: $model.r2AccountID, prompt: Text("32 characters, shown in R2"))
             }
-            TextField("Bucket", text: $model.bucketName, prompt: Text("existing-bucket-name"))
-            SecureField("Access key ID", text: $model.accessKey)
-            SecureField("Secret access key", text: $model.secretKey)
+            LabeledContent("Bucket location") {
+                AirMenuPicker("Bucket location", selection: $model.r2Jurisdiction,
+                              value: Self.jurisdictionTitle(model.r2Jurisdiction)) {
+                    Text(Self.jurisdictionTitle(.standard)).tag(CloudflareR2Provider.Jurisdiction.standard)
+                    Text(Self.jurisdictionTitle(.eu)).tag(CloudflareR2Provider.Jurisdiction.eu)
+                    Text(Self.jurisdictionTitle(.us)).tag(CloudflareR2Provider.Jurisdiction.us)
+                }
+            }
+            AirFieldRow(title: "Bucket") {
+                TextField("Bucket", text: $model.bucketName, prompt: Text("existing-bucket-name"))
+            }
+            AirFieldRow(title: "Access key ID") { SecureField("Access key ID", text: $model.accessKey) }
+            AirFieldRow(title: "Secret access key") { SecureField("Secret access key", text: $model.secretKey) }
             Text("Keys are saved in this Mac’s Keychain. The saved connection keeps only the R2 address and bucket.")
-                .font(.caption).foregroundStyle(Glide.quiet)
+                .font(.caption).foregroundStyle(Air.quiet)
         }
     }
 
@@ -205,18 +226,18 @@ struct ConnectionsView: View {
             if Bundle.main.object(forInfoDictionaryKey: "StreamDriveCloudflareClientID") == nil {
                 DisclosureGroup("Developer sign-in setup") {
                     VStack(alignment: .leading, spacing: 8) {
-                        TextField("Registered public client ID", text: $model.cloudflareClientID)
+                        TextField("Registered public client ID", text: $model.cloudflareClientID).airField()
                         Text("Register a public PKCE client with callback http://127.0.0.1:49731/oauth/callback, account-settings.read, workers-r2.write and refresh-token support. No client secret belongs in this app.")
-                            .font(.caption).foregroundStyle(Glide.quiet)
+                            .font(.caption).foregroundStyle(Air.quiet)
+                            .fixedSize(horizontal: false, vertical: true)
                         HStack {
-                            Button("Save Registration", action: model.saveRegistration)
-                            GlideLink("Registration documentation", destination: URL(string: "https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/")!)
+                            Button("Save Registration", action: model.saveRegistration).controlSize(.small)
+                            AirLink("Registration documentation", destination: URL(string: "https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/")!)
                         }
-                    }.padding(.top, 8)
+                    }
                 }
             }
             Toggle("Open the sign-in page in my default browser", isOn: $model.openDefaultBrowserAutomatically)
-                .glideControlTint()
             LabeledContent {
                 Button("Sign In with Cloudflare", action: model.signInCloudflare)
             } label: {
@@ -225,23 +246,31 @@ struct ConnectionsView: View {
             }
             if model.cloudflareAuthorized {
                 if model.cloudflareAccounts.isEmpty {
-                    Text("No authorized Cloudflare accounts were returned.").foregroundStyle(Glide.quiet)
+                    Text("No authorized Cloudflare accounts were returned.").foregroundStyle(Air.quiet)
                 } else {
-                    Picker("Account", selection: Binding(get: { model.cloudflareAccountID }, set: { model.selectCloudflareAccount($0) })) {
-                        Text("Choose an account").tag("")
-                        ForEach(model.cloudflareAccounts, id: \.id) { Text($0.name).tag($0.id) }
-                    }.disabled(model.isReconnecting)
+                    LabeledContent("Account") {
+                        AirMenuPicker("Account", selection: Binding(get: { model.cloudflareAccountID }, set: { model.selectCloudflareAccount($0) }),
+                                      value: model.cloudflareAccounts.first { $0.id == model.cloudflareAccountID }?.name ?? "Choose an account") {
+                            Text("Choose an account").tag("")
+                            ForEach(model.cloudflareAccounts, id: \.id) { Text($0.name).tag($0.id) }
+                        }
+                    }
+                    .disabled(model.isReconnecting)
                 }
                 if !model.cloudflareAccountID.isEmpty {
-                    Picker("Bucket", selection: $model.cloudflareBucketName) {
-                        Text("Choose a bucket").tag("")
-                        ForEach(model.cloudflareBuckets, id: \.name) { Text($0.name).tag($0.name) }
-                    }.disabled(model.isReconnecting)
+                    LabeledContent("Bucket") {
+                        AirMenuPicker("Bucket", selection: $model.cloudflareBucketName,
+                                      value: model.cloudflareBucketName.isEmpty ? "Choose a bucket" : model.cloudflareBucketName) {
+                            Text("Choose a bucket").tag("")
+                            ForEach(model.cloudflareBuckets, id: \.name) { Text($0.name).tag($0.name) }
+                        }
+                    }
+                    .disabled(model.isReconnecting)
                     HStack {
                         Group {
                             switch model.cloudflareBucketListState {
                             case .notLoaded: Text("The bucket list hasn’t loaded yet.")
-                            case .loading: Text("Loading R2 buckets…")
+                            case .loading: Text("Loading R2 buckets…").airShimmer(true)
                             case .loaded:
                                 if model.cloudflareBuckets.isEmpty {
                                     Text("No buckets in this account’s default jurisdiction. Create a Standard bucket below, or choose another account.")
@@ -249,7 +278,7 @@ struct ConnectionsView: View {
                             case .failed: Text("The bucket list couldn’t load. Check the message below, then reload.")
                             }
                         }
-                        .font(.caption).foregroundStyle(Glide.quiet)
+                        .font(.caption).foregroundStyle(Air.quiet)
                         Spacer()
                         Button("Reload Buckets", action: model.loadCloudflareBuckets).controlSize(.small)
                     }
@@ -258,6 +287,7 @@ struct ConnectionsView: View {
                             HStack {
                                 TextField("New bucket name", text: $model.cloudflareNewBucketName, prompt: Text("my-paraair-drive"))
                                     .labelsHidden()
+                                    .airField(width: 190)
                                 Button("Create Bucket…", action: model.createCloudflareBucket)
                                     .disabled(model.cloudflareNewBucketName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
@@ -274,33 +304,52 @@ struct ConnectionsView: View {
     private var awsFields: some View {
         Group {
             Text("AWS sign-in uses IAM Identity Center. Your organization provides the start URL and region.")
-                .font(.callout).foregroundStyle(Glide.quiet)
-            TextField("Start URL", text: $model.awsStartURL, prompt: Text("https://example.awsapps.com/start"))
-                .disabled(model.isReconnecting)
-            TextField("Identity Center region", text: $model.awsSSORegion, prompt: Text("us-east-1"))
+                .font(.callout).foregroundStyle(Air.quiet)
+            AirFieldRow(title: "Start URL") {
+                TextField("Start URL", text: $model.awsStartURL, prompt: Text("https://example.awsapps.com/start"))
+            }
+            .disabled(model.isReconnecting)
+            AirFieldRow(title: "Identity Center region") {
+                TextField("Identity Center region", text: $model.awsSSORegion, prompt: Text("us-east-1"))
+            }
             LabeledContent {
                 Button("Sign In with AWS", action: model.signInAWS)
             } label: {
                 Text("AWS account")
             }
             if model.awsAuthorized {
-                Picker("AWS account", selection: Binding(get: { model.awsAccountID }, set: { model.selectAWSAccount($0) })) {
-                    Text("Choose an account").tag("")
-                    ForEach(model.awsAccounts) { Text($0.accountName ?? $0.accountID).tag($0.accountID) }
-                }.disabled(model.isReconnecting)
-                if model.awsAccounts.isEmpty { Text("No AWS accounts are assigned to this sign-in.").foregroundStyle(Glide.quiet) }
+                LabeledContent("AWS account") {
+                    AirMenuPicker("AWS account", selection: Binding(get: { model.awsAccountID }, set: { model.selectAWSAccount($0) }),
+                                  value: model.awsAccounts.first { $0.accountID == model.awsAccountID }.map { $0.accountName ?? $0.accountID }
+                                      ?? "Choose an account") {
+                        Text("Choose an account").tag("")
+                        ForEach(model.awsAccounts) { Text($0.accountName ?? $0.accountID).tag($0.accountID) }
+                    }
+                }
+                .disabled(model.isReconnecting)
+                if model.awsAccounts.isEmpty { Text("No AWS accounts are assigned to this sign-in.").foregroundStyle(Air.quiet) }
                 if !model.awsAccountID.isEmpty {
-                    Picker("Role", selection: $model.awsRoleName) {
-                        Text("Choose a role").tag("")
-                        ForEach(model.awsRoles) { Text($0.roleName).tag($0.roleName) }
-                    }.disabled(model.isReconnecting)
-                    if model.awsRoles.isEmpty { Text("No roles were returned for this account.").foregroundStyle(Glide.quiet) }
+                    LabeledContent("Role") {
+                        AirMenuPicker("Role", selection: $model.awsRoleName,
+                                      value: model.awsRoleName.isEmpty ? "Choose a role" : model.awsRoleName) {
+                            Text("Choose a role").tag("")
+                            ForEach(model.awsRoles) { Text($0.roleName).tag($0.roleName) }
+                        }
+                    }
+                    .disabled(model.isReconnecting)
+                    if model.awsRoles.isEmpty { Text("No roles were returned for this account.").foregroundStyle(Air.quiet) }
                 }
             }
-            TextField("Bucket", text: $model.bucketName, prompt: Text("existing-bucket-name")).disabled(model.isReconnecting)
-            TextField("Bucket region", text: $model.bucketRegion, prompt: Text("us-west-2")).disabled(model.isReconnecting)
+            AirFieldRow(title: "Bucket") {
+                TextField("Bucket", text: $model.bucketName, prompt: Text("existing-bucket-name"))
+            }
+            .disabled(model.isReconnecting)
+            AirFieldRow(title: "Bucket region") {
+                TextField("Bucket region", text: $model.bucketRegion, prompt: Text("us-west-2"))
+            }
+            .disabled(model.isReconnecting)
             Text("The bucket region can differ from the Identity Center region. ParaAir checks access to an existing bucket; it doesn’t create AWS buckets.")
-                .font(.caption).foregroundStyle(Glide.quiet)
+                .font(.caption).foregroundStyle(Air.quiet)
         }
     }
 
@@ -308,23 +357,35 @@ struct ConnectionsView: View {
         Group {
             if model.provider == .backblazeB2 {
                 LabeledContent {
-                    GlideLink("B2 S3 setup guide", destination: URL(string: "https://www.backblaze.com/apidocs/introduction-to-the-s3-compatible-api")!)
+                    AirLink("B2 S3 setup guide", destination: URL(string: "https://www.backblaze.com/apidocs/introduction-to-the-s3-compatible-api")!)
                 } label: {
                     Text("Backblaze B2")
                     Text("Use an application key restricted to your existing bucket, with its S3 endpoint and region.")
                 }
             }
-            TextField("Endpoint", text: $model.endpoint,
-                      prompt: Text(model.provider == .backblazeB2 ? "https://s3.us-west-004.backblazeb2.com" : "https://s3.example.com"))
-                .disabled(model.isReconnecting)
-            TextField("Bucket", text: $model.bucketName, prompt: Text("existing-bucket-name")).disabled(model.isReconnecting)
-            TextField("Region", text: $model.bucketRegion,
-                      prompt: Text(model.provider == .backblazeB2 ? "us-west-004" : "us-east-1")).disabled(model.isReconnecting)
-            SecureField(model.provider == .backblazeB2 ? "Application key ID" : "Access key ID", text: $model.accessKey)
-            SecureField(model.provider == .backblazeB2 ? "Application key" : "Secret access key", text: $model.secretKey)
-            SecureField("Session token (optional)", text: $model.sessionToken)
+            AirFieldRow(title: "Endpoint") {
+                TextField("Endpoint", text: $model.endpoint,
+                          prompt: Text(model.provider == .backblazeB2 ? "https://s3.us-west-004.backblazeb2.com" : "https://s3.example.com"))
+            }
+            .disabled(model.isReconnecting)
+            AirFieldRow(title: "Bucket") {
+                TextField("Bucket", text: $model.bucketName, prompt: Text("existing-bucket-name"))
+            }
+            .disabled(model.isReconnecting)
+            AirFieldRow(title: "Region") {
+                TextField("Region", text: $model.bucketRegion,
+                          prompt: Text(model.provider == .backblazeB2 ? "us-west-004" : "us-east-1"))
+            }
+            .disabled(model.isReconnecting)
+            AirFieldRow(title: model.provider == .backblazeB2 ? "Application key ID" : "Access key ID") {
+                SecureField(model.provider == .backblazeB2 ? "Application key ID" : "Access key ID", text: $model.accessKey)
+            }
+            AirFieldRow(title: model.provider == .backblazeB2 ? "Application key" : "Secret access key") {
+                SecureField(model.provider == .backblazeB2 ? "Application key" : "Secret access key", text: $model.secretKey)
+            }
+            AirFieldRow(title: "Session token (optional)") { SecureField("Session token (optional)", text: $model.sessionToken) }
             Text("Keys are saved in this Mac’s Keychain. The saved connection keeps only the storage address and bucket.")
-                .font(.caption).foregroundStyle(Glide.quiet)
+                .font(.caption).foregroundStyle(Air.quiet)
         }
     }
 }
@@ -339,27 +400,30 @@ private struct SavedConnectionRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(connection.name)
+                Text(connection.name).fontWeight(.medium)
                 Label {
                     Text(connection.providerTitle + " · " + ConnectionsModel.stateTitle(connection.state))
                 } icon: {
                     Image(systemName: symbol).foregroundStyle(color)
                 }
-                .font(.caption).foregroundStyle(Glide.quiet)
+                .font(.caption).foregroundStyle(Air.quiet)
                 if let bucket = connection.bucket {
-                    Text(bucket).font(.caption.monospaced()).foregroundStyle(Glide.quiet)
+                    Text(bucket).font(.caption.monospaced()).foregroundStyle(Air.quiet)
                 }
             }
             Spacer()
-            Button("Use for Drive", action: use)
-                .disabled(busy || connection.state != .storageReady)
-                .accessibilityLabel("Use for Drive, \(connection.name)")
-            Button("Reconnect…", action: reconnect)
-                .disabled(busy)
-                .accessibilityLabel("Reconnect \(connection.name)")
-            Button("Disconnect…", role: .destructive, action: disconnect)
-                .disabled(busy || connection.state == .disconnected)
-                .accessibilityLabel("Disconnect \(connection.name)")
+            Group {
+                Button("Use for Drive", action: use)
+                    .disabled(busy || connection.state != .storageReady)
+                    .accessibilityLabel("Use for Drive, \(connection.name)")
+                Button("Reconnect…", action: reconnect)
+                    .disabled(busy)
+                    .accessibilityLabel("Reconnect \(connection.name)")
+                Button("Disconnect…", role: .destructive, action: disconnect)
+                    .disabled(busy || connection.state == .disconnected)
+                    .accessibilityLabel("Disconnect \(connection.name)")
+            }
+            .controlSize(.small)
         }
     }
 
@@ -373,9 +437,9 @@ private struct SavedConnectionRow: View {
     }
     private var color: Color {
         switch connection.state {
-        case .storageReady: return Glide.good
-        case .needsSignIn: return Glide.attention
-        case .authorized, .disconnected: return .secondary
+        case .storageReady: return Air.good
+        case .needsSignIn: return Air.attention
+        case .authorized, .disconnected: return Air.quiet
         }
     }
 }

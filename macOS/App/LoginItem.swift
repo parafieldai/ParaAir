@@ -97,8 +97,8 @@ final class LoginItemModel: ObservableObject {
     }
 }
 
-/// The toggle beside "Connect the drive when ParaAir opens": a form row in the home
-/// window, a checkbox in the menu bar panel.
+/// The switch beside "Connect the drive when ParaAir opens": a row in the home window's
+/// card, a compact row in the menu bar panel.
 struct LoginItemToggle: View {
     enum Style { case form, panel }
 
@@ -122,31 +122,27 @@ struct LoginItemToggle: View {
         switch style {
         case .form:
             Toggle(Self.title, isOn: isOn)
-                .glideControlTint()
                 .disabled(model.needsApproval)
                 .modifier(LiveLoginItemStatus(model: model))
             if let note {
                 LabeledContent {
-                    Button(Self.settingsButton, action: model.openSystemSettings)
+                    Button(Self.settingsButton, action: model.openSystemSettings).controlSize(.small)
                 } label: {
-                    Text(note).foregroundStyle(Glide.quiet)
+                    Text(note).foregroundStyle(Air.quiet)
                 }
             }
         case .panel:
             VStack(alignment: .leading, spacing: 6) {
                 Toggle(Self.title, isOn: isOn)
-                    .toggleStyle(.checkbox)
-                    .glideControlTint()
                     .disabled(model.needsApproval)
                 if let note {
                     // Stacked: the panel is too narrow for the note and the button on one line.
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(note).font(.callout).foregroundStyle(Glide.quiet)
+                        Text(note).font(.callout).foregroundStyle(Air.quiet)
                             .fixedSize(horizontal: false, vertical: true)
                         Button(Self.settingsButton, action: model.openSystemSettings)
                             .controlSize(.small)
                     }
-                    .padding(.leading, 20)
                 }
             }
             .modifier(LiveLoginItemStatus(model: model))

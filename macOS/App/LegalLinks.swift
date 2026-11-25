@@ -23,22 +23,6 @@ enum LegalLinks {
     static let plans = [cloudTerms, subscriptionPolicy, privacy]
     /// In the About window.
     static let about = [terms, privacy, index]
-
-    /// The About panel's credits: the pages as links, one line, centred.
-    static func aboutCredits() -> NSAttributedString {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        let base: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
-                                                   .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph]
-        let credits = NSMutableAttributedString()
-        for (index, page) in about.enumerated() {
-            if index > 0 { credits.append(NSAttributedString(string: "   ", attributes: base)) }
-            var attributes = base
-            attributes[.link] = page.url
-            credits.append(NSAttributedString(string: page.title, attributes: attributes))
-        }
-        return credits
-    }
 }
 
 /// A quiet line of legal links, as on the website's footer.
@@ -47,7 +31,7 @@ struct LegalLinksRow: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            ForEach(pages) { GlideLink($0.title, destination: $0.url) }
+            ForEach(pages) { AirLink($0.title, destination: $0.url) }
         }
         .font(.caption)
         .accessibilityElement(children: .contain)

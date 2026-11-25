@@ -13,11 +13,11 @@ struct CloudAccountSection: View {
     @State private var finderName = CloudDriveSetup.defaultFinderName
 
     var body: some View {
-        Section {
+        AirSection {
             switch model.phase {
             case .notConfigured:
                 Text("ParaAir Cloud isn’t available in this build.")
-                    .foregroundStyle(Glide.quiet)
+                    .foregroundStyle(Air.quiet)
             case .signedOut:
                 signedOut(error: nil)
             case .failed(let error):
@@ -31,7 +31,7 @@ struct CloudAccountSection: View {
             }
             if model.policy.allowsLoopbackHTTP { developerAddress }
         } header: {
-            Text("ParaAir Cloud").font(.glideHeading).foregroundStyle(Glide.ink)
+            Text("ParaAir Cloud")
         }
         .sheet(isPresented: Binding(get: { model.deletion.sheetPresented }, set: { if !$0 { model.deletion.closeSheet() } })) {
             CloudAccountDeletionSheet(model: model.deletion)
@@ -45,10 +45,10 @@ struct CloudAccountSection: View {
             .fixedSize(horizontal: false, vertical: true)
         if let error { ErrorLine(text: error) }
         Toggle("Open the sign-in page in my default browser", isOn: $model.openDefaultBrowserAutomatically)
-            .glideControlTint()
         HStack(spacing: 10) {
             Button("Sign In to ParaAir Cloud…") { model.signIn(onReady: onDriveReady) }
-                .buttonStyle(.glideProminent)
+                .controlSize(.large)
+                .buttonStyle(.airProminent)
                 .disabled(model.isBusy || model.baseURL == nil)
         }
         if let message = model.message { ErrorLine(text: message) }
@@ -72,7 +72,7 @@ struct CloudAccountSection: View {
                     Button("Copy Link", action: model.copyAuthorizationLink)
                 }
                 Text("Paste this link into the browser profile you want to sign in with.")
-                    .font(.caption).foregroundStyle(Glide.quiet)
+                    .font(.caption).foregroundStyle(Air.quiet)
             }
         }
     }
@@ -85,11 +85,12 @@ struct CloudAccountSection: View {
         }
         Text(drives.isEmpty ? "Create a drive to see ParaAir Cloud in Finder on this Mac."
              : "Choose the drive to show in Finder on this Mac, or create a new one.")
-            .foregroundStyle(Glide.quiet)
+            .foregroundStyle(Air.quiet)
             .fixedSize(horizontal: false, vertical: true)
         LabeledContent {
             TextField("Name in Finder", text: $finderName, prompt: Text(CloudDriveSetup.defaultFinderName))
                 .labelsHidden()
+                .airField(width: 240)
         } label: {
             Text("Name in Finder")
             Text("A new drive uses this name too.")
@@ -106,7 +107,7 @@ struct CloudAccountSection: View {
         }
         HStack(spacing: 10) {
             if drives.isEmpty {
-                Button("Create Drive") { create() }.buttonStyle(.glideProminent).disabled(model.isBusy)
+                Button("Create Drive") { create() }.buttonStyle(.airProminent).disabled(model.isBusy)
             } else {
                 Button("Create Drive") { create() }.disabled(model.isBusy)
             }
@@ -129,21 +130,21 @@ struct CloudAccountSection: View {
         if let used = usage.usedLine {
             VStack(alignment: .leading, spacing: 6) {
                 Text(usage.planLine)
-                    .font(.glideDisplay(.title))
+                    .airDisplay(Air.Size.figure)
                     .monospacedDigit()
+                    .foregroundStyle(Air.ink)
                 if let scope = usage.scopeLine {
-                    Text(scope).font(.callout).foregroundStyle(Glide.quiet)
+                    Text(scope).font(.callout).foregroundStyle(Air.quiet)
                 }
                 Text(used)
                     .font(.callout).monospacedDigit()
-                    .foregroundStyle(Glide.quiet)
+                    .foregroundStyle(Air.quiet)
                 if let fraction = usage.fraction {
-                    ProgressView(value: fraction)
-                        .tint(fraction >= 1 ? Glide.attention : Glide.controlTint)
-                        .accessibilityLabel(used)
+                    AirMeter(fraction: fraction, tone: fraction >= 1 ? Air.attention : Air.ink)
+                        .padding(.top, 6)
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 6)
             .accessibilityElement(children: .combine)
             if usage.retainedLine != nil || usage.transferLine != nil {
                 VStack(alignment: .leading, spacing: 4) {
@@ -151,7 +152,7 @@ struct CloudAccountSection: View {
                     if let transfer = usage.transferLine { Text(transfer) }
                 }
                 .font(.callout).monospacedDigit()
-                .foregroundStyle(Glide.quiet)
+                .foregroundStyle(Air.quiet)
             }
             if let notice = usage.notice {
                 NoticeRow(notice: .init(id: "throttled", text: notice, tone: .attention))
@@ -161,18 +162,19 @@ struct CloudAccountSection: View {
         } else if usage.unpaid {
             // No storage until a free trial or plan starts: say so, and let the notice and button below lead.
             Text(usage.planLine)
-                .font(.glideDisplay(.title))
-                .padding(.vertical, 4)
+                .airDisplay(Air.Size.figure)
+                .foregroundStyle(Air.ink)
+                .padding(.vertical, 6)
             if let notice = billing.notice { NoticeRow(notice: notice) }
         } else {
             HStack(spacing: 10) {
                 if model.presentationState == .failed {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Glide.attention)
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Air.attention)
                         .accessibilityHidden(true)
                 } else {
                     ProgressView().controlSize(.small)
                 }
-                Text(usage.planLine).foregroundStyle(Glide.quiet)
+                Text(usage.planLine).foregroundStyle(Air.quiet)
                 if model.presentationState == .failed {
                     Button("Retry") { model.reloadSummary() }
                 }
@@ -183,7 +185,7 @@ struct CloudAccountSection: View {
         HStack(spacing: 10) {
             if !model.hasDrive {
                 Button("Create Drive…", action: model.chooseDrive)
-                    .buttonStyle(.glideProminent)
+                    .buttonStyle(.airProminent)
                     .disabled(model.isBusy)
             }
             CloudBillingButtons(controls: billing.controls, allowsProminence: model.hasDrive,
@@ -220,8 +222,9 @@ struct CloudAccountSection: View {
         DisclosureGroup("Developer service address") {
             VStack(alignment: .leading, spacing: 8) {
                 TextField("Service address", text: $model.developerAddress, prompt: Text("http://127.0.0.1:8787"))
+                    .airField()
                 Text("This build may use a local ParaAir Cloud service. The address is saved in this state folder only.")
-                    .font(.caption).foregroundStyle(Glide.quiet)
+                    .font(.caption).foregroundStyle(Air.quiet)
                 Button("Save Address", action: model.saveDeveloperAddress)
                     .disabled(model.isBusy)
             }
@@ -237,7 +240,7 @@ struct ErrorLine: View {
         Label {
             Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         } icon: {
-            Image(systemName: "xmark.octagon.fill").foregroundStyle(Glide.problem)
+            Image(systemName: "xmark.octagon.fill").foregroundStyle(Air.problem)
         }
         .font(.callout)
     }
