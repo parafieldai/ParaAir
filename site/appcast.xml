@@ -7,6 +7,23 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>ParaAir updates</description>
     <language>en</language>
     <item>
+      <title>ParaAir 0.1.0 alpha 8</title>
+      <pubDate>Wed, 25 Nov 2026 12:54:06 GMT</pubDate>
+      <sparkle:version>57</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.8</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>Team owners and admins can manage members in Storage Settings: invite by email, change roles, remove people.</li>
+<li>Delete your ParaAir Cloud account from Storage Settings, with a grace period you can cancel.</li>
+<li>Legal pages are linked from About, the sign-in and the plan sheet; a team's plan shows as shared storage.</li>
+<li>Remove from List… for drives you no longer use.</li>
+<li>Fewer requests to ParaAir Cloud: a quiet drive is checked about once a minute, and every 3 seconds again as soon as anything changes.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.8/ParaAir-0.1.0-alpha.8.zip" length="49672917" type="application/octet-stream" sparkle:edSignature="6RI1XjkObhC8UnN/+d1WmUh1RepwA9YcQ+NeJDmLjwr4tQSNaUIae0ZoapuvRoo8ezymvixKoSjbS6GpqGVLBg=="/>
+    </item>
+    <item>
       <title>ParaAir 0.1.0 alpha 7</title>
       <pubDate>Tue, 24 Nov 2026 10:04:47 GMT</pubDate>
       <sparkle:version>45</sparkle:version>
@@ -75,6 +92,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: iFXqwb37jyJ5jNmYZFOZzyK5dzC/84r+90JXPJTb9ZAfE+X6yuSVgmimNnjFnh/fv/CY62XeIxRhXG/wxxdoAw==
-length: 5837
+edSignature: FGJkZbem4/6MxTV2WYuzjKl08NPnwa/xPq6I/R3O2Qt4uUQ29c1S2nyl4L16M3bnqghxI/tKu2olbb73jWTwBg==
+length: 7155
 -->
