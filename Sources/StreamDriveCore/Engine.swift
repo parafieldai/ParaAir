@@ -85,11 +85,14 @@ public struct EngineTuning: Sendable, Equatable {
         self.listingLifetimeNanoseconds = listingLifetimeNanoseconds
     }
     public static let byo = EngineTuning()
-    /// ParaAir Cloud has a change feed the app follows every 3 s, which drops what it names at once, so listings and
-    /// file details are reused for 30 s. Both lifetimes match: a reused listing doesn't refresh its files' details, and
-    /// a shorter detail lifetime would send every stat of a walk to storage.
-    public static let paraairCloud = EngineTuning(readahead: .standard, metadataLifetimeNanoseconds: 30_000_000_000,
-                                                  listingLifetimeNanoseconds: 30_000_000_000)
+    /// ParaAir Cloud has a change feed the app follows (FeedPollSchedule: every 3 s while changes arrive, up to a minute
+    /// apart when quiet), and it drops what it names at once, so listings and file details are reused for 2 minutes:
+    /// a folder an app keeps re-reading costs storage a request every 2 minutes, not every few seconds. The lifetime
+    /// only bounds how stale a listing can get if the feed stops (the app quit, the network is down). Both lifetimes
+    /// match: a reused listing doesn't refresh its files' details, and a shorter detail lifetime would send every stat
+    /// of a walk to storage.
+    public static let paraairCloud = EngineTuning(readahead: .standard, metadataLifetimeNanoseconds: 120_000_000_000,
+                                                  listingLifetimeNanoseconds: 120_000_000_000)
 }
 
 /// Which pending files one flush may publish. `.background` uploads only files that

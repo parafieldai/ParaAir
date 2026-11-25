@@ -7,7 +7,9 @@ import StreamDriveCore
 /// notification of its own, so for each mounted ParaAir Cloud drive this polls the drive's change feed
 /// (Engine.followChanges, which drops this Mac's cached metadata for whatever changed) and then creates and removes
 /// the `.paraair-refresh` marker through the mount in every folder the feed names: the kernel reports each of those
-/// folders as changed. Every 3 s while a drive is mounted; offline or failing, waiting longer, up to a minute.
+/// folders as changed. Polls come every 3 s while changes arrive (anyone's, this Mac's own uploads included) and for a
+/// minute after the last one, then back off to once a minute while nothing changes (FeedPollSchedule), which keeps an
+/// idle Mac to about one request a minute per drive. Offline or failing, it waits longer, up to a minute.
 @MainActor
 final class ChangeFeedMonitor {
     private struct Drive: Equatable { let stateRoot: URL; let profile: DriveProfile; var key: String { stateRoot.path + "\0" + profile.name } }
@@ -24,8 +26,12 @@ final class ChangeFeedMonitor {
     private var engines: [String: EngineBox] = [:]
     private var loop: Task<Void, Never>?
     private var wait: TimeInterval
+    private var schedule: FeedPollSchedule
 
-    init(interval: TimeInterval = 3) { self.interval = interval; wait = interval }
+    init(interval: TimeInterval = 3) {
+        self.interval = interval; wait = interval
+        schedule = FeedPollSchedule(fast: interval, now: ProcessInfo.processInfo.systemUptime)
+    }
 
     /// Follows the ParaAir Cloud drives among `drives` (each with its state folder) while they are mounted; none stops it.
     func watch(_ drives: [(stateRoot: URL, profile: DriveProfile)]) {
@@ -35,6 +41,8 @@ final class ChangeFeedMonitor {
         stop()
         guard next != nil else { return }
         target = next
+        // A drive was just mounted or the set changed: follow closely for a while.
+        schedule.wake(now: ProcessInfo.processInfo.systemUptime)
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 guard let pause = await self?.poll() else { return }
@@ -51,12 +59,12 @@ final class ChangeFeedMonitor {
     private func poll() async -> TimeInterval? {
         guard let target else { return nil }
         let mounted = Set(ParaAirVolumes.mountedPaths())
-        var failed = false
+        var failed = false, changed = 0
         for drive in target {
             let profile = drive.profile, root = drive.stateRoot
             guard let mount = profile.mountPoint, mounted.contains(mount) else { engines[drive.key] = nil; continue }
             let existing = engines[drive.key].flatMap { $0.profile == profile ? $0 : nil }
-            let result: Result<(EngineBox, Int), Error> = await Task.detached(priority: .utility) {
+            let result: Result<(EngineBox, Int, Int), Error> = await Task.detached(priority: .utility) {
                 do {
                     let box = try existing ?? EngineBox(engine: Engine.open(profile: profile, stateRoot: root), profile: profile)
                     let batch = try box.engine.followChanges(consumer: "app")
@@ -72,20 +80,25 @@ final class ChangeFeedMonitor {
                         }
                     }
                     for folder in folders { Housekeeping.touchRefreshMarker(in: folder, mountPoint: mount) }
-                    return .success((box, folders.count))
+                    return .success((box, folders.count, (batch?.changes.count ?? 0) + (batch?.reset == true ? 1 : 0)))
                 } catch { return .failure(error) }
             }.value
             guard self.target == target else { return interval }
             switch result {
-            case .success(let (box, folders)):
+            case .success(let (box, folders, changes)):
                 engines[drive.key] = box
+                changed += changes
                 if folders > 0 { log.notice("changes from other devices refreshed folders=\(folders)") }
             case .failure(let error):
                 engines[drive.key] = nil; failed = true
                 log.error("change feed failed errno=\((error as? DriveError)?.code ?? -1)")
             }
         }
-        wait = failed ? min(60, max(interval, wait * 2)) : interval
+        if failed {
+            wait = min(60, max(interval, wait * 2))
+        } else {
+            wait = schedule.next(changes: changed, now: ProcessInfo.processInfo.systemUptime)
+        }
         return wait
     }
 }

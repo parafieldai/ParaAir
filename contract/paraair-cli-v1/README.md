@@ -315,5 +315,5 @@ With `--json`, a failure prints this to standard output, and the process exits w
 ## The mounted drive
 
 - A drive the app mounts is at `/Volumes/<Finder name>`; `setup-status` reports its `mountPoint`. Read and write it like any folder. Writes upload in the background; a change that can't upload waits in `conflicts`.
-- While a ParaAir Cloud drive is mounted, the app follows its change feed every 3 seconds and briefly creates and removes `.paraair-refresh` in each folder that changed, so FSEvents reports the folder. Ignore that name.
+- While a ParaAir Cloud drive is mounted, the app follows its change feed (every 3 seconds while changes arrive and for a minute after, up to a minute apart while nothing changes) and briefly creates and removes `.paraair-refresh` in each folder that changed, so FSEvents reports the folder. Ignore that name.
 - On macOS 27 a file another device changed reads as its new version once its folder is listed again or that marker appears. On macOS 26 macOS keeps a file's cached size and contents until the drive is mounted again.
