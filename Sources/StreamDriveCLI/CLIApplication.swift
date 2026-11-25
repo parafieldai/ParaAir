@@ -682,7 +682,13 @@ final class CLIApplication {
         }
         if follow { try emit(FeedStart(following: true, cursor: cursor), text: "Following changes from cursor \(cursor).") }
         var polls = 0, failures = 0
+        // A follower outlives whoever started it if that process quits or crashes (it is reparented to launchd) and
+        // would only notice at its next line. Stop as soon as the parent changes or nobody reads the output.
+        let parent = system.parentProcess()
         while true {
+            if follow, system.parentProcess() != parent || system.outputClosed() {
+                return CLIExecution(stdout: "", stderr: "", exitCode: 0)
+            }
             let page: ParaAirCloudChangePage, folders: [String]
             do { (page, folders) = try engine.readChangesAndFolders(since: cursor) ; failures = 0 }
             catch let error as DriveError where follow && Self.passing(error) {

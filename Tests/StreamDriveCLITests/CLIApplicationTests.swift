@@ -575,6 +575,8 @@ private final class FakeSystem {
     var onSleep: ((Int) -> Void)?
     /// Folders the CLI refreshed through the mount (folder, mount point), and what the fake marker answers.
     var refreshed: [(String, String)] = []
+    var parent: pid_t = 4242
+    var outputClosed = false
     var refreshWrites = false
     var onRefresh: ((String) -> Void)?
     var system: CLISystem {
@@ -588,7 +590,9 @@ private final class FakeSystem {
                   mountedVolumes: { [unowned self] in mounted },
                   sleep: { [unowned self] seconds in sleeps += 1; clock += seconds; onSleep?(sleeps) },
                   now: { [unowned self] in clock },
-                  refreshFolder: { [unowned self] folder, point in refreshed.append((folder, point)); onRefresh?(folder); return refreshWrites })
+                  refreshFolder: { [unowned self] folder, point in refreshed.append((folder, point)); onRefresh?(folder); return refreshWrites },
+                  parentProcess: { [unowned self] in parent },
+                  outputClosed: { [unowned self] in outputClosed })
     }
 }
 
@@ -922,6 +926,30 @@ extension CLIApplicationTests {
                        ["path": "/records/x.json", "version": "pv:8000", "expectedVersion": "pv:9001"])
         let stale = app.run(["restore-version", "/Volumes/ParaOS/records/x.json", "pv:8000", "--expected-version", "pv:1", "--json"])
         XCTAssertEqual(stale.exitCode, 16); XCTAssertEqual(try object(stale)["code"] as? String, "version_conflict")
+    }
+
+    func testChangesFollowStopsWhenItsParentOrItsReaderIsGone() throws {
+        // The parent quits after the first poll: the follower is reparented and stops at the next check, exit 0.
+        let (orphan, _, fake, printed) = try mountedCloud()
+        orphan.maxFollowPolls = 10
+        fake.onSleep = { [unowned fake] _ in fake.parent = 1 }
+        let result = orphan.run(["changes", "/Volumes/ParaOS", "--follow", "--json"])
+        XCTAssertEqual(result.exitCode, 0, result.stderr)
+        XCTAssertEqual(fake.sleeps, 1, "stopped right after the first wait, not after 10 polls")
+        XCTAssertEqual(try lines(printed()).count, 3, "what the first poll found was printed")
+
+        // Nobody reads the output any more: it stops before polling.
+        let (unread, _, closed, _) = try mountedCloud()
+        unread.maxFollowPolls = 10
+        closed.outputClosed = true
+        XCTAssertEqual(unread.run(["changes", "/Volumes/ParaOS", "--follow", "--json"]).exitCode, 0)
+        XCTAssertEqual(closed.sleeps, 0)
+
+        // Without --follow nothing is checked: a one-off read never stops early.
+        let (once, _, gone, onceOut) = try mountedCloud()
+        gone.parent = 1; gone.outputClosed = true
+        XCTAssertEqual(once.run(["changes", "/Volumes/ParaOS", "--since", "10", "--json"]).exitCode, 0)
+        XCTAssertEqual(try lines(onceOut()).count, 2)
     }
 
     func testChangesFollowPrintsOneJSONLinePerChange() throws {

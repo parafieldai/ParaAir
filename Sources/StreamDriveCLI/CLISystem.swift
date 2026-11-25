@@ -70,6 +70,11 @@ struct CLISystem {
     /// (Housekeeping.touchRefreshMarker), so the drive's extension drops the kernel's caches for what changed there.
     /// False when nothing was written. Does nothing unless set, so tests never write into a real mount.
     var refreshFolder: (_ folder: String, _ mountPoint: String) -> Bool = { _, _ in false }
+    /// The parent process, so `changes --follow` can stop when whoever started it is gone (it was reparented).
+    var parentProcess: () -> pid_t = { 1 }
+    /// Whether standard output has no reader any more (a pipe whose read end was closed), so a follower stops without
+    /// waiting for its next line to fail.
+    var outputClosed: () -> Bool = { false }
 
     /// Opens ParaAir's own sign-in (Storage Settings → ParaAir Cloud). The code is typed in the browser, never here.
     static let signInURL = URL(string: "paraair://cloud/sign-in")!
@@ -119,7 +124,9 @@ struct CLISystem {
         },
         mountedVolumes: { MountController.mountedVolumes() },
         sleep: { Thread.sleep(forTimeInterval: $0) },
-        refreshFolder: { folder, point in Housekeeping.isParaAirMount(point) && Housekeeping.touchRefreshMarker(in: folder, mountPoint: point) })
+        refreshFolder: { folder, point in Housekeeping.isParaAirMount(point) && Housekeeping.touchRefreshMarker(in: folder, mountPoint: point) },
+        parentProcess: { getppid() },
+        outputClosed: { standardOutputReaderGone() })
 }
 
 private final class ModulesBox: @unchecked Sendable {
@@ -153,4 +160,18 @@ private func liveExtensionState(appPath: String, bundleID: String?) -> String {
     }
     #endif
     return "unknown"
+}
+
+/// Whether standard output is a pipe or socket whose reader has gone: kqueue reports EV_EOF on the write filter once
+/// the read end is closed. A terminal or a file never reports it.
+private func standardOutputReaderGone() -> Bool {
+    let queue = kqueue()
+    guard queue >= 0 else { return false }
+    defer { close(queue) }
+    var change = kevent(ident: UInt(STDOUT_FILENO), filter: Int16(EVFILT_WRITE), flags: UInt16(EV_ADD | EV_ONESHOT),
+                        fflags: 0, data: 0, udata: nil)
+    var event = kevent()
+    var timeout = timespec(tv_sec: 0, tv_nsec: 0)
+    guard kevent(queue, &change, 1, &event, 1, &timeout) == 1 else { return false }
+    return event.flags & UInt16(EV_EOF) != 0
 }
