@@ -85,6 +85,8 @@ struct CloudUsage: Equatable {
     var planChoiceAvailable = false
     /// A payment page for this workspace is open and not yet paid.
     var pendingCheckout = false
+    /// The account's scheduled deletion, as the notice the home window shows (account-wide, not the workspace's).
+    var accountDeletion: String? = nil
 
     var billing: CloudBillingPresentation {
         CloudBillingPresentation.make(workspace, state: state, planChoiceAvailable: planChoiceAvailable, pendingCheckout: pendingCheckout)
@@ -432,6 +434,9 @@ struct HomePresentation: Equatable {
         }
         let billingNotice = input.storageKind == .paraairCloud ? input.cloudUsage?.billing.notice : nil
         if let billing = billingNotice, showsBilling { notices.append(named(billing)) }
+        if input.storageKind == .paraairCloud, let deletion = input.cloudUsage?.accountDeletion {
+            notices.append(.init(id: "account-deletion", text: deletion, tone: .attention))
+        }
         // A service without billing can still make a workspace read-only; alone, the status says so (`one()`), listed
         // beside other drives the row only says Connected.
         if listed, billingNotice == nil, input.storageKind == .paraairCloud, input.mounted,

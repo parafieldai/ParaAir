@@ -66,6 +66,7 @@ struct UISnapshots {
         failures += try renderCloudStorage(output: output)
         failures += try renderBilling(output: output)
         failures += try renderMembers(output: output)
+        failures += try renderAccountDeletion(output: output)
 
         if failures.isEmpty {
             print("PASS: presentation logic and naming checks; snapshots in \(output.path)")
@@ -371,7 +372,7 @@ struct UISnapshots {
                               summaryLoader: { _ in (try summary.get(), fixtureWorkspaceID) },
                               uploader: { _, _ in UploadActivity() },
                               driveLister: { _, _ in (fixtureDrives, try summary.get()) },
-                              membersService: MembersBox(fixtureMembers()).service)
+                              membersService: MembersBox(fixtureMembers()).service, deletionService: DeletionBox(nil).service)
         }
         func signedIn(_ name: String, drive: Bool) throws -> URL {
             try seedSignedIn(base.appendingPathComponent(name, isDirectory: true), vault: vault, drive: drive)
@@ -507,7 +508,8 @@ struct UISnapshots {
                                         workspaceID: fixtureWorkspaceID)
             let cloud = CloudAccountModel(stateRoot: root, dependencies: dependencies, baseURL: { _ in fixtureIssuer },
                                           summaryLoader: { _ in (me, fixtureWorkspaceID) }, uploader: { _, _ in UploadActivity() },
-                                          driveLister: { _, _ in (fixtureDrives, me) }, membersService: box.service)
+                                          driveLister: { _, _ in (fixtureDrives, me) }, membersService: box.service,
+                                          deletionService: DeletionBox(nil).service)
             cloud.reloadSummary()
             settle { cloud.summaryState == .loaded }
             if let workspace = cloud.workspace, let account = cloud.signedInAccount {
@@ -694,6 +696,144 @@ struct UISnapshots {
         return failures
     }
 
+    // MARK: Account deletion
+
+    static let deletionUTC = TimeZone(identifier: "UTC")!
+    static func fixtureDeletion(scheduled: Bool = false, by: String = "user", blockers: [ParaAirCloudAccountDeletion.Blocker] = [])
+        -> ParaAirCloudAccountDeletion {
+        ParaAirCloudAccountDeletion(
+            deletion: scheduled ? .init(state: "scheduled", requestedAt: day("2026-11-25").addingTimeInterval(8 * 3600),
+                                        deleteAfter: day("2026-12-02").addingTimeInterval(8 * 3600), requestedBy: by) : nil,
+            graceDays: 7,
+            workspaces: [.init(id: fixtureWorkspaceID, name: "Personal", kind: "personal", role: "owner", action: "delete"),
+                         .init(id: "ws_01J9ZX5Q4WJ3M8K2V7N6R1T0YD", name: "Studio", kind: "team", role: "admin", action: "leave")],
+            blockers: blockers)
+    }
+
+    /// Closing the account from Storage Settings: offered only by a service that has it, the sheet's workspaces,
+    /// blockers and typed confirmation, the scheduled deletion's banner and home notice, and cancelling. The fixture
+    /// service records every call; nothing reaches a network.
+    @MainActor
+    static func renderAccountDeletion(output: URL) throws -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: Bool, _ message: String) { if !condition { failures.append("account deletion: " + message) } }
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("paraair-ui-deletion-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let vault = MemoryVault()
+        let dependencies = EngineOpenDependencies(cloudVault: vault, cloudConfiguration: .ephemeral,
+                                                  cloudPolicy: .init(allowsLoopbackHTTP: false))
+        let me = fixtureMe(stored: 212_000_000_000, billing: billingBeta)
+        func model(_ name: String, _ box: DeletionBox) throws -> CloudAccountModel {
+            let root = try seedSignedIn(base.appendingPathComponent(name, isDirectory: true), vault: vault, drive: true,
+                                        workspaceID: fixtureWorkspaceID)
+            let cloud = CloudAccountModel(stateRoot: root, dependencies: dependencies, baseURL: { _ in fixtureIssuer },
+                                          summaryLoader: { _ in (me, fixtureWorkspaceID) }, uploader: { _, _ in UploadActivity() },
+                                          driveLister: { _, _ in (fixtureDrives, me) }, membersService: MembersBox(fixtureMembers()).service,
+                                          deletionService: box.service)
+            cloud.reloadSummary()
+            settle { cloud.summaryState == .loaded }
+            settle { cloud.deletion.state != .idle && cloud.deletion.state != .loading }
+            return cloud
+        }
+        func busyDone(_ deletion: CloudAccountDeletionModel) { settle { !deletion.busy }; settle { deletion.state != .loading } }
+        func storage(_ cloud: CloudAccountModel, _ name: String, _ appearances: [NSAppearance.Name] = [.aqua]) throws {
+            for appearance in appearances {
+                try render(ConnectionsView(stateRoot: cloud.stateRoot, vault: MemoryVault(), cloudAccount: cloud),
+                           size: CGSize(width: 680, height: 760), appearance: appearance,
+                           to: output.appendingPathComponent("storage-deletion-\(name)-\(suffix(appearance)).png"))
+            }
+        }
+
+        // Words.
+        let scheduled = fixtureDeletion(scheduled: true).deletion!
+        expect(CloudAccountDeletionText.banner(scheduled, timeZone: deletionUTC).hasPrefix("Your ParaAir Cloud account will be deleted on December 2, 2026 at 8:00"),
+               "the banner names the day and time")
+        expect(CloudAccountDeletionText.banner(fixtureDeletion(scheduled: true, by: "operator").deletion!, timeZone: deletionUTC)
+               .hasPrefix("At your request, Parafield support scheduled"), "a deletion support scheduled says so")
+        expect(CloudAccountDeletionText.grace(7).hasPrefix("The account is deleted 7 days after you confirm")
+               && CloudAccountDeletionText.grace(1).hasPrefix("The account is deleted 1 day after"), "the grace period in days")
+        expect(CloudAccountDeletionText.confirms(" MAYA@example.com ", email: fixtureEmail)
+               && !CloudAccountDeletionText.confirms("maya@example.co", email: fixtureEmail), "the typed address must match, in any case")
+        let blocked = fixtureDeletion(blockers: [.init(workspaceId: "ws_01J9ZX5Q4WJ3M8K2V7N6R1T0YD", reason: "sole_owner"),
+                                                 .init(workspaceId: fixtureWorkspaceID, reason: "subscription_active")])
+        expect(CloudAccountDeletionText.blocker(blocked.blockers[0], in: blocked).hasPrefix("You’re the only owner of Studio")
+               && CloudAccountDeletionText.blocker(blocked.blockers[1], in: blocked).hasPrefix("Personal has a plan that renews"),
+               "each blocker names its workspace and what to do")
+
+        // A service without account deletion offers nothing.
+        let olderBox = DeletionBox(nil)
+        let older = try model("older", olderBox)
+        expect(older.deletion.state == .unsupported && !older.deletion.canRequest, "an older service offers no deletion")
+
+        // Offered: the sheet lists what happens and waits for the typed address.
+        let box = DeletionBox(fixtureDeletion())
+        let cloud = try model("offered", box)
+        expect(cloud.deletion.canRequest && box.count(.status) == 1, "a service with deletion offers Delete Account…")
+        try storage(cloud, "offered")
+        cloud.deletion.presentSheet()
+        busyDone(cloud.deletion)
+        expect(cloud.deletion.sheetPresented && !cloud.deletion.canConfirm, "the sheet opens with nothing typed")
+        cloud.deletion.confirmEmail = "maya@example.co"
+        cloud.deletion.request()
+        expect(box.count(.request("maya@example.co")) == 0, "a wrong address sends nothing")
+        cloud.deletion.confirmEmail = "Maya@Example.com"
+        expect(cloud.deletion.canConfirm, "the account's address in any case confirms")
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            try render(CloudAccountDeletionSheet(model: cloud.deletion), size: nil, appearance: appearance,
+                       to: output.appendingPathComponent("deletion-sheet-\(suffix(appearance)).png"))
+        }
+        cloud.deletion.request()
+        busyDone(cloud.deletion)
+        expect(box.count(.request("Maya@Example.com")) == 1 && cloud.deletion.scheduled != nil && !cloud.deletion.sheetPresented,
+               "Delete Account sends the typed address once, closes the sheet and shows the date")
+        expect(cloud.usage.accountDeletion?.hasPrefix("Your ParaAir Cloud account will be deleted on December 2, 2026") == true,
+               "the home window gets the deletion notice")
+        try storage(cloud, "scheduled", [.aqua, .darkAqua])
+        var home = Dictionary(uniqueKeysWithValues: homeScenarios)["9-cloud-ready"]!
+        home.cloudUsage?.accountDeletion = CloudAccountDeletionText.homeNotice(scheduled.deleteAfter, timeZone: deletionUTC)
+        let notices = HomePresentation.make(home).notices
+        expect(notices.contains { $0.id == "account-deletion" && $0.tone == .attention }, "the home window shows the scheduled deletion")
+        try render(DriveHomeContent(input: home, details: details(for: home), connectAutomatically: .constant(true), actions: HomeActions()),
+                   size: CGSize(width: 620, height: 680), appearance: .aqua,
+                   to: output.appendingPathComponent("home-33-account-deletion-light.png"))
+
+        // Cancel: once, and the banner goes.
+        cloud.deletion.cancel()
+        busyDone(cloud.deletion)
+        expect(box.count(.cancel) == 1 && cloud.deletion.scheduled == nil && cloud.deletion.canRequest && cloud.usage.accountDeletion == nil,
+               "Cancel Deletion cancels once and the account is offered again")
+
+        // Blocked: what to change, and no confirmation.
+        let blockedBox = DeletionBox(blocked)
+        let blockedCloud = try model("blocked", blockedBox)
+        blockedCloud.deletion.presentSheet()
+        busyDone(blockedCloud.deletion)
+        blockedCloud.deletion.confirmEmail = fixtureEmail
+        expect(!blockedCloud.deletion.canConfirm, "a blocked deletion can't be confirmed")
+        try render(CloudAccountDeletionSheet(model: blockedCloud.deletion), size: nil, appearance: .aqua,
+                   to: output.appendingPathComponent("deletion-sheet-blocked-light.png"))
+
+        // Refused by the service after the sheet opened: the reason shows and the status is read again.
+        let refusedBox = DeletionBox(fixtureDeletion())
+        refusedBox.requestFailure = DriveError(EBUSY, "Your account can’t be deleted yet. Something needs to change first",
+                                               disposition: .attemptNotDispatched)
+        let refused = try model("refused", refusedBox)
+        refused.deletion.presentSheet()
+        busyDone(refused.deletion)
+        let reads = refusedBox.count(.status)
+        refused.deletion.confirmEmail = fixtureEmail
+        refused.deletion.request()
+        busyDone(refused.deletion)
+        settle { refusedBox.count(.status) > reads }
+        expect(refused.deletion.message == "Your account can’t be deleted yet. Something needs to change first."
+               && refused.deletion.sheetPresented && refusedBox.count(.status) > reads, "a refusal says why and reads the status again")
+
+        // Signing out forgets it.
+        cloud.deletion.hide()
+        expect(cloud.deletion.state == .idle && cloud.deletion.account == nil, "signing out forgets the deletion status")
+        return failures
+    }
+
     // MARK: ParaAir Cloud billing
 
     /// Storage Settings in every billing state, the plan sheet's steps, and the model's offer, checkout and portal
@@ -730,7 +870,7 @@ struct UISnapshots {
                 },
                 portalStarter: { _, _, _ in portal },
                 offerLoader: { _, _, selection in try offer.offer(selection) },
-                membersService: MembersBox(fixtureMembers()).service,
+                membersService: MembersBox(fixtureMembers()).service, deletionService: DeletionBox(nil).service,
                 openURL: { recorder.open($0); return true })
             cloud.billingWatchDelays = [0.2, 0.2, 0.2, 0.2]
             cloud.reloadSummary()
@@ -959,7 +1099,8 @@ struct UISnapshots {
         // A folder switch replaces the model; the open page is still known.
         let replaced = CloudAccountModel(stateRoot: once.stateRoot, dependencies: dependencies, baseURL: { _ in fixtureIssuer },
                                          summaryLoader: { _ in (fixtureMe(stored: 1, billing: billingBeta), fixtureWorkspaceID) },
-                                         membersService: MembersBox(fixtureMembers()).service, openURL: { _ in true })
+                                         membersService: MembersBox(fixtureMembers()).service, deletionService: DeletionBox(nil).service,
+                                         openURL: { _ in true })
         expect(replaced.pendingCheckout?.url == stripeCheckout, "a replaced model still knows the open payment page")
         once.startOver()
         expect(once.pendingCheckout == nil && once.checkout == .idle && once.planSheetPresented, "Start Over returns to the plan choice")
@@ -2134,6 +2275,41 @@ final class MembersBox: @unchecked Sendable {
                     if let failure = self.failures.remove { throw failure }
                     self.value.members.removeAll { $0.userId == userID }
                     self.value.workspace.seatsUsed = self.value.members.count
+                }
+            })
+    }
+}
+
+/// The account deletion service of the snapshots: answers from a fixture status (nil: a service without deletion),
+/// applies requests and cancels to it and records every call.
+final class DeletionBox: @unchecked Sendable {
+    enum Call: Equatable { case status, request(String), cancel }
+    private let lock = NSLock()
+    private var value: ParaAirCloudAccountDeletion?
+    private var log: [Call] = []
+    private var failure: DriveError?
+    var requestFailure: DriveError? { get { lock.withLock { failure } } set { lock.withLock { failure = newValue } } }
+    init(_ status: ParaAirCloudAccountDeletion?) { value = status }
+    func count(_ call: Call) -> Int { lock.withLock { log.filter { $0 == call }.count } }
+
+    var service: CloudAccountDeletionService {
+        CloudAccountDeletionService(
+            status: { _, _ in self.lock.withLock { self.log.append(.status); return self.value } },
+            request: { _, _, email in
+                try self.lock.withLock {
+                    self.log.append(.request(email))
+                    if let failure = self.failure { throw failure }
+                    guard var status = self.value else { throw DriveError(ENOENT, "This ParaAir Cloud service can’t delete accounts yet") }
+                    status.deletion = UISnapshots.fixtureDeletion(scheduled: true).deletion
+                    self.value = status
+                    return status
+                }
+            },
+            cancel: { _, _ in
+                self.lock.withLock {
+                    self.log.append(.cancel)
+                    self.value?.deletion = nil
+                    return self.value ?? UISnapshots.fixtureDeletion()
                 }
             })
     }

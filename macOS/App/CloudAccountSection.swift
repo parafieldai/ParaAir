@@ -33,6 +33,9 @@ struct CloudAccountSection: View {
         } header: {
             Text("ParaAir Cloud").font(.glideHeading).foregroundStyle(Glide.ink)
         }
+        .sheet(isPresented: Binding(get: { model.deletion.sheetPresented }, set: { if !$0 { model.deletion.closeSheet() } })) {
+            CloudAccountDeletionSheet(model: model.deletion)
+        }
     }
 
     // MARK: Signed out
@@ -155,6 +158,7 @@ struct CloudAccountSection: View {
             }
             CloudBillingRows(billing: billing)
             if let notice = billing.notice { NoticeRow(notice: notice) }
+            CloudAccountDeletionBanner(model: model.deletion)
         } else if usage.unpaid {
             // No storage until a free trial or plan starts: say so, and let the notice and button below lead.
             Text(usage.planLine)
@@ -183,6 +187,10 @@ struct CloudAccountSection: View {
             }
             CloudBillingButtons(controls: billing.controls, allowsProminence: model.hasDrive,
                                 disabled: model.isBusy || model.billingBusy, perform: model.perform)
+            if model.deletion.canRequest {
+                Button("Delete Account…", action: model.deletion.presentSheet)
+                    .disabled(model.isBusy || model.deletion.busy)
+            }
             Button("Sign Out…", action: model.requestSignOut)
                 .disabled(model.isBusy)
                 .confirmationDialog("Sign out of ParaAir Cloud?", isPresented: $model.signOutRequested,

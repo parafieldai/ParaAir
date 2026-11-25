@@ -761,3 +761,66 @@ extension ParaAirCloudAPI {
         return id
     }
 }
+
+// MARK: Account deletion (cloud item P4): the signed-in person closes their own account
+
+extension ParaAirCloudAPI {
+    /// `GET /v1/account/deletion`: whether a deletion is scheduled, the grace period, what happens to each workspace and
+    /// what must change first. Nil when the service doesn't offer account deletion (it predates the route: 404).
+    public func accountDeletion() throws -> ParaAirCloudAccountDeletion? {
+        do {
+            return try unwrap {
+                let call = Call(method: "GET", path: "/v1/account/deletion", route: "GET /v1/account/deletion")
+                return try deletionBody(perform(call))
+            }
+        } catch let error as DriveError where error.code == ENOENT {
+            return nil
+        }
+    }
+
+    /// `POST /v1/account/deletion`: schedules the deletion after the grace period. `confirmEmail` is the account's
+    /// address, typed by the person (the service compares it case-insensitively). The Idempotency-Key makes a resent
+    /// request answer like the first; asking again while one is scheduled changes nothing.
+    public func requestAccountDeletion(confirmEmail: String) throws -> ParaAirCloudAccountDeletion {
+        try deletionCall(creating: true) {
+            let call = Call(method: "POST", path: "/v1/account/deletion", route: "POST /v1/account/deletion",
+                            body: try json(["confirmEmail": confirmEmail]), idempotencyKey: UUID())
+            return try deletionBody(perform(call))
+        }
+    }
+
+    /// `DELETE /v1/account/deletion`: cancels a scheduled deletion; with none scheduled it changes nothing.
+    public func cancelAccountDeletion() throws -> ParaAirCloudAccountDeletion {
+        try deletionCall(creating: false) {
+            let call = Call(method: "DELETE", path: "/v1/account/deletion", route: "DELETE /v1/account/deletion", idempotencyKey: UUID())
+            return try deletionBody(perform(call))
+        }
+    }
+
+    private func deletionBody(_ response: ParaAirCloudHTTP.Response) throws -> ParaAirCloudAccountDeletion {
+        let body = try decode(ParaAirCloudAccountDeletion.self, response)
+        guard body.isValid else { throw malformed() }
+        return body
+    }
+
+    /// The codes these routes answer with their own meaning; everything else keeps the table's text.
+    private func deletionCall<T>(creating: Bool, _ body: () throws -> T) throws -> T {
+        do { return try body() }
+        catch let error as ParaAirCloudCallError {
+            let suffix = error.requestID.flatMap(ParaAirCloudErrorMap.validRequestID).map { " (request \($0))" } ?? ""
+            let text: String
+            switch error.code {
+            case .busy?:
+                text = creating ? "Your account can’t be deleted yet. Something needs to change first"
+                    : "Your account is already being deleted, so it’s too late to cancel"
+            case .invalidRequest? where creating:
+                text = "That isn’t this account’s email address"
+            case .notFound?:
+                text = "This ParaAir Cloud service can’t delete accounts yet"
+            default:
+                throw error.drive
+            }
+            throw DriveError(error.drive.code, text + suffix, disposition: error.drive.disposition)
+        }
+    }
+}

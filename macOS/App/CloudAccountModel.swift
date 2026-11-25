@@ -93,6 +93,9 @@ final class CloudAccountModel: ObservableObject {
     let policy: ParaAirCloudTransportPolicy
     /// The drive's team members, for Storage Settings' Members section.
     let members: CloudMembersModel
+    /// Closing the signed-in account: its status, request and cancel.
+    let deletion: CloudAccountDeletionModel
+    private var deletionObservation: AnyCancellable?
     /// Set by the app so the sign-out confirmation counts uploads that are current.
     var refreshPendingUploads: (@MainActor () async -> UploadActivity?)?
     /// Told the state folder of every finished sign-in, at once, so other apps (the paraair CLI) can find the account
@@ -126,10 +129,12 @@ final class CloudAccountModel: ObservableObject {
     init(stateRoot: URL, dependencies: EngineOpenDependencies = .live, baseURL: (@MainActor (URL) -> URL?)? = nil,
          summaryLoader: SummaryLoader? = nil, uploader: Uploader? = nil, driveLister: DriveLister? = nil,
          checkoutStarter: CheckoutStarter? = nil, portalStarter: PortalStarter? = nil, offerLoader: OfferLoader? = nil,
-         membersService: CloudMembersService? = nil, openURL: (@MainActor (URL) -> Bool)? = nil) {
+         membersService: CloudMembersService? = nil, deletionService: CloudAccountDeletionService? = nil,
+         openURL: (@MainActor (URL) -> Bool)? = nil) {
         self.stateRoot = stateRoot.standardizedFileURL
         self.dependencies = dependencies
         members = CloudMembersModel(stateRoot: stateRoot, service: membersService ?? .live(dependencies))
+        deletion = CloudAccountDeletionModel(stateRoot: stateRoot, service: deletionService ?? .live(dependencies))
         policy = dependencies.cloudPolicy
         let policy = dependencies.cloudPolicy
         resolveBaseURL = baseURL ?? { ParaAirCloudConfiguration.baseURL(stateRoot: $0, policy: policy) }
@@ -140,6 +145,10 @@ final class CloudAccountModel: ObservableObject {
         self.portalStarter = portalStarter ?? Self.livePortal(dependencies)
         self.offerLoader = offerLoader ?? Self.liveOffer(dependencies)
         self.openURL = openURL ?? { NSWorkspace.shared.open($0) }
+        // The home window reads a scheduled deletion through `usage`, so its changes are this model's changes.
+        deletionObservation = deletion.objectWillChange.sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.objectWillChange.send() }
+        }
         reload()
         if policy.allowsLoopbackHTTP { developerAddress = self.baseURL?.absoluteString ?? "" }
         // Back from the browser: the payment or portal change shows as soon as the service has it, also after the
@@ -177,7 +186,8 @@ final class CloudAccountModel: ObservableObject {
     var presentationState: CloudSummaryState { summaryState == .loaded && summary != nil && workspace == nil ? .failed : summaryState }
     var usage: CloudUsage {
         CloudUsage(workspace: workspace, state: presentationState, planChoiceAvailable: planChoiceAvailable,
-                   pendingCheckout: pendingCheckout != nil && pendingCheckout?.workspaceID == workspace?.id)
+                   pendingCheckout: pendingCheckout != nil && pendingCheckout?.workspaceID == workspace?.id,
+                   accountDeletion: deletion.scheduled.map { CloudAccountDeletionText.homeNotice($0.deleteAfter) })
     }
     var manageURL: URL? { workspace?.plan?.manageUrl }
     /// Some workspace of the account offers checkout.
@@ -210,7 +220,7 @@ final class CloudAccountModel: ObservableObject {
         if signedInAccount == nil, summary != nil || summaryState != .idle {
             summary = nil; summaryState = .idle; summaryLoadedAt = nil; workspaceID = nil
         }
-        if signedInAccount == nil { endBilling(); members.hide() }
+        if signedInAccount == nil { endBilling(); members.hide(); deletion.hide() }
         else if pendingCheckout == nil, let key = pendingKey, let saved = Self.pendingCheckouts[key] { pendingCheckout = saved }
     }
 
@@ -409,6 +419,8 @@ final class CloudAccountModel: ObservableObject {
                 if let id = value.workspaceID { self.workspaceID = id }
                 self.summaryState = .loaded; self.summaryLoadedAt = Date()
                 self.settlePendingCheckout()
+                // A scheduled deletion shows in Storage Settings and the home window; at most every 5 minutes.
+                self.deletion.show(account: account)
             case .failure(let error):
                 self.log.error("cloud summary failed errno=\(Self.code(error))")
                 self.summaryState = .failed
@@ -452,7 +464,7 @@ final class CloudAccountModel: ObservableObject {
                 let tokens = try await ParaAirCloudBlocking.run { try CloudAccountStore(root: root).signOut(account.id, vault: vault) }
                 log.notice("cloud signed out uploadFirst=\(uploadFirst)")
                 summary = nil; summaryState = .idle; summaryLoadedAt = nil; workspaceID = nil
-                endBilling(); members.hide()
+                endBilling(); members.hide(); deletion.hide()
                 phase = .signedOut
                 reload()
                 // Best effort, after the record already says signed out (spec 3.5).
