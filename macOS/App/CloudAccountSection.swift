@@ -90,7 +90,7 @@ struct CloudAccountSection: View {
         LabeledContent {
             TextField("Name in Finder", text: $finderName, prompt: Text(CloudDriveSetup.defaultFinderName))
                 .labelsHidden()
-                .airField(width: 240)
+                .airField(width: 300)
         } label: {
             Text("Name in Finder")
             Text("A new drive uses this name too.")
@@ -182,7 +182,7 @@ struct CloudAccountSection: View {
         }
         // Outside the plan and usage rows, so a scheduled deletion can be cancelled whatever the summary shows.
         CloudAccountDeletionBanner(model: model.deletion)
-        HStack(spacing: 10) {
+        AirFlow {
             if !model.hasDrive {
                 Button("Create Drive…", action: model.chooseDrive)
                     .buttonStyle(.airProminent)

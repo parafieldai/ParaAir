@@ -117,8 +117,8 @@ struct CloudPlanSheet: View {
     }
 
     private func header(_ title: String, _ detail: String?) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            ParaAirMark(badge: false).frame(width: 30, height: 30)
+        HStack(alignment: .top, spacing: 12) {
+            ParaAirMark(badge: false).frame(width: 30, height: 30).padding(.top, 1)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).airDisplay(Air.Size.title).foregroundStyle(Air.ink)
                 if let detail { Text(detail).foregroundStyle(Air.quiet).fixedSize(horizontal: false, vertical: true) }
@@ -286,9 +286,13 @@ struct CloudPlanSheet: View {
             .accessibilityElement(children: .combine)
             DisclosureGroup(isExpanded: $showsFullTerms) { fullTerms(terms).padding(.top, 6) } label: { Text("Show full terms") }
         }
-        Toggle(isOn: $agrees) { Text(Self.consentText(terms.consent)).fixedSize(horizontal: false, vertical: true) }
-            .toggleStyle(.airCheckbox)
-            .tint(Air.ink)
+        // The native checkbox: its box and its sentence both tick it, and the sentence's links still open. The box takes
+        // the sage; the links stay ink.
+        Toggle(isOn: $agrees) {
+            Text(Self.consentText(terms.consent)).fixedSize(horizontal: false, vertical: true).tint(Air.ink)
+        }
+            .toggleStyle(.checkbox)
+            .tint(Air.accent)
             .disabled(working)
     }
 
@@ -399,7 +403,7 @@ private struct PlanCard<Footer: View>: View {
         let chosen = selected && option.available
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
-                Text(offer.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(ink)
+                Text(offer.name).font(.system(size: 14, weight: .medium)).foregroundStyle(ink)
                 Spacer(minLength: 8)
                 Image(systemName: chosen ? "largecircle.fill.circle" : "circle")
                     .foregroundStyle(chosen ? Air.ink : Air.quiet)

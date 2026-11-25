@@ -127,7 +127,7 @@ struct DriveHomeContent: View {
                             .font(input.mounted ? .body.monospaced() : .body)
                             .textSelection(.enabled)
                     }
-                    HStack(spacing: Air.Space.sm) {
+                    AirFlow {
                         // Not again here when the drive status already leads with choosing a plan.
                         if let controls = input.cloudUsage?.billing.controls.filter({ $0.action != .choosePlan || presentation.primary.action != .choosePlan }),
                            !controls.isEmpty {
@@ -214,18 +214,25 @@ struct MenuBarPanel: View {
             .controlSize(.small)
             PanelRule()
             HStack {
-                Menu("More") {
+                Menu {
                     AdvancedMenuItems(input: input, details: details, actions: actions)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("More")
+                        Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                    }
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.airText)
+                .menuIndicator(.hidden)
                 .fixedSize()
+                .accessibilityLabel("More")
                 Spacer()
                 Button("Quit ParaAir", action: actions.quit).buttonStyle(.airText)
             }
         }
         .padding(18)
         .frame(width: 320)
-        .airFieldBackground(150)
         .airAnimation(AirMotion.settle, value: DriveHomeContent.motionKey(presentation))
         .airSurface()
     }
@@ -383,13 +390,12 @@ private struct ActionRow: View {
 
 /// One drive: its Finder name and storage, its state, and the one action that state needs. In the window the state and
 /// the action sit in fixed columns, so they line up from row to row whatever the names; the menu bar panel puts the
-/// state under the name. Hovering a row in the window tints it.
+/// state under the name.
 struct DriveListRow: View {
     let row: HomePresentation.DriveRow
     var compact = false
     let perform: (String, HomePresentation.Action) -> Void
     @State private var confirmingRemoval = false
-    @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -414,15 +420,6 @@ struct DriveListRow: View {
                 more.frame(width: 22)
             }
         }
-        .background {
-            if !compact {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Air.muted.opacity(hovering ? 0.7 : 0))
-                    .padding(.horizontal, -10).padding(.vertical, -6)
-                    .accessibilityHidden(true)
-            }
-        }
-        .onHover { inside in withAnimation(AirMotion.hover) { hovering = inside } }
         .airTransition(.item)
         .accessibilityElement(children: .contain)
         .contextMenu {
@@ -572,7 +569,7 @@ private struct StepRow: View {
                 .frame(width: 20, alignment: .leading)
             VStack(alignment: .leading, spacing: 3) {
                 Text(step.title)
-                    .font(.system(size: 14, weight: step.state == .current ? .semibold : .medium))
+                    .font(.system(size: 14, weight: step.state == .current ? .medium : .regular))
                     .tracking(-0.1)
                     .foregroundStyle(step.state == .upcoming ? Air.quiet : Air.ink)
                 Text(step.detail).font(.callout).foregroundStyle(Air.quiet)
@@ -601,11 +598,11 @@ private struct AdvancedControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: Air.Space.sm) {
+            AirFlow {
                 Button("File System Extension Settings…", action: actions.openExtensionSettings)
                 if input.mounted { Button("Add to Finder Sidebar", action: actions.addToSidebar) }
             }
-            HStack(spacing: Air.Space.sm) {
+            AirFlow {
                 Button("Choose State Folder…", action: actions.chooseStateFolder)
                     .disabled(!details.canChangeStateFolder)
                 ForEach(actions.credentialTargets) { target in

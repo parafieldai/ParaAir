@@ -94,7 +94,7 @@ private struct ReviewRow: View {
                 .frame(width: 22)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(decision.name).fontWeight(.semibold).foregroundStyle(Air.ink).lineLimit(1).truncationMode(.middle)
+                Text(decision.name).fontWeight(.medium).foregroundStyle(Air.ink).lineLimit(1).truncationMode(.middle)
                 Text(detail).font(.caption).foregroundStyle(Air.quiet).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
@@ -107,7 +107,9 @@ private struct ReviewRow: View {
             if decision.kind != .conflict {
                 Button("Export My Copy…") { actions.export(decision) }
             }
+            // A fixed slot for the last action, so the actions line up from row to row whichever pair a row offers.
             Button(decision.kind == .conflict ? "Keep Theirs" : "Discard Mine") { actions.discard(decision) }
+                .frame(width: 104, alignment: .trailing)
         }
         .controlSize(.small)
         .disabled(!enabled)

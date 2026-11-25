@@ -19,6 +19,11 @@ enum Air {
     static let muted = adaptive(dark: 0x1A1C20, light: 0xEEF0F3)
     /// Hairlines between rows.
     static let rule = adaptive(dark: 0x24272C, light: 0xE6E8EC)
+    /// The empty part of a meter: visible on cards in both appearances.
+    static let track = adaptive(dark: (0xF6F7F9, 0.16), light: (0x0E0F12, 0.11))
+    /// The edge of a control that must be found by its outline (a field, a checkbox, a switch that is off): 3:1 or
+    /// more against cards and paper.
+    static let controlEdge = adaptive(dark: (0xF6F7F9, 0.42), light: (0x0E0F12, 0.46))
 
     // Cards: a glass-white sheet that lightens toward the top, edged by its own tone, lit along the top lip.
     static let cardTop = adaptive(dark: 0x1F2127, light: 0xFDFDFE)
@@ -41,7 +46,7 @@ enum Air {
     static let fieldFill = adaptive(dark: (0xFFFFFF, 0.05), light: (0xFFFFFF, 1))
 
     /// The one colour beside ink: the mark's sage, for switches that are on and things that are well.
-    /// White on it: 6.1:1 (light) and 4.0:1 (dark); against the paper 5.6:1 and 3.6:1.
+    /// White on it: 6.1:1 (light) and 4.0:1 (dark); against the paper 5.7:1 and 4.9:1.
     static let accent = adaptive(dark: 0x588974, light: 0x3F6B5A)
     /// The mark's green itself (BrandIconGeometry.palette[2]).
     static let markGreen = adaptive(dark: 0x9AC7B4, light: 0x9AC7B4)
@@ -60,7 +65,7 @@ enum Air {
         static let page: CGFloat = 28, section: CGFloat = 26
     }
     enum Radius {
-        static let card: CGFloat = 18, inset: CGFloat = 12, field: CGFloat = 9
+        static let card: CGFloat = 22, inset: CGFloat = 12, field: CGFloat = 9
     }
 
     // Type: San Francisco at two weights, display sizes tracked in by 3% as on the website.
@@ -181,7 +186,7 @@ extension View {
     }
     /// A section's name above its card.
     func airHeading() -> some View {
-        font(.system(size: Air.Size.heading, weight: .semibold)).tracking(-0.2).foregroundStyle(Air.ink)
+        font(.system(size: Air.Size.heading, weight: .medium)).tracking(-0.2).foregroundStyle(Air.ink)
     }
 }
 
@@ -364,6 +369,39 @@ extension LabeledContentStyle where Self == AirLabeledContentStyle {
     static var air: AirLabeledContentStyle { AirLabeledContentStyle() }
 }
 
+// MARK: - Flow
+
+/// Lays its views out left to right and starts a new line when the next one would cross the edge, so a row of
+/// buttons wraps instead of widening its window.
+struct AirFlow: Layout {
+    var spacing: CGFloat = Air.Space.sm - 2
+    var lineSpacing: CGFloat = Air.Space.sm - 2
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let limit = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0, widest: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > limit { x = 0; y += line + lineSpacing; line = 0 }
+            widest = max(widest, x + size.width)
+            x += size.width + spacing
+            line = max(line, size.height)
+        }
+        return CGSize(width: min(widest, limit), height: y + line)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, line: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX { x = bounds.minX; y += line + lineSpacing; line = 0 }
+            view.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            line = max(line, size.height)
+        }
+    }
+}
+
 // MARK: - Buttons
 
 /// Height, type size and side padding of a capsule for each control size.
@@ -505,13 +543,7 @@ struct AirSwitchToggleStyle: ToggleStyle {
     }
 }
 
-/// A box and its label, for consents that must be ticked on purpose.
-struct AirCheckboxToggleStyle: ToggleStyle {
-    func makeBody(configuration: Configuration) -> some View { AirCheckbox(configuration: configuration) }
-}
-
 extension ToggleStyle where Self == AirSwitchToggleStyle { static var airSwitch: AirSwitchToggleStyle { .init() } }
-extension ToggleStyle where Self == AirCheckboxToggleStyle { static var airCheckbox: AirCheckboxToggleStyle { .init() } }
 
 private struct AirSwitch: View {
     @Binding var isOn: Bool
@@ -526,9 +558,14 @@ private struct AirSwitch: View {
             withAnimation(reduceMotion ? nil : AirMotion.settle) { isOn.toggle() }
         } label: {
             ZStack(alignment: isOn ? .trailing : .leading) {
-                Capsule(style: .circular).fill(isOn ? Air.accent : Air.muted)
-                Capsule(style: .circular).strokeBorder(isOn ? Color.clear : Air.glassEdge, lineWidth: 1)
+                // A disabled switch dims its track; the knob keeps its outline so the control is still there.
+                Group {
+                    Capsule(style: .circular).fill(isOn ? Air.accent : Air.muted)
+                    Capsule(style: .circular).strokeBorder(isOn ? Color.clear : Air.controlEdge, lineWidth: 1)
+                }
+                .opacity(isEnabled ? 1 : 0.4)
                 Circle().fill(Color.white)
+                    .overlay(Circle().strokeBorder(Air.controlEdge.opacity(isOn ? 0 : 0.6), lineWidth: 0.5))
                     .shadow(color: Air.controlShadow, radius: 1.5, y: 1)
                     .padding(2)
             }
@@ -536,38 +573,6 @@ private struct AirSwitch: View {
             .contentShape(Capsule(style: .circular))
         }
         .buttonStyle(.plain)
-        .opacity(isEnabled ? 1 : 0.45)
-    }
-}
-
-private struct AirCheckbox: View {
-    let configuration: ToggleStyleConfiguration
-    @Environment(\.isEnabled) private var isEnabled
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 9) {
-            // Only the box toggles, so links in the label (a consent's Terms) open instead of ticking it.
-            Button {
-                withAnimation(AirMotion.quick) { configuration.isOn.toggle() }
-            } label: {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(configuration.isOn ? Air.inkFill : Air.fieldFill)
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .strokeBorder(configuration.isOn ? Color.clear : Air.glassEdgeHover, lineWidth: 1)
-                    if configuration.isOn {
-                        Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Air.inkLabel)
-                    }
-                }
-                .frame(width: 16, height: 16)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
-            configuration.label.foregroundStyle(Air.ink).multilineTextAlignment(.leading)
-        }
-        .opacity(isEnabled ? 1 : 0.5)
-        .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.checkbox) }
     }
 }
 
@@ -731,11 +736,11 @@ private struct AirFieldModifier: ViewModifier {
             .frame(width: width, height: 28)
             .frame(maxWidth: width == nil ? .infinity : nil)
             .background(shape.fill(Air.fieldFill))
-            .overlay(shape.strokeBorder(focused ? Air.quiet : Air.glassEdgeHover, lineWidth: 1))
+            .overlay(shape.strokeBorder(focused ? Air.ink.opacity(0.7) : Air.controlEdge, lineWidth: 1))
             .overlay(shape.inset(by: -3).strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 3)
                 .opacity(focused ? 1 : 0).allowsHitTesting(false))
+            // Focus shows at once; nothing about it animates.
             .opacity(isEnabled ? 1 : 0.55)
-            .animation(AirMotion.hover, value: focused)
     }
 }
 
@@ -771,7 +776,7 @@ struct AirMeter: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule(style: .circular).fill(Air.muted)
+                Capsule(style: .circular).fill(Air.track)
                 Capsule(style: .circular).fill(tone)
                     .frame(width: max(6, proxy.size.width * min(max(fraction, 0), 1)))
             }
@@ -804,8 +809,8 @@ enum Airflow {
         }
         context.scaleBy(x: scale, y: scale)
         // From left to right: slate, then the mark's sage.
-        let slate: (CGFloat, CGFloat, CGFloat) = dark ? (0.70, 0.76, 0.90) : (0.36, 0.42, 0.58)
-        let sage: (CGFloat, CGFloat, CGFloat) = dark ? (0.64, 0.84, 0.75) : (0.30, 0.50, 0.42)
+        let slate: (CGFloat, CGFloat, CGFloat) = dark ? (0.72, 0.78, 0.94) : (0.34, 0.41, 0.60)
+        let sage: (CGFloat, CGFloat, CGFloat) = dark ? (0.60, 0.86, 0.74) : (0.24, 0.53, 0.42)
         var seed: UInt64 = 0x9E3779B97F4A7C15
         func random() -> CGFloat {
             seed = seed &* 6364136223846793005 &+ 1442695040888963407
@@ -814,9 +819,9 @@ enum Airflow {
         // Two twisted ribbons. Each has a centre line, a width that swells and pinches as it turns (|sin| repeats
         // twice per period, so the loop stays seamless) and a dot count; pinches read denser, like a ribbon edge-on.
         struct Ribbon { let base, amplitude, phase, width, swell, twist: CGFloat; let dots: Int; let tone: (CGFloat, CGFloat, CGFloat) }
-        // Centre lines 78 and 98 points from the top (Core Graphics counts from the bottom), in the band beside a header.
-        let ribbons = [Ribbon(base: Self.height - 80, amplitude: 28, phase: 0.2, width: 10, swell: 46, twist: 1.1, dots: 24000, tone: slate),
-                       Ribbon(base: Self.height - 100, amplitude: 22, phase: 2.1, width: 6, swell: 28, twist: 2.7, dots: 13000, tone: sage)]
+        // Centre lines 70 and 86 points from the top (Core Graphics counts from the bottom), in the band beside a header.
+        let ribbons = [Ribbon(base: Self.height - 70, amplitude: 26, phase: 0.2, width: 10, swell: 44, twist: 1.1, dots: 22000, tone: slate),
+                       Ribbon(base: Self.height - 86, amplitude: 22, phase: 2.1, width: 7, swell: 32, twist: 2.7, dots: 20000, tone: sage)]
         for ribbon in ribbons {
             for _ in 0..<ribbon.dots {
                 let x = random() * period
@@ -829,10 +834,10 @@ enum Airflow {
                 let edge = 0.45 + 0.55 * pow(abs(across), 2)
                 let mix = 0.5 - 0.5 * cos(angle)
                 let other = ribbon.tone == slate ? sage : slate
-                let r = ribbon.tone.0 + (other.0 - ribbon.tone.0) * mix * 0.35
-                let g = ribbon.tone.1 + (other.1 - ribbon.tone.1) * mix * 0.35
-                let b = ribbon.tone.2 + (other.2 - ribbon.tone.2) * mix * 0.35
-                let alpha = (0.18 + 0.6 * random()) * edge
+                let r = ribbon.tone.0 + (other.0 - ribbon.tone.0) * mix * 0.15
+                let g = ribbon.tone.1 + (other.1 - ribbon.tone.1) * mix * 0.15
+                let b = ribbon.tone.2 + (other.2 - ribbon.tone.2) * mix * 0.15
+                let alpha = ((dark ? 0.26 : 0.2) + 0.62 * random()) * edge
                 let radius = 0.28 + 0.3 * random()
                 context.setFillColor(red: r * alpha, green: g * alpha, blue: b * alpha, alpha: alpha)
                 for dx in [x, x - period, x + period] where dx > -2 && dx < period + 2 {
@@ -888,17 +893,28 @@ struct AirflowField: View {
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             .clipped()
             .mask(LinearGradient(stops: horizontalFade(width: proxy.size.width), startPoint: .leading, endPoint: .trailing))
+            // Text that reaches far across leaves too little room for a ribbon to read; then there is none.
+            .opacity(clearX.map { proxy.size.width - $0 >= 180 } ?? true ? 1 : 0)
         }
         .frame(height: height)
-        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.1),
-                                     .init(color: .black, location: 0.4), .init(color: .clear, location: 0.54)],
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.08),
+                                     .init(color: .black, location: 0.36), .init(color: .clear, location: 0.48)],
                              startPoint: .top, endPoint: .bottom))
         .opacity(scheme == .dark ? 1 : 0.85)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-        .onAppear {
-            guard ambient, !reduceMotion else { return }
+        .onAppear(perform: syncDrift)
+        .onChange(of: reduceMotion) { syncDrift() }
+    }
+
+    /// Drifts while motion is allowed; turning Reduce Motion on stops it where it is.
+    private func syncDrift() {
+        if ambient, !reduceMotion {
             withAnimation(.linear(duration: 60).repeatForever(autoreverses: false)) { drift = 1 }
+        } else {
+            var still = Transaction(animation: nil)
+            still.disablesAnimations = true
+            withTransaction(still) { drift = 0 }
         }
     }
 }

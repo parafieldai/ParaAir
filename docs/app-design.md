@@ -29,12 +29,12 @@ and never rings the sides.
 San Francisco at two weights. Display lines (`airDisplay`) are medium, tracked in by 3% of their size: 30 pt for the home
 window's headline, 24 pt for sheet titles, 19 pt in the menu bar panel, 34 pt for plan and storage figures. A headline is
 two-tone: the drive's name in ink over its state in the quiet tone, at the same size; a state too long for one line steps
-down in size rather than stacking. Section names are 15 pt semibold above their card. Paths and versions use the
+down in size rather than stacking. Section names are 15 pt medium above their card; the type uses regular and medium only. Paths and versions use the
 monospaced face; nothing else does.
 
 ## Shape and space
 
-- Cards: 18 pt continuous corners. Inset boxes (the terms box, the icon well): 12 pt. Fields: 9 pt.
+- Cards: 22 pt continuous corners. Inset boxes (the terms box, the icon well): 12 pt. Fields: 9 pt.
 - Buttons, segmented controls, pop-up menus and switches are capsules (circular ends: the default continuous capsule
   draws stray stubs at its ends in macOS 27).
 - A 4-point scale. The window margin is 28 pt; sections are 26 pt apart; rows are 11 pt above and below their content,
@@ -46,12 +46,14 @@ monospaced face; nothing else does.
   14% opacity off, press 26%; it never moves. A destructive role fills it with the problem tone.
 - `airGlass`: every other button (the default inside `airSurface()`). Translucent white (light) or 6% white (dark)
   with a hairline edge; hover brightens fill and edge.
-- `airText`: small text actions beside a heading (Refresh) and Quit.
+- `airText`: small text actions beside a heading (Refresh), the panel's More menu and Quit.
+- `AirFlow`: a row of buttons that wraps onto a second line rather than widening its window.
 - `airSwitch`: toggles are rows, label leading and a capsule switch trailing; the knob slides, the track turns sage.
-  `airCheckbox` is for consents that must be ticked on purpose.
+  A switch that is off, a field and a checkbox are edged by `controlEdge` (3:1 or more). The plan sheet's consent stays a
+  native checkbox, so its sentence ticks it and the links in it open.
 - `AirSegmented`: a track with a white thumb that slides to the chosen option. `AirMenuPicker`: a pop-up choice as a
   glass capsule. `airField()`: a white well with a hairline edge and the system focus ring.
-- `AirMeter`: a 6 pt capsule bar that eases to its value.
+- `AirMeter`: a 6 pt capsule bar on its own `track` tone that eases to its value.
 
 Each custom control keeps standard semantics for VoiceOver and the keyboard through `accessibilityRepresentation` (a
 native toggle, segmented picker or pop-up button), and every button stays focusable.
@@ -74,9 +76,11 @@ captures show the resting frame.
 
 ## The airflow field
 
-Behind the home window's header, the menu bar panel's header and the About window: two twisted ribbons of fine dots,
+Behind the home window's header and the About window: two twisted ribbons of fine dots,
 one slate and one in the mark's sage, drawn once per appearance (`Airflow`). Text that must stay legible marks itself
-with `airClearsField()`, and the ribbons start a little to its right; they fade out above and below the header band.
+with `airClearsField()`, and the ribbons start a little to its right; they fade out above and below the header band,
+and leave entirely when less than 180 pt is left. The menu bar panel is too narrow for them. The website draws the same
+ribbons, with the ParaAir plane flying along one of them.
 
 ## Verifying
 
