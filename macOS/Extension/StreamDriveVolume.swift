@@ -362,6 +362,8 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
             items += extra
             Self.cacheLog.notice("recheck entries=\(listed?.count ?? -1) named=\(named.count) changed=\(items.count)")
             self.dropKernelCaches(items)
+            // A process waiting to report these changes (paraair changes --follow) may read the folder now.
+            try? engine.noteFolderRefreshed(directory)
         }
     }
     /// After a read: if storage now has a different version than the kernel's cached size belongs to, that size is

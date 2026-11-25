@@ -296,6 +296,9 @@ private struct RemoteInvalidation: Codable { var at: Int64 }
 /// shared like RemoteInvalidation. A listing a request began earlier, in any process on the drive's state, may predate
 /// the change that dropped them, so it isn't saved.
 private struct ListingsDropped: Codable { var at: Int64 }
+/// When the mounted drive's extension last dropped the kernel's caches for a folder's changes, stored as
+/// ("refreshed", folder): wall-clock nanoseconds (noteFolderRefreshed).
+private struct FolderRefresh: Codable { var at: Int64 }
 /// Stored as record ("index", "backup"). `notNeeded` once storage reports that the
 /// index is not local, so no further changes are tracked.
 private struct IndexBackupState: Codable {
@@ -1808,6 +1811,22 @@ public final class Engine {
     /// dropped from this Mac's caches (applyRemoteChanges). ENOTSUP for storage without a feed.
     public func readChanges(since: Int64?, limit: Int = 500) throws -> ParaAirCloudChangePage {
         try pullChanges(since: since, limit: limit).page
+    }
+    /// readChanges, with the folders whose listings the page changed (parents first), for a caller that refreshes them
+    /// through the mount before it reports the page (`paraair changes --follow` on a mounted drive).
+    public func readChangesAndFolders(since: Int64?, limit: Int = 500) throws -> (page: ParaAirCloudChangePage, folders: [String]) {
+        try pullChanges(since: since, limit: limit)
+    }
+    /// Called by the mounted drive's extension once it has dropped the kernel's caches for what changed in `folder`
+    /// (after the refresh marker appeared there). Shared through the state database with every process on the drive.
+    public func noteFolderRefreshed(_ folder: String) throws {
+        let folder = try canonicalPath(folder)
+        try lock.withLock(timeout: 10) { try db.put("refreshed", folder, FolderRefresh(at: now())) }
+    }
+    /// Whether the extension finished refreshing `folder` at or after `since` (noteFolderRefreshed).
+    public func folderRefreshed(_ folder: String, since: Date) throws -> Bool {
+        let folder = try canonicalPath(folder), start = Int64(since.timeIntervalSince1970 * 1_000_000_000)
+        return try lock.withLock(timeout: 10) { (try db.get("refreshed", folder) as FolderRefresh?).map { $0.at >= start } ?? false }
     }
     private func pullChanges(since: Int64?, limit: Int) throws -> (page: ParaAirCloudChangePage, folders: [String]) {
         guard let feed = try backend.collaboration() else {

@@ -683,14 +683,15 @@ final class CLIApplication {
         if follow { try emit(FeedStart(following: true, cursor: cursor), text: "Following changes from cursor \(cursor).") }
         var polls = 0, failures = 0
         while true {
-            let page: ParaAirCloudChangePage
-            do { page = try engine.readChanges(since: cursor) ; failures = 0 }
+            let page: ParaAirCloudChangePage, folders: [String]
+            do { (page, folders) = try engine.readChangesAndFolders(since: cursor) ; failures = 0 }
             catch let error as DriveError where follow && Self.passing(error) {
                 // Offline or the service is busy: keep following, waiting longer each time, up to a minute.
                 failures += 1
                 system.sleep(TimeInterval(min(60, interval << min(failures, 5))))
                 continue
             }
+            refreshMounted(folders, engine: engine, profile: resolved.profile)
             if page.reset { try emit(FeedReset(reset: true, cursor: page.cursor), text: "Changes were pruned: rescan, then follow from cursor \(page.cursor).") }
             for change in page.changes where shows(change) {
                 try emit(change, text: "\(change.cursor)\t\(change.change)\t\(change.kind)\t\(displayName(change.fromPath.map { $0 + " -> " } ?? ""))\(displayName(change.path))")
@@ -747,6 +748,22 @@ final class CLIApplication {
         return ParaAirCloudAPI(http: try session.http(), tokens: session)
     }
     private func selectedProfiles(_ name: String?, store: ProfileStore) throws -> [DriveProfile] { try name.map { [try store.load($0)] } ?? store.list() }
+    /// On a mounted drive, makes what a page of changes names safe to read through the mount before the page is
+    /// reported: creates and removes the refresh marker in each folder it named, as the app does, then waits (up to
+    /// 3 s) for the drive's extension to drop the kernel's caches for what changed there. Without that, a reader who
+    /// acts on a line at once could get a file's new bytes cut to its old size until the app's own feed catches up.
+    private func refreshMounted(_ folders: [String], engine: Engine, profile: DriveProfile) {
+        guard !folders.isEmpty, let point = profile.mountPoint,
+              system.mountedVolumes().contains(where: { $0.mountPoint == point && $0.isStreamDrive }) else { return }
+        // The extension records its refresh in wall-clock time. At most 60 waits of 50 ms.
+        let since = Date()
+        let touched = folders.filter { system.refreshFolder($0, point) }
+        guard !touched.isEmpty else { return }
+        for _ in 0..<60 {
+            if touched.allSatisfy({ (try? engine.folderRefreshed($0, since: since)) ?? true }) { return }
+            system.sleep(0.05)
+        }
+    }
     private func mounted(_ profile: DriveProfile) -> Bool {
         guard let point = profile.mountPoint else { return false }
         return MountController.mountedVolumes().contains { $0.mountPoint == point && $0.isStreamDrive }

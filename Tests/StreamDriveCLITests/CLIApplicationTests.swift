@@ -573,6 +573,10 @@ private final class FakeSystem {
     var sleeps = 0
     var onOpen: ((URL) -> Void)?
     var onSleep: ((Int) -> Void)?
+    /// Folders the CLI refreshed through the mount (folder, mount point), and what the fake marker answers.
+    var refreshed: [(String, String)] = []
+    var refreshWrites = false
+    var onRefresh: ((String) -> Void)?
     var system: CLISystem {
         CLISystem(appInfo: { [unowned self] _ in installed ? .init(bundleID: "dev.streamdrive.app", version: "0.2.0", build: "42") : nil },
                   isRunning: { [unowned self] _ in running },
@@ -583,7 +587,8 @@ private final class FakeSystem {
                   openURL: { [unowned self] _, url in opened.append(url); onOpen?(url) },
                   mountedVolumes: { [unowned self] in mounted },
                   sleep: { [unowned self] seconds in sleeps += 1; clock += seconds; onSleep?(sleeps) },
-                  now: { [unowned self] in clock })
+                  now: { [unowned self] in clock },
+                  refreshFolder: { [unowned self] folder, point in refreshed.append((folder, point)); onRefresh?(folder); return refreshWrites })
     }
 }
 
@@ -939,6 +944,18 @@ extension CLIApplicationTests {
         XCTAssertEqual((printed[1]["author"] as? [String: String])?["email"], "cli@example.test")
         XCTAssertEqual(fake.sleeps, 1)
         XCTAssertFalse(String(decoding: followed(), as: UTF8.self).contains("\n\n"))
+        XCTAssertEqual(Set(fake.refreshed.map(\.0)), ["/records", "/elsewhere", "/other"], "the page's folders (a move's both sides) were refreshed through the mount")
+        XCTAssertEqual(Set(fake.refreshed.map(\.1)), ["/Volumes/ParaOS"])
+
+        // When the marker is written, the lines wait for the drive's extension (at most 3 s), and come after it.
+        let (waiting, _, slow, waited) = try mountedCloud()
+        waiting.maxFollowPolls = 1; slow.refreshWrites = true
+        var printedAtRefresh: [Int] = []
+        slow.onRefresh = { _ in printedAtRefresh.append((try? self.lines(waited()).count) ?? -1) }
+        XCTAssertEqual(waiting.run(["changes", "/Volumes/ParaOS", "--follow", "--json"]).exitCode, 0)
+        XCTAssertEqual(printedAtRefresh.first, 1, "only the following line was out when the folders were refreshed")
+        XCTAssertEqual(try lines(waited()).count, 3)
+        XCTAssertEqual(slow.sleeps, 60, "no extension answered: it gave up after 3 s (60 × 50 ms), then printed")
 
         let (filtered, _, _, only) = try mountedCloud()
         XCTAssertEqual(filtered.run(["changes", "/Volumes/ParaOS/records", "--since", "10", "--json"]).exitCode, 0)

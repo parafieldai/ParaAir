@@ -145,6 +145,26 @@ final class CollaborationTests: XCTestCase {
         XCTAssertFalse(page.reset)
     }
 
+    /// `paraair changes --follow` on a mounted drive refreshes the folders a page names before it prints the page:
+    /// the page comes with them, and the extension's "refreshed" record is what the CLI waits for.
+    func testAPageComesWithItsFoldersAndTheExtensionsRefreshIsRecorded() throws {
+        let a = try mac("a"), b = try mac("b")
+        _ = try a.create("/records", directory: true); XCTAssertTrue(try a.flushUploads().isEmpty)
+        let cursor = try b.readChangesAndFolders(since: nil).page.cursor
+        try save(a, "/records/r.json", "1"); XCTAssertTrue(try a.flushUploads().isEmpty)
+        let (page, folders) = try b.readChangesAndFolders(since: cursor)
+        XCTAssertEqual(page.changes.map(\.path), ["/records/r.json"])
+        XCTAssertEqual(folders, ["/records"])
+        XCTAssertEqual(try b.takeRemoteChanges(in: "/records"), ["/records/r.json"], "applied before the page was returned")
+
+        let asked = Date()
+        XCTAssertFalse(try b.folderRefreshed("/records", since: asked))
+        try b.noteFolderRefreshed("/records/")
+        XCTAssertTrue(try b.folderRefreshed("/records", since: asked))
+        XCTAssertFalse(try b.folderRefreshed("/records", since: Date().addingTimeInterval(1)), "an older refresh doesn't count")
+        XCTAssertFalse(try b.folderRefreshed("/people", since: asked))
+    }
+
     /// The mounted drive's extension drops the kernel's caches for exactly what changed: the feed's paths wait for it
     /// per folder until taken, a change made outside the mount joins them, and this Mac's own uploads report the
     /// version they produced.

@@ -66,6 +66,10 @@ struct CLISystem {
     var sleep: (_ seconds: TimeInterval) -> Void
     /// The current time, for waits measured in elapsed seconds. Tests advance it with `sleep`.
     var now: () -> Date = { Date() }
+    /// Creates and removes the refresh marker in a drive folder through the ParaAir volume mounted at the mount point
+    /// (Housekeeping.touchRefreshMarker), so the drive's extension drops the kernel's caches for what changed there.
+    /// False when nothing was written. Does nothing unless set, so tests never write into a real mount.
+    var refreshFolder: (_ folder: String, _ mountPoint: String) -> Bool = { _, _ in false }
 
     /// Opens ParaAir's own sign-in (Storage Settings → ParaAir Cloud). The code is typed in the browser, never here.
     static let signInURL = URL(string: "paraair://cloud/sign-in")!
@@ -114,7 +118,8 @@ struct CLISystem {
             guard output.exitCode == 0 else { throw DriveError(EIO, "macOS couldn’t open ParaAir (exit \(output.exitCode))") }
         },
         mountedVolumes: { MountController.mountedVolumes() },
-        sleep: { Thread.sleep(forTimeInterval: $0) })
+        sleep: { Thread.sleep(forTimeInterval: $0) },
+        refreshFolder: { folder, point in Housekeeping.isParaAirMount(point) && Housekeeping.touchRefreshMarker(in: folder, mountPoint: point) })
 }
 
 private final class ModulesBox: @unchecked Sendable {
