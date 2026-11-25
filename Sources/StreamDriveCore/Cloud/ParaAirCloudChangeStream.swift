@@ -107,7 +107,8 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
         task.resume()
         receive(task)
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 1, repeating: 1)
+        // Every few seconds, with leeway, so an idle Mac isn't woken every second per drive.
+        timer.schedule(deadline: .now() + Self.tick, repeating: Self.tick, leeway: .seconds(1))
         timer.setEventHandler { [weak self] in self?.tick() }
         timer.resume()
         self.timer = timer
@@ -133,8 +134,10 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Once a second: gives up on a handshake that takes too long, sends a ping every `pingInterval` and treats a ping
-    /// without a pong after `pongTimeout` as a lost connection.
+    private static let tick: DispatchTimeInterval = .seconds(5)
+
+    /// Every few seconds: gives up on a handshake that takes too long, sends a ping every `pingInterval` and treats a
+    /// ping without a pong after `pongTimeout` as a lost connection.
     private func tick() {
         guard !finished, let task else { return }
         let now = DispatchTime.now()
