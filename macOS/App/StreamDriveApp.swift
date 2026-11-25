@@ -339,6 +339,9 @@ final class MenuModel: ObservableObject {
         return roots
     }
 
+    /// Still one of ParaAir's folders (Remove from List takes a folder out at any time).
+    private func isKnown(_ root: URL) -> Bool { knownStateRoots().contains(root.standardizedFileURL) }
+
     private func rememberStateRoot(_ url: URL) {
         let paths = knownStateRoots().map(\.path)
         let path = url.standardizedFileURL.path
@@ -462,12 +465,15 @@ final class MenuModel: ObservableObject {
     private func renewOtherRoots(excluding selected: URL) async {
         for root in knownStateRoots() where root != selected {
             if Task.isCancelled { return }
+            // A folder removed from the list while this pass waited on another one is skipped, and so are its results.
+            guard isKnown(root) else { continue }
             let services = renewalServices(for: root)
             let started = Date()
             let report = await services.connections.renewDueConnections()
+            guard isKnown(root) else { continue }
             let cloud = await services.cloud.renewDue()
             logRenewal(root: root, report: report, cloud: cloud, started: started, selected: false)
-            guard !report.alreadyRunning else { continue }
+            guard !report.alreadyRunning, isKnown(root) else { continue }
             otherRenewals[root.path] = FolderRenewal(errors: report.errors, outcomes: report.outcomes, cloud: cloud)
             resumeLoginMounts()
         }
@@ -481,12 +487,14 @@ final class MenuModel: ObservableObject {
     private func renewNow(_ root: URL) {
         Task { [weak self] in
             guard let self else { return }
+            guard self.isKnown(root) else { return }
             let services = self.renewalServices(for: root)
             let started = Date()
             let report = await services.connections.renewDueConnections()
+            guard self.isKnown(root) else { return }
             let cloud = await services.cloud.renewDue()
             self.logRenewal(root: root, report: report, cloud: cloud, started: started, selected: false)
-            guard !report.alreadyRunning else { return }
+            guard !report.alreadyRunning, self.isKnown(root) else { return }
             self.otherRenewals[root.path] = FolderRenewal(errors: report.errors, outcomes: report.outcomes, cloud: cloud)
             self.resumeLoginMounts()
         }
@@ -556,11 +564,25 @@ final class MenuModel: ObservableObject {
     /// Never the selected folder, nor a drive that is mounted or mounting.
     func forgetKnownFolder(_ url: URL) {
         let root = url.standardizedFileURL
-        guard root != stateRoot, mountingFolder != root.path, !pendingLoginMounts.contains(where: { $0.path == root.path }) else { return }
-        if let other = otherFolderDrive(root.path), isMounted(other.profile) { return }
+        guard root != stateRoot, mountingFolder != root.path else { return }
+        // The list may be a refresh old: read the folder's drive and the mount table now, before changing anything.
+        let live = Set(ParaAirVolumes.mountedPaths())
+        let drives = (try? ProfileStore(root: root).list()) ?? []
+        guard !drives.contains(where: { $0.mountPoint.map(live.contains) ?? false }) else {
+            AppLog.lifecycle.notice("forget refused: the drive is mounted")
+            reload()
+            return
+        }
         UserDefaults.standard.set(knownStateRoots().filter { $0 != root }.map(\.path), forKey: Self.knownRootsKey)
         loginMounts.forget(root.path)
         saveLoginMounts()
+        // A queued login mount or Connect waits for its renewal; it no longer happens.
+        pendingLoginMounts.removeAll { $0.path == root.path }
+        // A switch to this folder deferred by another mount: cancelled, and the saved selection stays the current folder.
+        if pendingAdoption?.standardizedFileURL == root {
+            pendingAdoption = nil; adoptionNotice = nil
+            UserDefaults.standard.set(stateRoot.path, forKey: "selectedStateRoot")
+        }
         otherRenewals[root.path] = nil
         setOtherDriveIssue(nil, root: root)
         if mountMessageFolder == root.path { mountMessage = nil; mountMessageFolder = nil }
