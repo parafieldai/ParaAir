@@ -158,7 +158,6 @@ struct CloudAccountSection: View {
             }
             CloudBillingRows(billing: billing)
             if let notice = billing.notice { NoticeRow(notice: notice) }
-            CloudAccountDeletionBanner(model: model.deletion)
         } else if usage.unpaid {
             // No storage until a free trial or plan starts: say so, and let the notice and button below lead.
             Text(usage.planLine)
@@ -179,6 +178,8 @@ struct CloudAccountSection: View {
                 }
             }
         }
+        // Outside the plan and usage rows, so a scheduled deletion can be cancelled whatever the summary shows.
+        CloudAccountDeletionBanner(model: model.deletion)
         HStack(spacing: 10) {
             if !model.hasDrive {
                 Button("Create Drive…", action: model.chooseDrive)

@@ -94,6 +94,9 @@ final class CloudAccountDeletionModel: ObservableObject {
     private var generation = UUID()
     private var loadedAt: Date?
     private var loading = false
+    /// The status read in flight: a request or cancel replaces it, so a read sent before the change can't put back the
+    /// state from before it.
+    private var statusRequest = UUID()
     private let log = Logger(subsystem: "dev.streamdrive.app", category: "cloud")
 
     init(stateRoot: URL, service: CloudAccountDeletionService) {
@@ -128,7 +131,7 @@ final class CloudAccountDeletionModel: ObservableObject {
     }
 
     private func reset() {
-        generation = UUID(); loadedAt = nil; loading = false
+        generation = UUID(); statusRequest = UUID(); loadedAt = nil; loading = false
         if state != .idle { state = .idle }
         if busy { busy = false }
         if message != nil { message = nil }
@@ -136,21 +139,23 @@ final class CloudAccountDeletionModel: ObservableObject {
         if !confirmEmail.isEmpty { confirmEmail = "" }
     }
 
+    /// Reads the status unless one is younger than `maxAge`. Not while a request or cancel runs: its answer is newer.
     func refresh(maxAge: TimeInterval = 0) {
-        guard let account, !loading else { return }
+        guard let account, !loading, !busy else { return }
         if maxAge > 0, let loadedAt, Date().timeIntervalSince(loadedAt) < maxAge { return }
-        let id = generation, root = stateRoot, service = service
+        let id = UUID(), root = stateRoot, service = service
+        statusRequest = id
         loading = true
         if status == nil, state != .unsupported { state = .loading }
         Task {
-            defer { if generation == id { loading = false } }
+            defer { if statusRequest == id { loading = false } }
             do {
                 let value = try await ParaAirCloudBlocking.run { try service.status(root, account) }
-                guard generation == id else { return }
+                guard statusRequest == id else { return }
                 loadedAt = Date()
                 state = value.map { .loaded($0) } ?? .unsupported
             } catch {
-                guard generation == id else { return }
+                guard statusRequest == id else { return }
                 log.error("cloud account deletion status failed errno=\((error as? DriveError)?.code ?? -1)")
                 // A status already on screen stays; only a first load shows the failure.
                 if status == nil { state = .failed(CloudAccountModel.message(error)) }
@@ -175,7 +180,7 @@ final class CloudAccountDeletionModel: ObservableObject {
         guard canConfirm, let account else { return }
         let id = generation, root = stateRoot, service = service
         let typed = confirmEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        busy = true; message = nil
+        startChange()
         log.notice("cloud account deletion requested")
         Task {
             defer { if generation == id { busy = false } }
@@ -189,7 +194,8 @@ final class CloudAccountDeletionModel: ObservableObject {
                 log.error("cloud account deletion request failed errno=\((error as? DriveError)?.code ?? -1)")
                 message = CloudAccountModel.message(error)
                 // A refusal (409) means something changed: show what blocks it now.
-                loadedAt = nil; refreshAfterBusy()
+                busy = false; loadedAt = nil
+                refresh()
             }
         }
     }
@@ -197,7 +203,7 @@ final class CloudAccountDeletionModel: ObservableObject {
     func cancel() {
         guard let account, scheduled != nil, !busy else { return }
         let id = generation, root = stateRoot, service = service
-        busy = true; message = nil
+        startChange()
         log.notice("cloud account deletion cancelled")
         Task {
             defer { if generation == id { busy = false } }
@@ -213,9 +219,10 @@ final class CloudAccountDeletionModel: ObservableObject {
         }
     }
 
-    private func refreshAfterBusy() {
-        // `busy` is still set; the status reload doesn't depend on it.
-        refresh()
+    /// A request or cancel starts: reads already sent are dropped, and none starts until it ends.
+    private func startChange() {
+        statusRequest = UUID(); loading = false
+        busy = true; message = nil
     }
 }
 
@@ -225,6 +232,14 @@ struct CloudAccountDeletionBanner: View {
 
     var body: some View {
         if let scheduled = model.scheduled {
+            banner(scheduled)
+            // Cancel Deletion's failure ("too late to cancel"); the sheet shows a request's.
+            if let message = model.message, !model.sheetPresented { ErrorLine(text: message) }
+        }
+    }
+
+    private func banner(_ scheduled: ParaAirCloudAccountDeletion.Request) -> some View {
+        Group {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Label {
                     Text(CloudAccountDeletionText.banner(scheduled))

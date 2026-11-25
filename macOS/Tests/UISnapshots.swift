@@ -722,16 +722,17 @@ struct UISnapshots {
         let vault = MemoryVault()
         let dependencies = EngineOpenDependencies(cloudVault: vault, cloudConfiguration: .ephemeral,
                                                   cloudPolicy: .init(allowsLoopbackHTTP: false))
-        let me = fixtureMe(stored: 212_000_000_000, billing: billingBeta)
-        func model(_ name: String, _ box: DeletionBox) throws -> CloudAccountModel {
+        let standard = fixtureMe(stored: 212_000_000_000, billing: billingBeta)
+        func model(_ name: String, _ box: DeletionBox, summary: Result<ParaAirCloudMe, Error>? = nil) throws -> CloudAccountModel {
+            let me = summary ?? .success(standard)
             let root = try seedSignedIn(base.appendingPathComponent(name, isDirectory: true), vault: vault, drive: true,
                                         workspaceID: fixtureWorkspaceID)
             let cloud = CloudAccountModel(stateRoot: root, dependencies: dependencies, baseURL: { _ in fixtureIssuer },
-                                          summaryLoader: { _ in (me, fixtureWorkspaceID) }, uploader: { _, _ in UploadActivity() },
-                                          driveLister: { _, _ in (fixtureDrives, me) }, membersService: MembersBox(fixtureMembers()).service,
-                                          deletionService: box.service)
+                                          summaryLoader: { _ in (try me.get(), fixtureWorkspaceID) }, uploader: { _, _ in UploadActivity() },
+                                          driveLister: { _, _ in (fixtureDrives, try me.get()) },
+                                          membersService: MembersBox(fixtureMembers()).service, deletionService: box.service)
             cloud.reloadSummary()
-            settle { cloud.summaryState == .loaded }
+            settle { cloud.summaryState == .loaded || cloud.summaryState == .failed }
             settle { cloud.deletion.state != .idle && cloud.deletion.state != .loading }
             return cloud
         }
@@ -827,6 +828,44 @@ struct UISnapshots {
         settle { refusedBox.count(.status) > reads }
         expect(refused.deletion.message == "Your account can’t be deleted yet. Something needs to change first."
                && refused.deletion.sheetPresented && refusedBox.count(.status) > reads, "a refusal says why and reads the status again")
+
+        // A status read sent before a request returns after it: the request's answer stays.
+        let raceBox = DeletionBox(fixtureDeletion())
+        let race = try model("race", raceBox)
+        let raceReads = raceBox.count(.status)
+        raceBox.statusDelay = 0.5
+        race.deletion.refresh()
+        settle { raceBox.count(.status) > raceReads }
+        raceBox.statusDelay = 0
+        race.deletion.confirmEmail = fixtureEmail
+        race.deletion.request()
+        busyDone(race.deletion)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        expect(raceBox.count(.request(fixtureEmail)) == 1 && race.deletion.scheduled != nil,
+               "an older status read that returns late doesn't hide the scheduled deletion")
+
+        // A cancel that fails says so beside the banner, where Cancel Deletion is.
+        let lateBox = DeletionBox(fixtureDeletion(scheduled: true))
+        lateBox.cancelFailure = DriveError(EBUSY, "Your account is already being deleted, so it’s too late to cancel",
+                                           disposition: .attemptNotDispatched)
+        let late = try model("too-late", lateBox)
+        late.deletion.cancel()
+        busyDone(late.deletion)
+        expect(late.deletion.scheduled != nil && !late.deletion.sheetPresented
+               && late.deletion.message == "Your account is already being deleted, so it’s too late to cancel.",
+               "a failed cancel keeps the banner and says why")
+        try storage(late, "cancel-failed")
+
+        // The deletion shows and can be cancelled whatever the plan summary does: failed, or an account with no storage.
+        let failedSummary = try model("summary-failed", DeletionBox(fixtureDeletion(scheduled: true)),
+                                      summary: .failure(DriveError(ENETDOWN, "offline", disposition: .attemptNotDispatched)))
+        expect(failedSummary.summaryState == .failed && failedSummary.deletion.scheduled != nil,
+               "the deletion status loads even when the plan summary doesn't")
+        try storage(failedSummary, "summary-failed")
+        let unpaid = try model("unpaid", DeletionBox(fixtureDeletion(scheduled: true)),
+                               summary: .success(fixtureMe(stored: 0, retained: 0, transfer: 0, billing: billingUnpaid, unpaid: true)))
+        expect(unpaid.deletion.scheduled != nil, "an account with no storage yet shows its scheduled deletion")
+        try storage(unpaid, "unpaid-scheduled")
 
         // Signing out forgets it.
         cloud.deletion.hide()
@@ -2288,13 +2327,24 @@ final class DeletionBox: @unchecked Sendable {
     private var value: ParaAirCloudAccountDeletion?
     private var log: [Call] = []
     private var failure: DriveError?
+    private var cancelError: DriveError?
+    private var delay: TimeInterval = 0
     var requestFailure: DriveError? { get { lock.withLock { failure } } set { lock.withLock { failure = newValue } } }
+    var cancelFailure: DriveError? { get { lock.withLock { cancelError } } set { lock.withLock { cancelError = newValue } } }
+    /// How long a status read waits before answering with the status as it was when it arrived.
+    var statusDelay: TimeInterval { get { lock.withLock { delay } } set { lock.withLock { delay = newValue } } }
     init(_ status: ParaAirCloudAccountDeletion?) { value = status }
     func count(_ call: Call) -> Int { lock.withLock { log.filter { $0 == call }.count } }
 
     var service: CloudAccountDeletionService {
         CloudAccountDeletionService(
-            status: { _, _ in self.lock.withLock { self.log.append(.status); return self.value } },
+            status: { _, _ in
+                let (snapshot, wait) = self.lock.withLock { () -> (ParaAirCloudAccountDeletion?, TimeInterval) in
+                    self.log.append(.status); return (self.value, self.delay)
+                }
+                if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+                return snapshot
+            },
             request: { _, _, email in
                 try self.lock.withLock {
                     self.log.append(.request(email))
@@ -2306,8 +2356,9 @@ final class DeletionBox: @unchecked Sendable {
                 }
             },
             cancel: { _, _ in
-                self.lock.withLock {
+                try self.lock.withLock {
                     self.log.append(.cancel)
+                    if let failure = self.cancelError { throw failure }
                     self.value?.deletion = nil
                     return self.value ?? UISnapshots.fixtureDeletion()
                 }

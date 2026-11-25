@@ -401,6 +401,9 @@ final class CloudAccountModel: ObservableObject {
     /// values stay visible while a refresh runs; a failure hides them.
     func reloadSummary(maxAge: TimeInterval = 0) {
         guard let account = signedInAccount else { return }
+        // A scheduled deletion shows in Storage Settings and the home window whether or not the plan summary loads;
+        // read at most every 5 minutes.
+        deletion.show(account: account)
         if maxAge > 0, summaryState == .loaded, let loaded = summaryLoadedAt, Date().timeIntervalSince(loaded) < maxAge { return }
         guard summaryTask == nil else { return }
         if summary == nil || summaryState != .loaded { summaryState = .loading }
@@ -419,8 +422,6 @@ final class CloudAccountModel: ObservableObject {
                 if let id = value.workspaceID { self.workspaceID = id }
                 self.summaryState = .loaded; self.summaryLoadedAt = Date()
                 self.settlePendingCheckout()
-                // A scheduled deletion shows in Storage Settings and the home window; at most every 5 minutes.
-                self.deletion.show(account: account)
             case .failure(let error):
                 self.log.error("cloud summary failed errno=\(Self.code(error))")
                 self.summaryState = .failed
