@@ -64,6 +64,7 @@ struct UISnapshots {
         }
         failures += try renderCloudStorage(output: output)
         failures += try renderBilling(output: output)
+        failures += try renderMembers(output: output)
 
         if failures.isEmpty {
             print("PASS: presentation logic and naming checks; snapshots in \(output.path)")
@@ -345,7 +346,8 @@ struct UISnapshots {
             CloudAccountModel(stateRoot: root, dependencies: dependencies, baseURL: { _ in fixtureIssuer },
                               summaryLoader: { _ in (try summary.get(), fixtureWorkspaceID) },
                               uploader: { _, _ in UploadActivity() },
-                              driveLister: { _, _ in (fixtureDrives, try summary.get()) })
+                              driveLister: { _, _ in (fixtureDrives, try summary.get()) },
+                              membersService: MembersBox(fixtureMembers()).service)
         }
         func signedIn(_ name: String, drive: Bool) throws -> URL {
             try seedSignedIn(base.appendingPathComponent(name, isDirectory: true), vault: vault, drive: drive)
@@ -441,6 +443,203 @@ struct UISnapshots {
         while !done(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
     }
 
+    // MARK: Team members
+
+    /// A team's members as `viewer` sees them: Maya (the fixture account) has that role; Jonas is the other owner or an
+    /// admin; Priya hasn't signed in yet; Tomas only reads.
+    static func fixtureMembers(seats: Int = 5, viewer: ParaAirCloudMemberRole = .owner) -> ParaAirCloudMemberList {
+        let members = [
+            ParaAirCloudWorkspaceMember(userId: fixtureUserID, email: fixtureEmail, role: viewer.rawValue,
+                                        addedAt: "2026-10-01T09:00:00Z", status: "active"),
+            ParaAirCloudWorkspaceMember(userId: "usr_01J9ZX5Q4WJ3M8K2V7N6R1T0YE", email: "jonas@example.com",
+                                        role: viewer == .owner ? "admin" : "owner", addedAt: "2026-10-01T09:05:00Z", status: "active"),
+            ParaAirCloudWorkspaceMember(userId: "usr_01J9ZX5Q4WJ3M8K2V7N6R1T0YF", email: "priya@example.com", role: "member",
+                                        addedAt: "2026-11-20T14:00:00Z", status: "invited"),
+            ParaAirCloudWorkspaceMember(userId: "usr_01J9ZX5Q4WJ3M8K2V7N6R1T0YG", email: "tomas@example.com", role: "viewer",
+                                        addedAt: "2026-11-02T10:30:00Z", status: "active"),
+        ]
+        return ParaAirCloudMemberList(workspace: .init(id: fixtureWorkspaceID, name: "Studio", kind: "team", plan: "team", seats: seats,
+                                                       seatsUsed: members.count), members: members)
+    }
+
+    /// Storage Settings' Members section for owners, admins and everyone else, and the model's rules: adds and removals
+    /// are sent once, an uncertain answer reloads the list and says to check it, a full billed Team asks before it buys a
+    /// seat. The fixture service records every call; nothing reaches a network.
+    @MainActor
+    static func renderMembers(output: URL) throws -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: Bool, _ message: String) { if !condition { failures.append("members: " + message) } }
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("paraair-ui-members-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let vault = MemoryVault()
+        let dependencies = EngineOpenDependencies(cloudVault: vault, cloudConfiguration: .ephemeral,
+                                                  cloudPolicy: .init(allowsLoopbackHTTP: false))
+        let size = CGSize(width: 680, height: 1080)
+        let timeout = DriveError(ETIMEDOUT, "ParaAir Cloud did not respond in time. The address may have been added: check members list",
+                                 disposition: .ambiguous)
+        func loaded(_ members: CloudMembersModel) -> Bool { if case .loaded = members.list { return true } else { return false } }
+        func model(_ name: String, _ me: ParaAirCloudMe, _ box: MembersBox) throws -> CloudAccountModel {
+            let root = try seedSignedIn(base.appendingPathComponent(name, isDirectory: true), vault: vault, drive: true,
+                                        workspaceID: fixtureWorkspaceID)
+            let cloud = CloudAccountModel(stateRoot: root, dependencies: dependencies, baseURL: { _ in fixtureIssuer },
+                                          summaryLoader: { _ in (me, fixtureWorkspaceID) }, uploader: { _, _ in UploadActivity() },
+                                          driveLister: { _, _ in (fixtureDrives, me) }, membersService: box.service)
+            cloud.reloadSummary()
+            settle { cloud.summaryState == .loaded }
+            if let workspace = cloud.workspace, let account = cloud.signedInAccount {
+                cloud.members.show(workspace: workspace, account: account)
+            } else {
+                failures.append("members: \(name) resolves the drive's team workspace")
+            }
+            settle { !cloud.members.refreshing }
+            return cloud
+        }
+        func snap(_ cloud: CloudAccountModel, _ name: String, _ appearances: [NSAppearance.Name] = [.aqua]) throws {
+            for appearance in appearances {
+                try render(ConnectionsView(stateRoot: cloud.stateRoot, vault: MemoryVault(), cloudAccount: cloud), size: size,
+                           appearance: appearance, to: output.appendingPathComponent("storage-members-\(name)-\(suffix(appearance)).png"))
+            }
+        }
+        func done(_ members: CloudMembersModel) { settle { members.work == nil && !members.refreshing } }
+        let team = fixtureMe(stored: 1_240_000_000_000, kind: "team", seats: 5)
+
+        // Seats, as the list reports them.
+        expect(CloudSeatPresentation.make(seats: 5, used: 4, billedTeam: false)
+               == .init(line: "4 of 5 seats used", fraction: 0.8, full: false, invitationBuysSeat: false, notice: nil), "a free seat")
+        let fullFree = CloudSeatPresentation.make(seats: 4, used: 4, billedTeam: false)
+        expect(fullFree.full && !fullFree.invitationBuysSeat && fullFree.notice != nil, "a full workspace without billing refuses")
+        expect(CloudSeatPresentation.make(seats: 4, used: 4, billedTeam: true).invitationBuysSeat, "a full billed Team buys a seat")
+        expect(CloudSeatPresentation.make(seats: 1, used: 1, billedTeam: false).line == "1 of 1 seat used", "one seat reads singular")
+        expect(CloudSeatPresentation.isBilledTeam(billingPastDue) && !CloudSeatPresentation.isBilledTeam(billingActive)
+               && !CloudSeatPresentation.isBilledTeam(nil), "only a live Team subscription grows by a seat")
+        expect(CloudMemberText.validEmail(" a@b.example ") == "a@b.example" && CloudMemberText.validEmail("a b@c") == nil
+               && CloudMemberText.validEmail("@b") == nil && CloudMemberText.validEmail("a@") == nil
+               && CloudMemberText.validEmail("a@b@c") == nil, "addresses are checked before sending")
+
+        // An owner: every role but their own can change; only owners make owners.
+        let ownerBox = MembersBox(fixtureMembers())
+        let owner = try model("owner", team, ownerBox)
+        let ownerRules = owner.members.rules
+        let rows = owner.members.members?.members ?? []
+        expect(rows.count == 4 && ownerBox.count(.list) == 1, "an owner's list loads once")
+        expect(ownerRules.canManage && ownerRules.inviteRoles.contains(.owner), "owners may invite owners")
+        expect(rows.first.map(ownerRules.roleChoices(for:))?.isEmpty == true && rows.first.map(ownerRules.canRemove) == false,
+               "your own row can't be changed or removed here")
+        expect(ownerRules.roleChoices(for: rows[1]) == [.owner, .admin, .member, .viewer] && ownerRules.canRemove(rows[1]),
+               "an owner changes and removes an admin")
+        expect(CloudMemberText.sorted(rows).map(\.role) == ["owner", "admin", "member", "viewer"], "owners first, viewers last")
+        expect(CloudMemberText.detail(rows[2], you: false) == "Hasn’t signed in yet" && CloudMemberText.detail(rows[0], you: true) == "You",
+               "rows say who you are and who hasn't signed in")
+        try snap(owner, "owner", [.aqua, .darkAqua])
+
+        // Invite: sent once, with the role and the email choice; the list reloads.
+        owner.members.email = "lena@example.com"; owner.members.inviteRole = .viewer; owner.members.notify = true
+        expect(owner.members.canInvite, "a valid address with a free seat can be invited")
+        owner.members.invite()
+        done(owner.members)
+        expect(ownerBox.count(.add("lena@example.com", .viewer, true)) == 1 && ownerBox.count(.list) == 2, "an invitation is sent once, then the list reloads")
+        expect(owner.members.outcome == .init(text: "Added lena@example.com as viewer. ParaAir Cloud emailed them an invitation.", problem: false)
+               && owner.members.email.isEmpty, "a sent invitation says whether ParaAir Cloud emailed them")
+        expect(owner.members.seats?.full == true && !owner.members.canInvite, "the fifth member fills the last free seat")
+        try snap(owner, "full")
+
+        // Role change and removal of someone else.
+        let admin = rows[1]
+        owner.members.change(admin, to: .member)
+        done(owner.members)
+        expect(ownerBox.count(.role(admin.userId, .member)) == 1, "a role change names the member by user id")
+        expect(owner.members.outcome?.text == "jonas@example.com is now a member.", "a role change says what changed")
+        owner.members.requestRemoval(admin)
+        expect(owner.members.pendingRemoval == admin && ownerBox.count(.remove(admin.userId)) == 0, "Remove… asks first")
+        owner.members.confirmRemoval()
+        done(owner.members)
+        expect(ownerBox.count(.remove(admin.userId)) == 1 && owner.members.members?.members.contains(admin) == false, "a confirmed removal is sent once")
+
+        // Uncertain answers: sent once, reloaded, and the message says to check the list.
+        let uncertainBox = MembersBox(fixtureMembers())
+        uncertainBox.addFailure = timeout; uncertainBox.removeFailure = timeout
+        let uncertain = try model("uncertain", team, uncertainBox)
+        uncertain.members.email = "sam@example.com"
+        uncertain.members.invite()
+        done(uncertain.members)
+        expect(uncertainBox.count(.add("sam@example.com", .member, true)) == 1, "an invitation whose answer was lost is not sent again")
+        expect(uncertainBox.count(.list) == 2 && uncertain.members.outcome == .init(text: CloudMembersModel.uncertainAdd, problem: true),
+               "a lost answer reloads the list and says to check it")
+        expect(uncertain.members.email == "sam@example.com", "the address stays for a second try after checking")
+        try snap(uncertain, "uncertain")
+        let viewer = uncertain.members.members!.members[3]
+        uncertain.members.requestRemoval(viewer); uncertain.members.confirmRemoval()
+        done(uncertain.members)
+        expect(uncertainBox.count(.remove(viewer.userId)) == 1 && uncertain.members.outcome?.text == CloudMembersModel.uncertainRemove,
+               "a removal whose answer was lost is not sent again and says to check the list")
+        // A refusal the service answered before changing anything keeps its own words.
+        uncertainBox.addFailure = DriveError(EBUSY, "The workspace has no free seat. An owner can add seats to its plan",
+                                             disposition: .attemptNotDispatched)
+        uncertain.members.invite()
+        done(uncertain.members)
+        expect(uncertain.members.outcome?.text == "The workspace has no free seat. An owner can add seats to its plan.", "a refusal says why")
+
+        // An admin: owners can't be changed or removed, and no owner can be made.
+        let adminBox = MembersBox(fixtureMembers(viewer: .admin))
+        let asAdmin = try model("admin", fixtureMe(stored: 1_240_000_000_000, kind: "team", role: "admin", seats: 5), adminBox)
+        let adminRules = asAdmin.members.rules
+        let adminRows = asAdmin.members.members?.members ?? []
+        expect(adminRows.count == 4 && adminRules.roleChoices(for: adminRows[1]).isEmpty && !adminRules.canRemove(adminRows[1]),
+               "admins can't change or remove an owner")
+        expect(!adminRules.inviteRoles.contains(.owner) && adminRules.roleChoices(for: adminRows[3]) == [.admin, .member, .viewer],
+               "admins can't make owners")
+        try snap(asAdmin, "admin")
+
+        // A member or viewer: nothing is asked of the service.
+        let memberBox = MembersBox(fixtureMembers(viewer: .member))
+        let asMember = try model("member", fixtureMe(stored: 1_240_000_000_000, kind: "team", role: "member", seats: 5), memberBox)
+        expect(!asMember.members.rules.canManage && memberBox.count(.list) == 0 && asMember.members.list == .idle,
+               "members and viewers don't list members")
+        try snap(asMember, "member")
+
+        // A full billed Team: inviting asks before it buys a seat.
+        let billedBox = MembersBox(fixtureMembers(seats: 4))
+        let billed = try model("billed", fixtureMe(stored: 1_240_000_000_000, billing: billingPastDue, kind: "team", seats: 4), billedBox)
+        expect(billed.members.seats?.invitationBuysSeat == true, "a full billed Team says an invitation adds a paid seat")
+        billed.members.email = "lena@example.com"
+        billed.members.invite()
+        expect(billed.members.seatPurchaseRequested && billedBox.count(.add("lena@example.com", .member, true)) == 0,
+               "a paid seat is confirmed before anything is sent")
+        try snap(billed, "billed-full")
+        billed.members.invite(seatConfirmed: true)
+        done(billed.members)
+        expect(billedBox.count(.add("lena@example.com", .member, true)) == 1, "a confirmed seat sends the invitation once")
+
+        // A full workspace without billing refuses before sending.
+        let fullBox = MembersBox(fixtureMembers(seats: 4))
+        let full = try model("full-free", team, fullBox)
+        full.members.email = "lena@example.com"
+        full.members.invite()
+        expect(!full.members.canInvite && fullBox.count(.add("lena@example.com", .member, true)) == 0, "no seat, no invitation")
+
+        // A list that can't load says so, with Retry; signing out forgets it.
+        let failingBox = MembersBox(fixtureMembers())
+        failingBox.listFailure = DriveError(ENETDOWN, "This Mac is offline", disposition: .attemptNotDispatched)
+        let failing = try model("failing", team, failingBox)
+        settle { if case .failed = failing.members.list { return true } else { return false } }
+        expect(failing.members.list == .failed("This Mac is offline."), "a list that can't load says why")
+        try snap(failing, "failed")
+        // A refresh that fails after a change keeps the list and the change's message.
+        failingBox.listFailure = nil
+        failing.members.reload()
+        done(failing.members)
+        failing.members.email = "lena@example.com"
+        failingBox.listFailure = DriveError(ENETDOWN, "This Mac is offline", disposition: .attemptNotDispatched)
+        failing.members.invite()
+        done(failing.members)
+        expect(failing.members.members != nil && failing.members.outcome?.problem == false
+               && failing.members.refreshError == "The list couldn’t be refreshed: This Mac is offline.",
+               "a failed refresh after an invitation keeps both the list and the result")
+        owner.members.hide()
+        expect(owner.members.list == .idle && owner.members.workspace == nil, "signing out forgets the list")
+        return failures
+    }
+
     // MARK: ParaAir Cloud billing
 
     /// Storage Settings in every billing state, the plan sheet's steps, and the model's offer, checkout and portal
@@ -477,6 +676,7 @@ struct UISnapshots {
                 },
                 portalStarter: { _, _, _ in portal },
                 offerLoader: { _, _, selection in try offer.offer(selection) },
+                membersService: MembersBox(fixtureMembers()).service,
                 openURL: { recorder.open($0); return true })
             cloud.billingWatchDelays = [0.2, 0.2, 0.2, 0.2]
             cloud.reloadSummary()
@@ -705,7 +905,7 @@ struct UISnapshots {
         // A folder switch replaces the model; the open page is still known.
         let replaced = CloudAccountModel(stateRoot: once.stateRoot, dependencies: dependencies, baseURL: { _ in fixtureIssuer },
                                          summaryLoader: { _ in (fixtureMe(stored: 1, billing: billingBeta), fixtureWorkspaceID) },
-                                         openURL: { _ in true })
+                                         membersService: MembersBox(fixtureMembers()).service, openURL: { _ in true })
         expect(replaced.pendingCheckout?.url == stripeCheckout, "a replaced model still knows the open payment page")
         once.startOver()
         expect(once.pendingCheckout == nil && once.checkout == .idle && once.planSheetPresented, "Start Over returns to the plan choice")
@@ -1808,6 +2008,61 @@ final class OfferBox: @unchecked Sendable {
 }
 
 /// The summary the fixture service returns; replacing it stands in for a processor webhook.
+/// The members service of the snapshots: answers from a fixture list, applies changes to it and records every call.
+final class MembersBox: @unchecked Sendable {
+    enum Call: Equatable { case list, add(String, ParaAirCloudMemberRole, Bool), role(String, ParaAirCloudMemberRole), remove(String) }
+    private let lock = NSLock()
+    private var value: ParaAirCloudMemberList
+    private var log: [Call] = []
+    private var failures: (list: DriveError?, add: DriveError?, remove: DriveError?) = (nil, nil, nil)
+    var listFailure: DriveError? { get { lock.withLock { failures.list } } set { lock.withLock { failures.list = newValue } } }
+    var addFailure: DriveError? { get { lock.withLock { failures.add } } set { lock.withLock { failures.add = newValue } } }
+    var removeFailure: DriveError? { get { lock.withLock { failures.remove } } set { lock.withLock { failures.remove = newValue } } }
+    init(_ list: ParaAirCloudMemberList) { value = list }
+    func count(_ call: Call) -> Int { lock.withLock { log.filter { $0 == call }.count } }
+
+    var service: CloudMembersService {
+        CloudMembersService(
+            list: { _, _, _ in
+                try self.lock.withLock {
+                    self.log.append(.list)
+                    if let failure = self.failures.list { throw failure }
+                    return self.value
+                }
+            },
+            add: { _, _, _, email, role, notify in
+                try self.lock.withLock {
+                    self.log.append(.add(email, role, notify))
+                    if let failure = self.failures.add { throw failure }
+                    let member = ParaAirCloudWorkspaceMember(userId: "usr_01J9ZX5Q4WJ3M8K2V7N6R1T0YH", email: email, role: role.rawValue,
+                                                             addedAt: "2026-11-25T08:00:00Z", status: "invited")
+                    self.value.members.append(member)
+                    self.value.workspace.seatsUsed = self.value.members.count
+                    self.value.workspace.seats = max(self.value.workspace.seats, self.value.members.count)
+                    return ParaAirCloudMemberAdded(member: member, added: true, notified: notify)
+                }
+            },
+            setRole: { _, _, _, userID, role in
+                try self.lock.withLock {
+                    self.log.append(.role(userID, role))
+                    guard let index = self.value.members.firstIndex(where: { $0.userId == userID }) else {
+                        throw DriveError(ENOENT, "That person isn’t a member of the workspace", disposition: .attemptNotDispatched)
+                    }
+                    self.value.members[index].role = role.rawValue
+                    return self.value.members[index]
+                }
+            },
+            remove: { _, _, _, userID in
+                try self.lock.withLock {
+                    self.log.append(.remove(userID))
+                    if let failure = self.failures.remove { throw failure }
+                    self.value.members.removeAll { $0.userId == userID }
+                    self.value.workspace.seatsUsed = self.value.members.count
+                }
+            })
+    }
+}
+
 final class SummaryBox: @unchecked Sendable {
     private let lock = NSLock()
     private var value: ParaAirCloudMe

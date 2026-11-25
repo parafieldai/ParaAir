@@ -32,6 +32,11 @@ struct ConnectionsView: View {
                 openWindow(id: "connections")
             }
 
+            // A team drive's people, for its owners and admins.
+            if let account = cloud.signedInAccount, let workspace = cloud.workspace, workspace.kind == "team" {
+                CloudMembersSection(model: cloud.members, workspace: workspace, account: account)
+            }
+
             if !model.savedConnections.isEmpty {
                 Section {
                     ForEach(model.savedConnections) { connection in

@@ -250,6 +250,9 @@ public struct ParaAirCloudWorkspaceMember: Codable, Equatable, Sendable {
     public var addedAt: String
     public var status: String
 
+    public init(userId: String, email: String, role: String, addedAt: String, status: String) {
+        self.userId = userId; self.email = email; self.role = role; self.addedAt = addedAt; self.status = status
+    }
     var isValid: Bool {
         ParaAirCloudIDs.isUserID(userId) && email.contains("@") && email.utf8.count <= 320 && ParaAirCloudMemberRole(rawValue: role) != nil
             && ParaAirCloudJSON.parseDate(addedAt) != nil && !status.isEmpty && status.utf8.count <= 32
@@ -262,6 +265,10 @@ public struct ParaAirCloudMemberAdded: Codable, Equatable, Sendable {
     public var member: ParaAirCloudWorkspaceMember
     public var added: Bool
     public var notified: Bool
+
+    public init(member: ParaAirCloudWorkspaceMember, added: Bool, notified: Bool) {
+        self.member = member; self.added = added; self.notified = notified
+    }
 }
 
 /// A workspace's members and the seats they use (owners and admins only).
@@ -273,7 +280,15 @@ public struct ParaAirCloudMemberList: Codable, Equatable, Sendable {
         public var plan: String
         public var seats: Int
         public var seatsUsed: Int
+
+        public init(id: String, name: String, kind: String, plan: String, seats: Int, seatsUsed: Int) {
+            self.id = id; self.name = name; self.kind = kind; self.plan = plan; self.seats = seats; self.seatsUsed = seatsUsed
+        }
     }
     public var workspace: Workspace
     public var members: [ParaAirCloudWorkspaceMember]
+
+    public init(workspace: Workspace, members: [ParaAirCloudWorkspaceMember]) {
+        self.workspace = workspace; self.members = members
+    }
 }

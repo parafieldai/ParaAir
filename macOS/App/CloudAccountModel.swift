@@ -91,6 +91,8 @@ final class CloudAccountModel: ObservableObject {
 
     let stateRoot: URL
     let policy: ParaAirCloudTransportPolicy
+    /// The drive's team members, for Storage Settings' Members section.
+    let members: CloudMembersModel
     /// Set by the app so the sign-out confirmation counts uploads that are current.
     var refreshPendingUploads: (@MainActor () async -> UploadActivity?)?
     /// Told the state folder of every finished sign-in, at once, so other apps (the paraair CLI) can find the account
@@ -124,9 +126,10 @@ final class CloudAccountModel: ObservableObject {
     init(stateRoot: URL, dependencies: EngineOpenDependencies = .live, baseURL: (@MainActor (URL) -> URL?)? = nil,
          summaryLoader: SummaryLoader? = nil, uploader: Uploader? = nil, driveLister: DriveLister? = nil,
          checkoutStarter: CheckoutStarter? = nil, portalStarter: PortalStarter? = nil, offerLoader: OfferLoader? = nil,
-         openURL: (@MainActor (URL) -> Bool)? = nil) {
+         membersService: CloudMembersService? = nil, openURL: (@MainActor (URL) -> Bool)? = nil) {
         self.stateRoot = stateRoot.standardizedFileURL
         self.dependencies = dependencies
+        members = CloudMembersModel(stateRoot: stateRoot, service: membersService ?? .live(dependencies))
         policy = dependencies.cloudPolicy
         let policy = dependencies.cloudPolicy
         resolveBaseURL = baseURL ?? { ParaAirCloudConfiguration.baseURL(stateRoot: $0, policy: policy) }
@@ -207,7 +210,7 @@ final class CloudAccountModel: ObservableObject {
         if signedInAccount == nil, summary != nil || summaryState != .idle {
             summary = nil; summaryState = .idle; summaryLoadedAt = nil; workspaceID = nil
         }
-        if signedInAccount == nil { endBilling() }
+        if signedInAccount == nil { endBilling(); members.hide() }
         else if pendingCheckout == nil, let key = pendingKey, let saved = Self.pendingCheckouts[key] { pendingCheckout = saved }
     }
 
@@ -449,7 +452,7 @@ final class CloudAccountModel: ObservableObject {
                 let tokens = try await ParaAirCloudBlocking.run { try CloudAccountStore(root: root).signOut(account.id, vault: vault) }
                 log.notice("cloud signed out uploadFirst=\(uploadFirst)")
                 summary = nil; summaryState = .idle; summaryLoadedAt = nil; workspaceID = nil
-                endBilling()
+                endBilling(); members.hide()
                 phase = .signedOut
                 reload()
                 // Best effort, after the record already says signed out (spec 3.5).

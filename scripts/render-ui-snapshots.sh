@@ -15,7 +15,7 @@ xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macos26.0" \
   "$root/macOS/App/BrandIconGeometry.swift" "$root/macOS/App/GlideStyle.swift" \
   "$root/macOS/App/HomePresentation.swift" "$root/macOS/App/HomeViews.swift" \
   "$root/macOS/App/ConnectionsView.swift" "$root/macOS/App/CloudAccountModel.swift" \
-  "$root/macOS/App/CloudAccountSection.swift" "$root/macOS/App/CloudBillingPresentation.swift" \
+  "$root/macOS/App/CloudAccountSection.swift" "$root/macOS/App/CloudBillingPresentation.swift" "$root/macOS/App/CloudMembers.swift" \
   "$root/macOS/App/CloudPlanViews.swift" "$root/macOS/App/DriveActivity.swift" \
   "$root/macOS/App/LoginItem.swift" "$root/macOS/App/RecoverDrivePrompt.swift" "$root/macOS/App/ChangesReview.swift" \
   "$root/macOS/Tests/UISnapshots.swift" \
