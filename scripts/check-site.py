@@ -5,8 +5,10 @@
 - Every *.html page in site/ is checked, not only the required ones.
 - No em dash in visible copy: page text and user-visible attributes, and anywhere in
   motion.js or styles.css (either can put text on the page).
-- The word "unlimited" never appears in visible copy (the transfer allowance has a limit).
-- Every local href/src resolves to a file in site/ (a directory resolves to its index.html),
+- The word "unlimited" never appears in visible copy (the transfer allowance has a limit). The legal pages
+  (<body class="legal-page">) are exempt: they use the word to rule it out ("No plan offers \"unlimited\" ...").
+- Every local href/src resolves to a file in site/ (a directory resolves to its index.html, and an
+  extensionless path to its .html file, as the Worker's html_handling serves it),
   and every #fragment to an id on the page it points at.
 - Nothing the _headers Content-Security-Policy would block: inline <script>,
   <style> elements, style= attributes or on*= event handlers.
@@ -31,6 +33,7 @@ class Page(HTMLParser):
         self.name = name
         self.problems, self.ids, self.references = [], set(), []
         self.skip = 0
+        self.legal = False
 
     def where(self):
         return "%s:%d" % (self.name, self.getpos()[0])
@@ -38,11 +41,13 @@ class Page(HTMLParser):
     def check_copy(self, text, what):
         if EM_DASH in text:
             self.problems.append(self.where() + ": em dash in " + what)
-        if BANNED_WORDS.search(text):
+        if BANNED_WORDS.search(text) and not self.legal:
             self.problems.append(self.where() + ': "unlimited" in ' + what)
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
+        if tag == "body" and "legal-page" in (values.get("class") or "").split():
+            self.legal = True
         if tag in ("script", "style"):
             self.skip += 1
         if tag == "script" and not values.get("src"):
@@ -81,6 +86,8 @@ def resolve(site, path):
     target = (site / unquote(path).lstrip("/")).resolve()
     if target.is_dir():
         target = target / "index.html"
+    elif not target.exists() and not target.suffix and target.with_suffix(".html").is_file():
+        target = target.with_suffix(".html")
     return target
 
 

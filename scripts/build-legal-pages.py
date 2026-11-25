@@ -4,7 +4,7 @@
     scripts/build-legal-pages.py --source DIR --effective "November 20, 2026" [--out site]
 
 DIR holds terms.md, cloud-terms.md, subscription-policy.md, acceptable-use.md, copyright.md, privacy.md and
-law-enforcement.md (the private repo's docs/legal/). Each becomes site/<slug>.html, served at /<slug>, plus the
+law-enforcement.md (docs/legal/ in the private paraair-cloud repository). Each becomes site/<slug>.html, served at /<slug>, plus the
 /legal index. `{{EFFECTIVE_DATE}}` in a source becomes --effective. Stdlib only, like the other site scripts.
 
 The markdown subset the documents use: # to #### headings, paragraphs, - and 1. lists (nested by indentation),
@@ -60,7 +60,7 @@ def inline(text):
         url = local(url)
         if not re.match(r"^(https://|mailto:|[a-z-]+\.html|#)", url):
             raise ValueError(f"refusing link target {url!r}")
-        external = url.startswith("https://") and "paraair.pages.dev" not in url
+        external = url.startswith("https://") and "paraair.parafield.ai" not in url
         attrs = ' rel="noopener"' if external else ""
         return keep(f'<a href="{html.escape(url, quote=True)}"{attrs}>{inline(label)}</a>')
 
@@ -285,7 +285,7 @@ def page(slug_, title, description, body, current, root="", extra_head=""):
   <title>{html.escape(title)} · ParaAir</title>
   <meta name="description" content="{html.escape(description, quote=True)}">
   <meta name="color-scheme" content="dark light">
-  <link rel="canonical" href="https://paraair.pages.dev/{slug_}">{extra_head}
+  <link rel="canonical" href="https://paraair.parafield.ai/{slug_}">{extra_head}
   <link rel="icon" href="{root}glide.svg" type="image/svg+xml">
   <link rel="stylesheet" href="{root}styles.css">
 </head>
