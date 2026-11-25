@@ -75,6 +75,9 @@ struct CLISystem {
     /// Whether standard output has no reader any more (a pipe whose read end was closed), so a follower stops without
     /// waiting for its next line to fail.
     var outputClosed: () -> Bool = { false }
+    /// Makes a write to a pipe nobody reads fail with EPIPE instead of killing the process (SIGPIPE), so a follower
+    /// whose reader closed exits 0.
+    var ignoreBrokenPipe: () -> Void = {}
 
     /// Opens ParaAir's own sign-in (Storage Settings → ParaAir Cloud). The code is typed in the browser, never here.
     static let signInURL = URL(string: "paraair://cloud/sign-in")!
@@ -126,7 +129,8 @@ struct CLISystem {
         sleep: { Thread.sleep(forTimeInterval: $0) },
         refreshFolder: { folder, point in Housekeeping.isParaAirMount(point) && Housekeeping.touchRefreshMarker(in: folder, mountPoint: point) },
         parentProcess: { getppid() },
-        outputClosed: { standardOutputReaderGone() })
+        outputClosed: { standardOutputReaderGone() },
+        ignoreBrokenPipe: { _ = signal(SIGPIPE, SIG_IGN) })
 }
 
 private final class ModulesBox: @unchecked Sendable {

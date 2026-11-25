@@ -663,6 +663,20 @@ final class CLIApplication {
     /// Each page's paths are dropped from this Mac's caches first, so reading them through the mount right after a line
     /// gets the new contents. Only changes at or under the target's folder are printed.
     private func changes(_ resolved: ResolvedTarget, follow: Bool, since: Int64?, interval: Int, json: Bool) throws -> CLIExecution {
+        // A follower outlives whoever started it if that process quits or crashes (it is reparented to launchd) and
+        // would only notice at its next line. The parent is taken first, before opening the drive or asking for a
+        // cursor, so a launcher that dies meanwhile is still noticed; a reader already gone means nothing to do.
+        let parent = system.parentProcess()
+        guard follow else { return try changesFeed(resolved, follow: false, since: since, interval: interval, json: json, parent: parent) }
+        system.ignoreBrokenPipe()
+        if system.outputClosed() { return CLIExecution(stdout: "", stderr: "", exitCode: 0) }
+        do { return try changesFeed(resolved, follow: true, since: since, interval: interval, json: json, parent: parent) }
+        catch let error as DriveError where error.code == EPIPE {
+            // The reader closed between the check and a write: that is the end of following, not a failure.
+            return CLIExecution(stdout: "", stderr: "", exitCode: 0)
+        }
+    }
+    private func changesFeed(_ resolved: ResolvedTarget, follow: Bool, since: Int64?, interval: Int, json: Bool, parent: pid_t) throws -> CLIExecution {
         let engine = try open(cloudOnly(resolved.profile), root: resolved.root), folder = resolved.path
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         func emit<T: Encodable>(_ value: T, text: String) throws {
@@ -682,10 +696,8 @@ final class CLIApplication {
         }
         if follow { try emit(FeedStart(following: true, cursor: cursor), text: "Following changes from cursor \(cursor).") }
         var polls = 0, failures = 0
-        // A follower outlives whoever started it if that process quits or crashes (it is reparented to launchd) and
-        // would only notice at its next line. Stop as soon as the parent changes or nobody reads the output.
-        let parent = system.parentProcess()
         while true {
+            // Stop as soon as the parent changes or nobody reads the output.
             if follow, system.parentProcess() != parent || system.outputClosed() {
                 return CLIExecution(stdout: "", stderr: "", exitCode: 0)
             }

@@ -576,6 +576,9 @@ private final class FakeSystem {
     /// Folders the CLI refreshed through the mount (folder, mount point), and what the fake marker answers.
     var refreshed: [(String, String)] = []
     var parent: pid_t = 4242
+    /// When set, the parent reads as 1 (reparented) from this call on.
+    var parentGoneAtCall: Int?
+    var parentCalls = 0
     var outputClosed = false
     var refreshWrites = false
     var onRefresh: ((String) -> Void)?
@@ -591,7 +594,10 @@ private final class FakeSystem {
                   sleep: { [unowned self] seconds in sleeps += 1; clock += seconds; onSleep?(sleeps) },
                   now: { [unowned self] in clock },
                   refreshFolder: { [unowned self] folder, point in refreshed.append((folder, point)); onRefresh?(folder); return refreshWrites },
-                  parentProcess: { [unowned self] in parent },
+                  parentProcess: { [unowned self] in
+                      parentCalls += 1
+                      if let gone = parentGoneAtCall, parentCalls >= gone { return 1 }
+                      return parent },
                   outputClosed: { [unowned self] in outputClosed })
     }
 }
@@ -839,7 +845,7 @@ extension CLIApplicationTests {
 
 extension CLIApplicationTests {
     /// A ParaAir Cloud profile "ParaOS" mounted at /Volumes/ParaOS, and an app that sees that mount.
-    private func mountedCloud() throws -> (app: CLIApplication, root: URL, fake: FakeSystem, written: () -> Data) {
+    private func mountedCloud(writeError: Int32? = nil) throws -> (app: CLIApplication, root: URL, fake: FakeSystem, written: () -> Data) {
         let fixture = try cloudFixture(), fake = FakeSystem()
         let profile = DriveProfile(name: "ParaOS", backend: .paraairCloud, mountPoint: "/Volumes/ParaOS", blockSize: 4_194_304,
                                    cloudIssuer: fixture.account.issuer, cloudAccountID: fixture.account.id, cloudDriveID: CLICloudStub.drive)
@@ -848,7 +854,11 @@ extension CLIApplicationTests {
         let box = OutputBox()
         addTeardownBlock { _ = fake }  // its CLISystem holds it unowned
         let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path, "PARAAIR_APP_PATH": "/missing/ParaAir.app"],
-                                 dependencies: fixture.dependencies, system: fake.system, output: { box.append($0) })
+                                 dependencies: fixture.dependencies, system: fake.system, output: { data in
+            // With writeError, every write after the first fails, as a pipe whose reader closed does.
+            if let writeError, !box.data.isEmpty { throw DriveError(writeError, "Couldn’t write to standard output") }
+            box.append(data)
+        })
         return (app, fixture.root, fake, { box.data })
     }
     private func lines(_ data: Data) throws -> [[String: Any]] {
@@ -938,12 +948,30 @@ extension CLIApplicationTests {
         XCTAssertEqual(fake.sleeps, 1, "stopped right after the first wait, not after 10 polls")
         XCTAssertEqual(try lines(printed()).count, 3, "what the first poll found was printed")
 
-        // Nobody reads the output any more: it stops before polling.
-        let (unread, _, closed, _) = try mountedCloud()
+        // The launcher dies while the follower opens the drive and asks for its cursor: the parent was taken before
+        // that, so the first check notices, before any poll.
+        let (early, _, starting, earlyOut) = try mountedCloud()
+        early.maxFollowPolls = 10
+        starting.parentGoneAtCall = 2
+        XCTAssertEqual(early.run(["changes", "/Volumes/ParaOS", "--follow", "--json"]).exitCode, 0)
+        XCTAssertEqual(starting.sleeps, 0)
+        XCTAssertEqual(try lines(earlyOut()).count, 1, "only the following line")
+
+        // Nobody reads the output any more: it stops before asking the service or writing anything.
+        let (unread, _, closed, unreadOut) = try mountedCloud()
         unread.maxFollowPolls = 10
         closed.outputClosed = true
+        let before = CLICloudStub.requests.count
         XCTAssertEqual(unread.run(["changes", "/Volumes/ParaOS", "--follow", "--json"]).exitCode, 0)
         XCTAssertEqual(closed.sleeps, 0)
+        XCTAssertTrue(unreadOut().isEmpty)
+        XCTAssertEqual(CLICloudStub.requests.count, before)
+
+        // The reader closes between the check and a write: EPIPE ends following with exit 0, not an error.
+        let (broken, _, _, _) = try mountedCloud(writeError: EPIPE)
+        broken.maxFollowPolls = 10
+        let piped = broken.run(["changes", "/Volumes/ParaOS", "--follow", "--json"])
+        XCTAssertEqual(piped.exitCode, 0, piped.stderr)
 
         // Without --follow nothing is checked: a one-off read never stops early.
         let (once, _, gone, onceOut) = try mountedCloud()
