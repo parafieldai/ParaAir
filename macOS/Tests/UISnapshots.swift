@@ -125,6 +125,11 @@ struct UISnapshots {
         issue.connectionIssue = "Cloudflare sign-in expired. Sign in again in Storage Settings."
         var connecting = drive; connecting.mounting = true
         connecting.mountMessage = "macOS is still opening the drive. ParaAir will finish setup when it replies."
+        var couldntConnect = base
+        couldntConnect.driveName = "ParaAir Cloud"
+        couldntConnect.storageSummary = "ParaAir Cloud · " + fixtureEmail
+        couldntConnect.mountPath = "/Volumes/ParaAir Cloud"
+        couldntConnect.mountFailed = true
         var cloudReady = base
         cloudReady.driveName = "ParaAir Cloud"
         cloudReady.storageSummary = "ParaAir Cloud · " + fixtureEmail
@@ -236,7 +241,8 @@ struct UISnapshots {
                 ("22-cloud-no-storage", noStorage), ("23-cloud-trial", trial), ("24-turn-on-first", turnOnFirst),
                 ("25-still-off", stillOff), ("26-drives-one-needs-sign-in", oneNeedsSignIn), ("27-drives-connected", allConnected),
                 ("28-drives-all-blocked", allBlocked), ("29-drives-connecting", oneConnecting), ("30-drives-other-failed", otherFailed),
-                ("31-drives-switch-off", switchOffSeveral), ("32-drives-cloud-read-only", readOnlyListed)]
+                ("31-drives-switch-off", switchOffSeveral), ("32-drives-cloud-read-only", readOnlyListed),
+                ("36-couldnt-connect", couldntConnect)]
     }()
 
     /// Drives of other state folders (folders of their own under Cloud Drives, and an older one kept for login).
@@ -1543,6 +1549,18 @@ struct UISnapshots {
                && turnOnFirst.status.detail.contains("ParaAir Extensions (FSKit Modules) doesn’t stay on"),
                "the switch step names the list and switch that work and warns about the sheet that doesn't")
         expect(turnOnFirst.showsSwitchPicture, "the switch step shows the picture of the right switch")
+        let couldntConnect = HomePresentation.make(scenarios["36-couldnt-connect"]!)
+        expect(couldntConnect.status.title == "Couldn’t connect ParaAir Cloud" && couldntConnect.primary.action == .openSystemSettings
+               && couldntConnect.offersTryAgain && couldntConnect.showsSwitchPicture
+               && couldntConnect.status.detail.contains("By Category → File System Extensions")
+               && couldntConnect.status.detail.contains("off and on again"),
+               "a failed mount with the switch reading on walks through the switch again, with the picture and Try Again")
+        var failedThenMounted = scenarios["36-couldnt-connect"]!; failedThenMounted.mounted = true
+        expect(HomePresentation.make(failedThenMounted).status.title == "Connected", "a mounted drive never shows the failed step")
+        var failedSwitchOff = scenarios["36-couldnt-connect"]!; failedSwitchOff.extensionState = .disabled
+        expect(HomePresentation.make(failedSwitchOff).status.title == HomePresentation.make(scenarios["24-turn-on-first"]!).status.title
+               || HomePresentation.make(failedSwitchOff).primary.action == .openSystemSettings && !HomePresentation.make(failedSwitchOff).offersTryAgain,
+               "when the switch reads off after all, the regular first step wins")
         var notListed = scenarios["24-turn-on-first"]!; notListed.extensionState = .notDiscovered
         expect(!HomePresentation.make(notListed).showsSwitchPicture, "no picture when macOS hasn't listed ParaAir")
         expect(!HomePresentation.make(scenarios["5-connected"]!).showsSwitchPicture, "no picture once connected")

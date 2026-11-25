@@ -298,6 +298,10 @@ private struct ActionRow: View {
                 Button("Check Again", action: actions.checkAgain)
                     .controlSize(large ? .large : .regular)
             }
+            if presentation.offersTryAgain {
+                Button("Try Again") { actions.perform(.connectDrive) }
+                    .controlSize(large ? .large : .regular)
+            }
             if presentation.offersOpenInFinder {
                 Button("Open in Finder") { actions.perform(.openInFinder) }
                     .controlSize(large ? .large : .regular)

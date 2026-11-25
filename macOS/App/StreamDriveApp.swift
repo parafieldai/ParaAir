@@ -138,6 +138,10 @@ final class MenuModel: ObservableObject {
     /// The state folder of the drive `mountMessage` is about, recorded when it is written (`showMountMessage`); nil
     /// when it is about no single drive.
     @Published private(set) var mountMessageFolder: String?
+    /// The selected drive's last mount didn't connect it. The home window then walks through the switch in System
+    /// Settings again (HomeInputs.mountFailed) instead of leaving a one-line warning: the usual cause is a switch that
+    /// reads on but isn't in effect yet. Cleared when a mount starts or the drive shows up mounted.
+    @Published private(set) var mountFailed = false
     @Published var sidebarMessage: String?
     /// Presentation requests shared by the home window, menu bar panel and Storage Settings.
     @Published var appearanceOpen = false
@@ -207,6 +211,7 @@ final class MenuModel: ObservableObject {
         }.store(in: &observations)
         activity.$notices.sink { [weak self] value in self?.driveNotices = value }.store(in: &observations)
         observeCloudAccount()
+        observeVolumes()
         reload()
         logLifecycle("launch")
         startRenewal()
@@ -803,9 +808,21 @@ final class MenuModel: ObservableObject {
         readyConnection = profiles.isEmpty
             ? (try? ConnectionStore(root: stateRoot).list())?.first { $0.state == .storageReady } : nil
         mounted = Set(ParaAirVolumes.mountedPaths())
+        if let selected = profiles.first, isMounted(selected) { mountFailed = false }
         for profile in profiles where isMounted(profile) {
             let identity = stateRoot.path + "\0" + profile.name
             if sidebarAttempts.insert(identity).inserted { addToSidebar(profile, automatically: true) }
+        }
+    }
+    /// Reads the mount table again (local, no network). A drive mounted or unmounted outside ParaAir (the paraair CLI,
+    /// Finder's eject, another app) isn't in `mounted` until the next reload, so every decision that depends on whether
+    /// a drive is mounted reads it fresh first.
+    private func refreshMountTable() { mounted = Set(ParaAirVolumes.mountedPaths()) }
+    /// Volumes mounted or unmounted by anyone: reload so the window and later requests see the current state.
+    private func observeVolumes() {
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            center.publisher(for: name).receive(on: RunLoop.main).sink { [weak self] _ in self?.reload() }.store(in: &observations)
         }
     }
     func isMounted(_ profile: DriveProfile) -> Bool {
@@ -821,6 +838,15 @@ final class MenuModel: ObservableObject {
     }
     /// Shows a mount or Finder message and records which drive's folder it is about, so a list of several drives names
     /// that drive (not whichever one is mounting when the window draws).
+    /// The selected drive didn't mount: the home window shows the switch step again with what to try, a specific error
+    /// from macOS stays as a notice, and the extension's state is read again, so a switch that is really off gets the
+    /// regular first step.
+    private func selectedMountFailed(message: String?) {
+        mountFailed = true
+        if let message { showMountMessage(message, about: stateRoot) } else { mountMessage = nil }
+        AppLog.mount.notice("selected drive not connected; showing the switch step again")
+        Task { await refreshExtensionStatus(trigger: "mount-failed") }
+    }
     private func showMountMessage(_ text: String, about folder: URL?) {
         mountMessage = text
         mountMessageFolder = folder?.path
@@ -830,6 +856,7 @@ final class MenuModel: ObservableObject {
     /// Mounts the selected folder's drive or, at login, a kept folder's drive. Problems
     /// with a kept folder's drive go to `otherDriveIssues`, not to the selected drive's message.
     private func mount(_ profile: DriveProfile, root: URL, readiness: AutoMountReadiness) {
+        refreshMountTable()
         guard !mounting, !isMounted(profile) else {
             AppLog.mount.notice("mount skipped gate=\(self.mounting ? "mounting" : "mounted", privacy: .public)")
             return
@@ -839,7 +866,7 @@ final class MenuModel: ObservableObject {
             return
         }
         let selected = root == stateRoot
-        if selected { finderSetup.cancelContinuation() } else { setOtherDriveIssue(nil, root: root) }
+        if selected { finderSetup.cancelContinuation(); mountFailed = false } else { setOtherDriveIssue(nil, root: root) }
         if #available(macOS 27.0, *), ParaAirHasNativeMountEntitlement(),
            NativeMountOperation.enabledByConfiguration(Bundle.main.infoDictionary ?? [:]) {
             AppLog.mount.notice("mount route=native selected=\(selected)")
@@ -871,12 +898,10 @@ final class MenuModel: ObservableObject {
                 }
                 reload()
                 AppLog.mount.notice("helper finished status=\(status) mounted=\(self.isMounted(profile))")
-                if status != 0 || !isMounted(profile) {
-                    showMountMessage("ParaAir couldn’t open the drive. Check that ParaAir is turned on in System Settings, or review the connection in Storage Settings. Your saved files are retained.", about: root)
-                }
+                if status != 0 || !isMounted(profile) { selectedMountFailed(message: nil) }
             } catch {
                 AppLog.mount.error("helper failed errno=\((error as? DriveError)?.code ?? -1)")
-                if root == stateRoot { showMountMessage(error.localizedDescription, about: root) }
+                if root == stateRoot { selectedMountFailed(message: error.localizedDescription) }
                 else { setOtherDriveIssue(Self.otherDriveNotice(profile, root: root), root: root) }
             }
         }
@@ -920,7 +945,7 @@ final class MenuModel: ObservableObject {
                     }
                     self.mountMessage = nil
                 } catch {
-                    if root == self.stateRoot { self.showMountMessage(error.localizedDescription, about: root) }
+                    if root == self.stateRoot { self.selectedMountFailed(message: error.localizedDescription) }
                     else { self.setOtherDriveIssue(Self.otherDriveNotice(profile, root: root), root: root) }
                 }
             }
@@ -929,7 +954,7 @@ final class MenuModel: ObservableObject {
         do { try operation.start(stateRoot: root, profileName: profile.name) }
         catch {
             nativeMount = nil; mounting = false
-            if root == stateRoot { showMountMessage(error.localizedDescription, about: root) }
+            if root == stateRoot { selectedMountFailed(message: error.localizedDescription) }
             else { setOtherDriveIssue(Self.otherDriveNotice(profile, root: root), root: root) }
             // After this call returns, so a queued mount doesn't start inside the one that failed.
             Task { resumeWaitingWork(trigger: "mount-failed") }
@@ -1001,7 +1026,8 @@ final class MenuModel: ObservableObject {
     /// the request waits; a blocking storage issue is shown instead.
     func continueSetup(_ profile: DriveProfile) {
         guard !mounting else { AppLog.setup.notice("continuation not requested: mounting"); return }
-        if isMounted(profile) { reveal(profile); return }
+        refreshMountTable()
+        if isMounted(profile) { AppLog.setup.notice("continuation not requested: mounted, opening it"); reveal(profile); return }
         if credentialCheckFinished, connectionIssue(profile) != nil {
             AppLog.setup.notice("continuation not requested: storage-blocked")
             return

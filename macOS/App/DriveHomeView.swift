@@ -60,6 +60,7 @@ extension MenuModel {
             creatingDrive: creatingDrive,
             error: error,
             mountMessage: mountMessage,
+            mountFailed: mountFailed,
             mountMessageDrive: mountMessageFolder.flatMap { folder in
                 folder == stateRoot.path ? profile?.finderName : otherFolderDrive(folder)?.profile.finderName
             },

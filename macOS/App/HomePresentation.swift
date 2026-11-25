@@ -27,6 +27,8 @@ struct HomeInputs: Equatable {
     var creatingDrive = false
     var error: String?
     var mountMessage: String?
+    /// The selected drive's last mount didn't connect it (MenuModel.mountFailed).
+    var mountFailed = false
     /// The drive `mountMessage` is about, recorded when the message was written; nil when it is about no single drive
     /// (System Settings didn't open). Named before the message while drives are listed.
     var mountMessageDrive: String?
@@ -166,6 +168,8 @@ struct HomePresentation: Equatable {
     /// False when the drive list carries the actions: several drives and nothing that stops them all.
     var showsPrimary = true
     var offersCheckAgain = false
+    /// A "Try Again" button that connects the drive, beside the System Settings step after a mount that failed.
+    var offersTryAgain = false
     var offersOpenInFinder = false
     var steps: [Step] = []
     var notices: [Notice] = []
@@ -268,6 +272,15 @@ struct HomePresentation: Equatable {
             result = .init(status: extensionStatus(input.extensionState, stillOff: false, turnedOff: false),
                            primary: .init(action: .openSystemSettings, title: "Open System Settings"),
                            offersCheckAgain: true)
+        } else if input.mountFailed {
+            // The switch reads on, yet macOS didn't open the drive: most often the switch isn't in effect yet (macOS keeps
+            // reporting it on after an install until it is turned off and on), so walk through it again.
+            result = .init(status: .init(title: "Couldn’t connect \(drive)",
+                                         detail: "macOS didn’t open the drive. In System Settings, go to General → Login Items & Extensions → By Category → File System Extensions, turn ParaAir file system off and on again, then try again.",
+                                         tone: .attention),
+                           primary: .init(action: .openSystemSettings, title: "Open System Settings"))
+            result.offersTryAgain = true
+            result.showsSwitchPicture = true
         } else {
             result = .init(status: .init(title: "Not connected",
                                          detail: "Your storage is ready. Connect the drive to use it in Finder.", tone: .neutral),
