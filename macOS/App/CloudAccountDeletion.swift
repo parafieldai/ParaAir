@@ -264,6 +264,7 @@ struct CloudAccountDeletionSheet: View {
                 details(status)
             }
             if let message = model.message { ErrorLine(text: message) }
+            LegalLinksRow(pages: [LegalLinks.cloudTerms, LegalLinks.privacy])
             HStack(spacing: 10) {
                 if model.busy { ProgressView().controlSize(.small) }
                 Spacer()
