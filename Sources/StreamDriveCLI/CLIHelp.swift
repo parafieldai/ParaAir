@@ -106,10 +106,13 @@ enum CLIHelp {
             """ + "\n"
         case "changes":
             return """
-            Usage: paraair changes (PROFILE [FOLDER] | MOUNTED_PATH) [--since CURSOR] [--follow [--interval SECONDS]] [--json]
+            Usage: paraair changes (PROFILE [FOLDER] | MOUNTED_PATH) [--since CURSOR] [--follow [--push] [--interval SECONDS]] [--json]
             A ParaAir Cloud drive's change feed (kept 30 days). Without --since and --follow: the cursor to start
             from. With --since: the changes after it. --follow keeps polling (every 3 s, or --interval) and prints
-            each change as it comes. With --json each line is one object: first {"following": true, "cursor": N}
+            each change as it comes. --follow --push waits for ParaAir Cloud to say a change was made instead of
+            polling (a change shows within about a second, and an idle drive costs the service almost nothing),
+            and polls every 3 s (or --interval) only while that connection is down. Same output either way.
+            With --json each line is one object: first {"following": true, "cursor": N}
             when following, then {cursor, change, kind, path, fromPath?, rescan?, version, at, author} per change,
             and {"reset": true, "cursor": N} when changes after your cursor were pruned (rescan, then go on).
             change is create, write, delete, move, restore, mkdir or purge; rescan asks to list that folder again.
@@ -215,7 +218,7 @@ enum CLIHelp {
               restore-version TARGET VERSION [--expected-version VERSION]
                                                   Make an earlier version current again
               conflict-info TARGET                Where a conflict copy came from
-              changes TARGET [--since CURSOR] [--follow]
+              changes TARGET [--since CURSOR] [--follow [--push]]
                                                   The drive's change feed, as JSON lines with --json
               access list|set|remove TARGET ...   A drive's folder rules (owners and admins)
               credentials create|list|revoke --cloud-account ID --workspace WS

@@ -80,6 +80,62 @@ final class ParaAirCloudE2ETests: XCTestCase {
 
     /// Activities must run on the main actor; the blocking engine calls may (only the app forbids that).
     @MainActor
+    /// The change stream (cloud README "Change feed"): the newest cursor on connecting, then each committed change's
+    /// cursor, which the feed then returns; and `changes --follow --push` prints a change long before its 60 s poll.
+    func testE2E03ChangeStream() async throws {
+        XCTAssertFalse(admin.isEmpty); XCTAssertFalse(email.isEmpty)
+        let vault = TestConnectionVault()
+        let rootA = try root("stream")
+        let signedIn = try await signIn(rootA, vault: vault)
+        let drive = try XCTUnwrap(signedIn.drives.first)
+        let api = try self.api(rootA, signedIn.account, vault)
+
+        let events = StreamEvents()
+        let stream = try api.changeStream(driveID: drive.id) { events.append($0) }
+        stream.start()
+        guard case .cursor(_, first: true)? = events.next(timeout: 20) else { return XCTFail("no first message") }
+        let start = try api.changes(driveID: drive.id, since: nil).cursor
+        let folder = "/stream-" + UUID().uuidString.prefix(8).lowercased()
+        _ = try api.mkdir(driveID: drive.id, path: folder, idempotencyKey: UUID())
+        guard case .cursor(let notice?, first: false)? = events.next(timeout: 20) else { return XCTFail("no notice for mkdir") }
+        let page = try api.changes(driveID: drive.id, since: start)
+        XCTAssertEqual(page.changes.map(\.cursor), [notice])
+        XCTAssertEqual(page.changes.first?.path, folder)
+
+        // A later connection learns the newest cursor at once.
+        let later = StreamEvents()
+        let second = try api.changeStream(driveID: drive.id) { later.append($0) }
+        second.start()
+        XCTAssertEqual(later.next(timeout: 20), .cursor(notice, first: true))
+        stream.close(); second.close()
+        XCTAssertEqual(events.next(timeout: 10), .closed(.closedByClient))
+
+        // The CLI, in process: with --push a change shows within seconds although the poll interval is 60 s.
+        let profile = try CloudDriveSetup.attach(driveID: drive.id, finderName: "ParaAir Stream", accountID: signedIn.account.id,
+                                                 stateRoot: rootA, dependencies: dependencies(vault))
+        let lines = StreamLines()
+        let cli = CLIApplication(environment: [:], dependencies: dependencies(vault), output: { lines.append($0) })
+        cli.maxFollowPolls = 2
+        let finished = DispatchSemaphore(value: 0)
+        let box = ResultBox(cli)
+        Thread.detachNewThread {
+            box.result = box.cli.run(["--state-dir", rootA.path, "changes", profile.name, "--follow", "--push", "--interval", "60", "--json"])
+            finished.signal()
+        }
+        XCTAssertTrue(lines.waitForLines(1, timeout: 20), "no following line")
+        try await Task.sleep(nanoseconds: 3_000_000_000) // the stream connects meanwhile
+        let pushed = folder + "/pushed"
+        let made = Date()
+        _ = try api.mkdir(driveID: drive.id, path: pushed, idempotencyKey: UUID())
+        XCTAssertEqual(finished.wait(timeout: .now() + 20), .success, "the change never came: was it waiting for the 60 s poll?")
+        XCTAssertLessThan(Date().timeIntervalSince(made), 15)
+        XCTAssertEqual(box.result?.exitCode, 0, (box.result?.stdout ?? "") + (box.result?.stderr ?? ""))
+        let printed = lines.objects()
+        XCTAssertEqual(printed.first?["following"] as? Bool, true)
+        XCTAssertEqual(printed.last?["path"] as? String, pushed)
+        XCTAssertEqual(printed.last?["change"] as? String, "mkdir")
+    }
+
     func testE2E02FullFlow() async throws {
         XCTAssertFalse(admin.isEmpty); XCTAssertFalse(email.isEmpty)
         let vault = TestConnectionVault()
@@ -233,4 +289,41 @@ final class ParaAirCloudE2ETests: XCTestCase {
             expectDriveError(EACCES) { _ = try fresh.list("/") }
         }
     }
+}
+
+/// Events from a change stream, in order, for a test to wait on.
+private final class StreamEvents: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var events: [ParaAirCloudChangeStream.Event] = []
+    func append(_ event: ParaAirCloudChangeStream.Event) { condition.lock(); events.append(event); condition.broadcast(); condition.unlock() }
+    func next(timeout: TimeInterval) -> ParaAirCloudChangeStream.Event? {
+        condition.lock(); defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while events.isEmpty { if !condition.wait(until: deadline) { return nil } }
+        return events.removeFirst()
+    }
+}
+
+/// What an in-process CLI printed, line by line.
+private final class StreamLines: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var data = Data()
+    func append(_ more: Data) { condition.lock(); data.append(more); condition.broadcast(); condition.unlock() }
+    private var count: Int { data.split(separator: UInt8(ascii: "\n")).count }
+    func waitForLines(_ wanted: Int, timeout: TimeInterval) -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while count < wanted { if !condition.wait(until: deadline) { return false } }
+        return true
+    }
+    func objects() -> [[String: Any]] {
+        condition.lock(); defer { condition.unlock() }
+        return data.split(separator: UInt8(ascii: "\n")).compactMap { try? JSONSerialization.jsonObject(with: Data($0)) as? [String: Any] }
+    }
+}
+
+private final class ResultBox: @unchecked Sendable {
+    let cli: CLIApplication
+    var result: CLIExecution?
+    init(_ cli: CLIApplication) { self.cli = cli }
 }

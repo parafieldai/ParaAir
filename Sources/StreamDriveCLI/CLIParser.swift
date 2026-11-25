@@ -46,7 +46,7 @@ enum CLICommand: Equatable {
     case catVersion(target: CLITarget, version: String)
     case restoreVersion(target: CLITarget, version: String, expectedVersion: String?)
     case conflictInfo(target: CLITarget)
-    case changes(target: CLITarget, follow: Bool, since: Int64?, intervalSeconds: Int?)
+    case changes(target: CLITarget, follow: Bool, since: Int64?, intervalSeconds: Int?, push: Bool = false)
     case access(CLIAccessAction, target: CLITarget)
     case credentials(CLICredentialAction, account: String, workspace: String)
     case members(CLIMembersAction, account: String, workspace: String)
@@ -308,10 +308,10 @@ enum CLIParser {
             try noExtraArguments(commandArguments, command: name)
             command = .conflictInfo(target: target)
         case "changes":
-            let options = try parseOptions(commandArguments, valueNames: ["since", "interval"], switchNames: ["follow"])
+            let options = try parseOptions(commandArguments, valueNames: ["since", "interval"], switchNames: ["follow", "push"])
             commandArguments = options.positionals
             let target = try target(globals["profile"], positionals: &commandArguments, pathRequired: false,
-                                    usageText: "Usage: paraair changes (PROFILE [FOLDER] | MOUNTED_PATH) [--since CURSOR] [--follow [--interval SECONDS]]")
+                                    usageText: "Usage: paraair changes (PROFILE [FOLDER] | MOUNTED_PATH) [--since CURSOR] [--follow [--push] [--interval SECONDS]]")
             try noExtraArguments(commandArguments, command: name)
             let since = try options.values["since"].map { value -> Int64 in
                 guard let cursor = Int64(value), cursor >= 0, cursor < 1 << 53 else { throw usage("--since requires a cursor from the change feed") }
@@ -322,7 +322,9 @@ enum CLIParser {
                 return seconds
             }
             guard interval == nil || options.switches.contains("follow") else { throw usage("--interval applies only to --follow") }
-            command = .changes(target: target, follow: options.switches.contains("follow"), since: since, intervalSeconds: interval)
+            guard !options.switches.contains("push") || options.switches.contains("follow") else { throw usage("--push applies only to --follow") }
+            command = .changes(target: target, follow: options.switches.contains("follow"), since: since, intervalSeconds: interval,
+                               push: options.switches.contains("push"))
         case "access":
             guard let verb = commandArguments.first, ["list", "set", "remove"].contains(verb) else {
                 throw usage("Usage: paraair access list|set|remove (PROFILE FOLDER | MOUNTED_PATH) [(--email E | --role members|viewers | --credential ID) [--level none|read|create|write]]")

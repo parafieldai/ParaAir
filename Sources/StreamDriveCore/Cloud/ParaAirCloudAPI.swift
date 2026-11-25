@@ -517,6 +517,12 @@ extension ParaAirCloudAPI {
         }
     }
 
+    /// The drive's change stream (`GET /v1/drives/{d}/changes/stream`) on this service with these tokens; not started.
+    public func changeStream(driveID: String, options: ParaAirCloudChangeStream.Options = .init(),
+                             handler: @escaping @Sendable (ParaAirCloudChangeStream.Event) -> Void) throws -> ParaAirCloudChangeStream {
+        try ParaAirCloudChangeStream(baseURL: http.baseURL, driveID: driveID, tokens: tokens, options: options, handler: handler)
+    }
+
     /// `GET /v1/drives/{d}/changes`: without `since`, no changes and the cursor to follow from; with it, the changes after it.
     public func changes(driveID: String, since: Int64?, limit: Int = 500) throws -> ParaAirCloudChangePage {
         try unwrap {

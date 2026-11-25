@@ -453,4 +453,7 @@ extension ParaAirCloudBackend: DriveCollaboration {
     public func conflictCopy(at path: String) throws -> ParaAirCloudConflictRecord? {
         try api().conflictCopy(driveID: driveID, path: canonicalPath(path))
     }
+    public func changeStream(_ handler: @escaping @Sendable (ParaAirCloudChangeStream.Event) -> Void) throws -> ParaAirCloudChangeStream? {
+        try api().changeStream(driveID: driveID, handler: handler)
+    }
 }

@@ -176,14 +176,15 @@ Where a conflict copy came from. `original` is the file it was saved beside, `ba
 
 ### `changes`
 
-`paraair changes (PROFILE [FOLDER] | MOUNTED_PATH) [--since CURSOR] [--follow [--interval SECONDS]] --json` (`--interval` 1–300, default 3)
+`paraair changes (PROFILE [FOLDER] | MOUNTED_PATH) [--since CURSOR] [--follow [--push] [--interval SECONDS]] --json` (`--interval` 1–300, default 3)
 
 One compact JSON object per line, written as it comes:
 
 - Without `--since` and `--follow`: one line, `{"cursor": N}`, the cursor to start from later.
 - With `--since` alone: the changes after that cursor, then exit 0.
-- With `--follow`: first `{"following": true, "cursor": N}`, N being `--since` or the current cursor; then it runs until stopped.
+- With `--follow`: first `{"following": true, "cursor": N}`, N being `--since` or the current cursor; then it runs until stopped. It reads the feed every `--interval` seconds.
 - A follower stops by itself, exit 0, when the process that started it is gone (it was reparented, for example after that app quit or crashed), or when nobody reads its output any more (the read end of its stdout pipe was closed, found before it starts, before each poll, or by a write that fails). It checks before each poll, so it stops within one `--interval` (or one wait while offline, at most a minute).
+- With `--follow --push`: the same lines, made safe to read through the mount the same way (below), but instead of reading the feed every few seconds it keeps a connection open on which ParaAir Cloud says when a change was made, and reads the feed then (a change prints within about a second; an idle drive costs the service a request every ten minutes instead of one every few seconds). While that connection is down it reads every `--interval` seconds and reconnects on its own. It checks for a gone parent or reader at least every `--interval` seconds while it waits, so it stops within one `--interval` as well. Builds that have it list `changes.push` in `setup-status`'s `capabilities`.
 - On a drive that is mounted, the command makes what each page names safe to read through the mount before printing it. It creates and removes the refresh marker in each folder the page changed, then waits until the drive's extension has dropped the kernel's caches for them, up to 3 seconds. A file a line names reads with its new size and contents at once, whatever the app's own feed is doing. After 3 seconds without the extension (for example the app's drive is mid-remount), it prints anyway.
 - Each change: `{"cursor": int, "change": string, "kind": string, "path": string, "fromPath"?: string, "rescan"?: true, "version": string | null, "at": string, "author": Author}`.
 - `{"reset": true, "cursor": N}` when changes after your cursor were pruned (the feed keeps 30 days): list the folder again, then go on from N.
@@ -317,5 +318,5 @@ With `--json`, a failure prints this to standard output, and the process exits w
 ## The mounted drive
 
 - A drive the app mounts is at `/Volumes/<Finder name>`; `setup-status` reports its `mountPoint`. Read and write it like any folder. Writes upload in the background; a change that can't upload waits in `conflicts`.
-- While a ParaAir Cloud drive is mounted, the app follows its change feed (every 3 seconds while changes arrive and for a minute after, up to a minute apart while nothing changes) and briefly creates and removes `.paraair-refresh` in each folder that changed, so FSEvents reports the folder. Ignore that name.
+- While a ParaAir Cloud drive is mounted, the app follows its change feed (when ParaAir Cloud says a change was made, usually within a second; when it can't hear that, every 3 seconds while changes arrive and for a minute after, up to a minute apart while nothing changes) and briefly creates and removes `.paraair-refresh` in each folder that changed, so FSEvents reports the folder. Ignore that name.
 - On macOS 27 a file another device changed reads as its new version once its folder is listed again or that marker appears. On macOS 26 macOS keeps a file's cached size and contents until the drive is mounted again.

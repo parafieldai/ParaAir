@@ -112,6 +112,13 @@ public protocol DriveCollaboration: AnyObject {
     func recordConflictCopy(_ record: ParaAirCloudConflictRecord) throws
     /// The record of the conflict copy at `path`, or nil when it isn't one.
     func conflictCopy(at path: String) throws -> ParaAirCloudConflictRecord?
+    /// A connection that tells of each new change's cursor as it commits (ParaAirCloudChangeStream), not started yet; nil
+    /// when the storage can't push.
+    func changeStream(_ handler: @escaping @Sendable (ParaAirCloudChangeStream.Event) -> Void) throws -> ParaAirCloudChangeStream?
+}
+
+public extension DriveCollaboration {
+    func changeStream(_ handler: @escaping @Sendable (ParaAirCloudChangeStream.Event) -> Void) throws -> ParaAirCloudChangeStream? { nil }
 }
 
 /// One Mac writes a drive at a time; a Mac that recovered the drive owns it.

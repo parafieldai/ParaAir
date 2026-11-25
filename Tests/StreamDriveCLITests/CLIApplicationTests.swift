@@ -878,13 +878,15 @@ extension CLIApplicationTests {
                        .restoreVersion(target: .drive(profile: "ParaOS", path: "/a"), version: "pv:12", expectedVersion: "pv:13"))
         XCTAssertEqual(try CLIParser.parse(["changes", "ParaOS", "--follow", "--interval", "5"]).command,
                        .changes(target: .drive(profile: "ParaOS", path: "/"), follow: true, since: nil, intervalSeconds: 5))
+        XCTAssertEqual(try CLIParser.parse(["changes", "/Volumes/ParaOS/records", "--follow", "--push"]).command,
+                       .changes(target: .mounted("/Volumes/ParaOS/records"), follow: true, since: nil, intervalSeconds: nil, push: true))
         XCTAssertEqual(try CLIParser.parse(["access", "set", "ParaOS", "/claims", "--role", "members", "--level", "create"]).command,
                        .access(.set(.role("members"), .create), target: .drive(profile: "ParaOS", path: "/claims")))
         XCTAssertEqual(try CLIParser.parse(["access", "remove", "/Volumes/ParaOS/people/ann", "--email", "ann@example.test"]).command,
                        .access(.remove(.email("ann@example.test")), target: .mounted("/Volumes/ParaOS/people/ann")))
         XCTAssertEqual(try CLIParser.parse(["access", "list", "ParaOS"]).command, .access(.list, target: .drive(profile: "ParaOS", path: "/")))
         XCTAssertEqual(try CLIParser.parse(["settings", "ParaOS", "--conflict-copies", "on"]).command, .settings(profile: "ParaOS", conflictCopies: true))
-        for bad in [["cat-version", "ParaOS", "/a", "12"], ["versions", "ParaOS"], ["versions", "ParaOS", "records"], ["changes", "ParaOS", "--interval", "5"],
+        for bad in [["cat-version", "ParaOS", "/a", "12"], ["versions", "ParaOS"], ["versions", "ParaOS", "records"], ["changes", "ParaOS", "--interval", "5"], ["changes", "ParaOS", "--push"],
                     ["access", "set", "ParaOS", "/a", "--role", "admins", "--level", "read"], ["access", "set", "ParaOS", "/a", "--role", "members"],
                     ["access", "remove", "ParaOS", "/a"], ["access", "grant", "ParaOS", "/a"], ["settings", "ParaOS", "--conflict-copies", "yes"],
                     ["versions", "ParaOS", "/a", "--limit", "0"]] {
