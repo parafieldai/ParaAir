@@ -7,7 +7,7 @@ DIR holds terms.md, cloud-terms.md, subscription-policy.md, acceptable-use.md, c
 law-enforcement.md (docs/legal/ in the private paraair-cloud repository). Each becomes site/<slug>.html, served at /<slug>, plus the
 /legal index. `{{EFFECTIVE_DATE}}` in a source becomes --effective. Stdlib only, like the other site scripts.
 
-The markdown subset the documents use: # to #### headings, paragraphs, - and 1. lists (nested by indentation),
+The markdown subset the documents use: # to #### headings, paragraphs, ``` blocks (kept literally), - and 1. lists (nested by indentation),
 pipe tables, > quotes, --- rules, **bold**, *italic*, `code`, [links](url), and bare emails and https URLs.
 Numbered clauses get anchors: a heading "## 13. Fees" is #13 and a paragraph "**13.2 Title.** ..." is #13.2, so
 emails and other documents can link to a clause.
@@ -144,6 +144,8 @@ class Document:
             stripped = line.strip()
             if not stripped:
                 flush(); i += 1; continue
+            if stripped.startswith("```"):
+                flush(); i = self.fenced(i); continue
             heading = re.match(r"^(#{1,4})\s+(.*)$", stripped)
             if heading:
                 flush(); self.heading(len(heading.group(1)), heading.group(2)); i += 1; continue
@@ -157,6 +159,14 @@ class Document:
                 i = self.listing(i); continue
             paragraph.append(line); i += 1
         flush()
+
+    def fenced(self, i):
+        """A ``` block (an address to copy, a notice template) is kept as written: escaped, line breaks and all."""
+        body, i = [], i + 1
+        while i < len(self.lines) and not self.lines[i].strip().startswith("```"):
+            body.append(self.lines[i]); i += 1
+        self.out.append(f'<pre class="doc-block">{html.escape(chr(10).join(body).strip(chr(10)), quote=False)}</pre>')
+        return i + 1
 
     def heading(self, level, text):
         if level == 1 and self.title is None:

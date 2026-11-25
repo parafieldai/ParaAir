@@ -660,6 +660,8 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: -0.015em
 /* The document. */
 .doc { max-width: var(--measure); color: var(--ink-2); }
 .doc > * + * { margin-top: var(--space-md); }
+/* A block kept as written: the copyright agent's address, the notice templates. */
+.doc .doc-block { margin-left: 0; margin-right: 0; padding: var(--space-md); border-radius: 4px; background: var(--paper-2); color: var(--ink); font: 400 var(--text-base)/1.55 var(--font-body); white-space: pre-wrap; overflow-wrap: anywhere; }
 .doc p, .doc li, .doc td { text-wrap: pretty; overflow-wrap: anywhere; }
 .doc strong { color: var(--ink); font-weight: 600; }
 .doc h2 {
