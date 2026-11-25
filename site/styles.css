@@ -769,3 +769,58 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: -0.015em
   .doc table, .doc blockquote { break-inside: avoid; }
   .doc .table-scroll { overflow: visible; background: none; }
 }
+
+/* Elements the sign-up switch (signup.js) shows or hides keep their hidden state whatever their display. */
+[hidden] { display: none !important; }
+
+/* ------------------------------------------------------------------------------------------------
+ * Get started (site/get-started.html). Hallmark · macrostructure: custom (route ledger)
+ * Five stops in the pricing page's ledger rows. Each stop's name carries five file pieces, lit as far
+ * as that stop, so the last row is the whole file down on the Mac. Everything is scoped to .start.
+ * --------------------------------------------------------------------------------------------- */
+.start .route {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: clamp(104px, 9vw, 120px) var(--gutter) var(--section);
+}
+.start .route-head { display: grid; gap: var(--space-md); max-width: 46rem; }
+.start h1 { font-size: var(--text-xl); line-height: 1.04; letter-spacing: -0.015em; text-wrap: balance; }
+.start .lede { font-size: var(--text-lg); color: var(--ink-2); max-width: 40ch; text-wrap: pretty; }
+.start .stop {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  grid-template-areas: "name action" "desc action";
+  column-gap: var(--space-xl);
+  row-gap: var(--space-md);
+  margin-top: clamp(48px, 4.5vw, 64px);
+  padding-top: clamp(32px, 3.5vw, 48px);
+  border-top: 1px solid var(--rule);
+}
+.start .stop-name {
+  grid-area: name;
+  display: grid;
+  gap: var(--space-sm);
+  font: 500 var(--text-path)/1.1 var(--font-display);
+  letter-spacing: -0.01em;
+}
+.start .stop-pieces { display: flex; gap: 5px; }
+.start .stop-pieces i { width: 12px; height: 12px; border-radius: 3px; background: var(--piece-off); }
+.start .stop-pieces i.on { background: var(--piece-on); }
+.start .stop-desc { grid-area: desc; display: grid; gap: var(--space-md); align-content: start; }
+.start .stop-desc p { font-size: var(--text-lg); color: var(--ink-2); max-width: 44ch; text-wrap: pretty; }
+.start .stop-desc strong { color: var(--ink); font-weight: 600; }
+.start .stop-desc .stop-status { font-size: var(--text-base); max-width: 60ch; }
+.start .stop-action { grid-area: action; display: grid; gap: var(--space-sm); justify-items: start; align-content: start; }
+.start .stop-action .cta { margin-bottom: var(--space-xs); }
+.start .path-link {
+  font: 600 var(--text-lg)/1.3 var(--font-body);
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.22em;
+}
+.start .path-link:hover { color: var(--accent-text); }
+@media (max-width: 900px) {
+  .start .stop { grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "desc" "action"; }
+  .start .stop-action { margin-top: var(--space-xs); }
+}

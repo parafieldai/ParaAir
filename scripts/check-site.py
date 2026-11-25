@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Static checks for the pages in site/ (CI job "site"). Standard library only.
 
-- The deployed files exist: index.html, pricing.html, styles.css, motion.js, _headers.
+- The deployed files exist: index.html, pricing.html, get-started.html, styles.css, motion.js, signup.js, _headers.
 - Every *.html page in site/ is checked, not only the required ones.
 - No em dash in visible copy: page text and user-visible attributes, and anywhere in
   motion.js or styles.css (either can put text on the page).
@@ -21,7 +21,7 @@ import re
 import sys
 from urllib.parse import unquote, urlsplit
 
-REQUIRED = ["index.html", "pricing.html", "styles.css", "motion.js", "_headers"]
+REQUIRED = ["index.html", "pricing.html", "get-started.html", "styles.css", "motion.js", "signup.js", "_headers"]
 EM_DASH = "—"  # em dash
 BANNED_WORDS = re.compile(r"\bunlimited\b", re.IGNORECASE)
 VISIBLE_ATTRIBUTES = {"alt", "title", "aria-label", "aria-description", "placeholder", "value", "content", "label"}
@@ -104,7 +104,7 @@ def main(argv):
         page.close()
         pages[path.resolve()] = page
         problems += page.problems
-    for name in ("motion.js", "styles.css"):
+    for name in ("motion.js", "signup.js", "styles.css"):
         for number, line in enumerate((site / name).read_text(encoding="utf-8").splitlines(), 1):
             if EM_DASH in line:
                 problems.append("%s:%d: em dash" % (name, number))

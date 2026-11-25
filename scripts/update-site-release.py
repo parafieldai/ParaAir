@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Point the site's download buttons at one GitHub release.
 
-Rewrites, in every page that offers the download (site/index.html and site/pricing.html by default),
+Rewrites, in every page that offers the download (site/index.html, site/pricing.html and site/get-started.html by default),
 every element marked data-release-download (href), data-release-notes (href), data-release-label (text)
 and data-release-size (text). The pages stay static: no script is needed to see the version or download
 it. Every page is checked before any is written, and running it twice with the same release changes
@@ -17,7 +17,7 @@ from pathlib import Path
 
 REPO = "https://github.com/parafieldai/ParaAir"
 SITE = Path(__file__).resolve().parent.parent / "site"
-PAGES = ("index.html", "pricing.html")
+PAGES = ("index.html", "pricing.html", "get-started.html")
 TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?$")
 
 

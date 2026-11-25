@@ -57,10 +57,12 @@
         <div class="path-desc">
           <p>1&nbsp;TB of our storage. No buckets, no&nbsp;keys.</p>
           <p>Your first plan starts with a 7-day free&nbsp;trial.</p>
-          <p class="path-status"><strong>Invite-only for now.</strong> Billing isn’t switched on, so nobody is charged yet. These are the planned prices for when it opens; taxes may&nbsp;apply.</p>
+          <p class="path-status" data-signup="invite"><strong>Invite-only for now.</strong> Billing isn’t switched on, so nobody is charged yet. These are the planned prices for when it opens; taxes may&nbsp;apply.</p>
         </div>
         <div class="path-action">
-          <a class="path-link" href="mailto:contact@parafield.ai?subject=ParaAir%20Cloud%20invite">Ask for an invite</a>
+          <a class="path-link" data-signup="invite" href="mailto:contact@parafield.ai?subject=ParaAir%20Cloud%20invite">Ask for an invite</a>
+          <a class="cta" data-signup="open" hidden href="get-started.html">Start free trial</a>
+          <p class="requires" data-signup="open" hidden>Taxes may&nbsp;apply.</p>
         </div>
       </section>
     </div>
@@ -89,7 +91,7 @@
     <section class="spec" aria-labelledby="spec-title">
       <h2 id="spec-title">Everything in Personal.</h2>
       <table class="spec-table">
-        <caption>Planned terms for when billing opens. Taxes may apply. The <a href="cloud-terms.html">Cloud Terms</a> and the <a href="subscription-policy.html">subscription policy</a> set them out in&nbsp;full.</caption>
+        <caption><span data-signup="invite">Planned terms for when billing opens. </span>Taxes may apply. The <a href="cloud-terms.html">Cloud Terms</a> and the <a href="subscription-policy.html">subscription policy</a> set them out in&nbsp;full.</caption>
         <tbody>
           <tr>
             <th scope="row">Price</th>
@@ -158,5 +160,6 @@
   </footer>
 
   <script src="motion.js" defer></script>
+  <script src="signup.js" defer></script>
 </body>
 </html>
