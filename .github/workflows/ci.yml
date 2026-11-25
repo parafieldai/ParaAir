@@ -92,7 +92,7 @@ jobs:
           sw_vers; xcodebuild -version; swift --version; df -h /System/Volumes/Data
       # Go is only in the image's tool cache. The pinned JuiceFS go.mod asks for go 1.25.10;
       # with GOTOOLCHAIN=auto (set by build-juicefs.sh) a newer 1.25 patch is used as is.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: "1.25"
           cache: false
@@ -147,7 +147,7 @@ jobs:
             exit 1
           fi
           sw_vers; xcodebuild -version; echo "macOS SDK $sdk"; df -h /System/Volumes/Data
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: "1.25"
           cache: false
@@ -178,7 +178,7 @@ jobs:
         run: bash scripts/render-ui-snapshots.sh "$RUNNER_TEMP/ui-snapshots"
       - name: Upload UI snapshots
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ui-snapshots
           path: ${{ runner.temp }}/ui-snapshots
@@ -198,7 +198,7 @@ jobs:
         env:
           ALLOW_EXTENSION_IDENTITY_CHANGE: ${{ contains(github.event.pull_request.body, '[extension identity change]') && '1' || '0' }}
         run: python3 -I scripts/check-extension-identity.py
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           package-manager-cache: false
