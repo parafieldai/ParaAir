@@ -123,6 +123,10 @@ public struct LoginMountFolders: Equatable, Sendable {
         guard folder != selected, !kept.contains(folder) else { return }
         kept.append(folder)
     }
+    /// Remove from List: the folder no longer mounts at login.
+    public mutating func forget(_ folder: String) {
+        kept.removeAll { $0 == folder }
+    }
     /// Folders to mount at login, the selected one first. Kept folders without a drive drop out.
     public mutating func targets(selected: String, hasDrive: (String) -> Bool) -> [String] {
         kept.removeAll { $0 == selected || !hasDrive($0) }

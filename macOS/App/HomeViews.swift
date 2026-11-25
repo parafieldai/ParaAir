@@ -313,6 +313,7 @@ struct DriveListRow: View {
     let row: HomePresentation.DriveRow
     var compact = false
     let perform: (String, HomePresentation.Action) -> Void
+    @State private var confirmingRemoval = false
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -332,8 +333,39 @@ struct DriveListRow: View {
                 stateLabel.font(.callout).frame(width: 128, alignment: .leading)
             }
             action.frame(width: compact ? nil : 132, alignment: .trailing)
+            if !compact {
+                // A fixed column, so the actions line up whether or not a row can be removed.
+                more.frame(width: 22)
+            }
         }
         .accessibilityElement(children: .contain)
+        .contextMenu {
+            if row.removable { Button("Remove from List…") { confirmingRemoval = true } }
+        }
+        .confirmationDialog("Remove \(row.name) from ParaAir?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
+            Button("Remove from List", role: .destructive) { perform(row.id, .removeFromList) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("ParaAir stops listing, connecting and renewing this drive. Its files in storage and its state folder on this Mac stay; "
+                 + "Choose State Folder… brings it back.")
+        }
+    }
+
+    @ViewBuilder private var more: some View {
+        if row.removable {
+            Menu {
+                Button("Remove from List…") { confirmingRemoval = true }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("More for \(row.name)")
+            .help("More for \(row.name)")
+        } else {
+            Color.clear.frame(height: 1).accessibilityHidden(true)
+        }
     }
 
     private var stateLabel: some View {

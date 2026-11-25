@@ -551,6 +551,23 @@ final class MenuModel: ObservableObject {
         refreshExtensionInBackground(trigger: "connect-other")
     }
 
+    /// Remove from List: ParaAir forgets another folder's drive. It is no longer listed, renewed, mounted at login or
+    /// followed for changes. Its files in storage and its state folder stay, and Choose State Folder… brings it back.
+    /// Never the selected folder, nor a drive that is mounted or mounting.
+    func forgetKnownFolder(_ url: URL) {
+        let root = url.standardizedFileURL
+        guard root != stateRoot, mountingFolder != root.path, !pendingLoginMounts.contains(where: { $0.path == root.path }) else { return }
+        if let other = otherFolderDrive(root.path), isMounted(other.profile) { return }
+        UserDefaults.standard.set(knownStateRoots().filter { $0 != root }.map(\.path), forKey: Self.knownRootsKey)
+        loginMounts.forget(root.path)
+        saveLoginMounts()
+        otherRenewals[root.path] = nil
+        setOtherDriveIssue(nil, root: root)
+        if mountMessageFolder == root.path { mountMessage = nil; mountMessageFolder = nil }
+        AppLog.lifecycle.notice("forgot a known folder folder=\(root.path, privacy: .private(mask: .hash))")
+        reload()
+    }
+
     func otherFolderDrive(_ folder: String) -> (root: URL, profile: DriveProfile)? {
         otherFolderDrives.first { $0.root.path == folder }
     }

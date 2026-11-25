@@ -1425,6 +1425,15 @@ struct UISnapshots {
         expect(HomePresentation.make(scenarios["7-sign-in-needed"]!).status.title == "Storage access needed",
                "a Mac whose only drive needs sign-in still leads with it")
 
+        // Remove from List…: only another folder's drive that isn't mounted or connecting; never the selected one.
+        expect(owner.drives.allSatisfy { !$0.removable }, "connected drives and the selected drive can't be removed")
+        let failedRows = HomePresentation.make(scenarios["30-drives-other-failed"]!).drives
+        expect(failedRows.filter(\.removable).map(\.name) == ["ParaOS-B", "Archive"], "Off drives of other folders can be removed")
+        expect(HomePresentation.make(scenarios["28-drives-all-blocked"]!).drives.first { $0.name == "ParaOS" }?.removable == true,
+               "another folder's drive that needs sign-in can be removed")
+        expect(HomePresentation.make(scenarios["29-drives-connecting"]!).drives.allSatisfy { !$0.removable },
+               "a connecting drive can't be removed")
+
         let together = HomePresentation.make(scenarios["27-drives-connected"]!)
         expect(together.status.title == "2 drives connected" && together.status.tone == .good
                && together.status.detail == "Files download in pieces as apps read them.", "all connected: \(together.status.title)")

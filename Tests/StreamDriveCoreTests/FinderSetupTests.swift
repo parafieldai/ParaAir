@@ -214,6 +214,16 @@ final class FinderSetupTests: XCTestCase {
         XCTAssertEqual(login.kept, [])
     }
 
+    func testRemoveFromListForgetsOnlyThatFolder() {
+        let selected = "/Users/u/state/selected", kept = "/Users/u/Cloud Drives/a1", alsoKept = "/Users/u/Cloud Drives/b2"
+        var login = LoginMountFolders(kept: [kept, alsoKept])
+        login.forget(kept)
+        XCTAssertEqual(login.targets(selected: selected, hasDrive: { _ in true }), [selected, alsoKept])
+        // Forgetting a folder that isn't kept changes nothing.
+        login.forget("/Users/u/elsewhere")
+        XCTAssertEqual(login.kept, [alsoKept])
+    }
+
     private func resolve(_ modules: [FinderExtensionModule]) -> FinderExtensionState {
         FinderExtensionState.resolve(modules, bundleIdentifier: identifier, expectedPath: path)
     }

@@ -105,6 +105,8 @@ struct HomePresentation: Equatable {
         case choosePlan
         /// Shows the other copies of ParaAir in Finder, so the person can keep only the installed one.
         case showOtherCopies
+        /// A drive row's Remove from List…: ParaAir forgets another folder's drive (after a confirmation).
+        case removeFromList
     }
     enum StepState: Equatable { case done, current, upcoming }
 
@@ -150,6 +152,9 @@ struct HomePresentation: Equatable {
         var switchesFolder = false
         /// False while the action can't run yet (a mount or drive creation is running).
         var enabled = true
+        /// Remove from List… is offered: another folder's drive that isn't mounted or connecting. The selected drive
+        /// never is (Choose State Folder… replaces it).
+        var removable = false
     }
     static let selectedDriveID = "selected"
     static let readOnlyNotice = "Read-only. You can open, download, move and delete files; new and changed files don’t upload."
@@ -367,7 +372,8 @@ struct HomePresentation: Equatable {
         func make(_ title: String, _ tone: Tone, _ action: Action?, _ actionTitle: String?) -> DriveRow {
             DriveRow(id: drive.id, name: drive.name, storage: drive.storage, state: drive.state, stateTitle: title, tone: tone,
                      action: action, actionTitle: actionTitle, issue: drive.issue,
-                     switchesFolder: action == .signInAgain && drive.id != selectedDriveID)
+                     switchesFolder: action == .signInAgain && drive.id != selectedDriveID,
+                     removable: drive.id != selectedDriveID && !drive.mounted && drive.state != .connecting)
         }
         switch drive.state {
         case .connected: return make("Connected", .good, .openInFinder, "Open in Finder")

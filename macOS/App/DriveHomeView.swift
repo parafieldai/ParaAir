@@ -113,6 +113,8 @@ extension MenuModel {
                 show("storage-settings")
                 self.cloudAccount.perform(.choosePlan)
             case .showOtherCopies: self.showOtherCopies()
+            // Only another folder's drive can be removed (the drive closure below handles it).
+            case .removeFromList: break
             }
         }
         return HomeActions(
@@ -126,6 +128,7 @@ extension MenuModel {
                     switch action {
                     case .openInFinder: self.reveal(other.profile); return
                     case .connectDrive: self.connectOther(other.profile, root: other.root); return
+                    case .removeFromList: self.forgetKnownFolder(other.root); return
                     case .signInAgain: guard self.selectKnownFolder(other.root) else { return }
                     default: return
                     }
