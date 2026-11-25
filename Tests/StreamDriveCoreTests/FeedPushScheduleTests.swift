@@ -118,6 +118,23 @@ final class FeedPushScheduleTests: XCTestCase {
         XCTAssertTrue(push.pullDue(now: 42))
     }
 
+    func testTheStreamHoldsItsAddressToTheTransportPolicy() throws {
+        final class NoTokens: ParaAirCloudTokenProvider, @unchecked Sendable {
+            func accessToken() throws -> String { throw DriveError(EACCES, "none") }
+            func tokenRejected(_ token: String) {}
+        }
+        let drive = "3f0c2a7e-6b1d-4e0a-9c2f-1d2e3f4a5b6c"
+        let strict = ParaAirCloudTransportPolicy(allowsLoopbackHTTP: false), loopback = ParaAirCloudTransportPolicy(allowsLoopbackHTTP: true)
+        func make(_ address: String, _ policy: ParaAirCloudTransportPolicy) throws -> ParaAirCloudChangeStream {
+            try ParaAirCloudChangeStream(baseURL: URL(string: address)!, driveID: drive, tokens: NoTokens(), policy: policy) { _ in }
+        }
+        XCTAssertNoThrow(try make("https://cloud.example.test", strict))
+        XCTAssertThrowsError(try make("http://cloud.example.test", loopback), "plain http off loopback never carries a token")
+        XCTAssertThrowsError(try make("http://127.0.0.1:8787", strict), "loopback http only where the build allows it")
+        XCTAssertNoThrow(try make("http://127.0.0.1:8787", loopback))
+        XCTAssertThrowsError(try make("https://cloud.example.test/path", strict))
+    }
+
     func testStreamMessages() {
         XCTAssertEqual(ParaAirCloudChangeStream.cursor(in: #"{"cursor":42}"#), .some(42))
         XCTAssertEqual(ParaAirCloudChangeStream.cursor(in: #"{"cursor":null}"#), .some(nil))

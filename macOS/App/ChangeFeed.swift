@@ -125,8 +125,8 @@ final class ChangeFeedMonitor {
                 state.stream = nil
                 state.push.closed(closure == .expired ? .expired : closure == .replaced ? .replaced : .other, now: now,
                                   jitter: .random(in: 0.8...1.2))
-                // Anything missed while it went down shows within a poll.
-                state.due = min(state.due, now + interval)
+                // Anything missed while it went down shows within a poll (not before a failed read's backoff ends).
+                state.due = max(state.failureUntil, min(state.due, now + interval))
                 if closure != .expired, closure != .closedByClient { log.notice("change stream closed: \(String(describing: closure), privacy: .public)") }
             }
         }
@@ -185,7 +185,8 @@ final class ChangeFeedMonitor {
                 states[key] = state
             }
 
-            let pull = state.push.isUp ? state.push.pullDue(now: start) && start >= state.failureUntil : start >= state.due
+            // A failed read's backoff holds whether or not the stream is up.
+            let pull = start >= state.failureUntil && (state.push.isUp ? state.push.pullDue(now: start) : start >= state.due)
             guard pull else { states[key] = state; continue }
             let existing = engines[key].flatMap { $0.profile == profile ? $0 : nil }
             state.push.pulling()
@@ -211,13 +212,15 @@ final class ChangeFeedMonitor {
             }.value
             guard self.target == target else { state.stream?.close(); return true }
             let done = Self.now
-            catchUp(&state, key: key, now: done)
+            // The read's own scheduling first, then what the stream said meanwhile (a close then still brings the
+            // next poll within `interval`), then what the read reached (after any cursor heard meanwhile).
+            var reached: (cursor: Int64, complete: Bool)?
             switch result {
             case .success(let (box, folders, changes, cursor, more)):
                 engines[key] = box
                 state.failureWait = interval; state.failureUntil = 0
-                state.push.pulled(reached: cursor, now: done, complete: !more)
                 state.due = done + state.schedule.next(changes: changes, now: done)
+                reached = (cursor, !more)
                 if folders > 0 { log.notice("changes from other devices refreshed folders=\(folders)") }
             case .failure(let error):
                 engines[key] = nil
@@ -226,6 +229,8 @@ final class ChangeFeedMonitor {
                 state.due = state.failureUntil
                 log.error("change feed failed errno=\((error as? DriveError)?.code ?? -1)")
             }
+            catchUp(&state, key: key, now: done)
+            if let reached { state.push.pulled(reached: reached.cursor, now: done, complete: reached.complete) }
             states[key] = state
         }
         woke = false

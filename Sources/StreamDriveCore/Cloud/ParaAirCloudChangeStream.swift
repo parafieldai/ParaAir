@@ -58,11 +58,15 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
     private var finished = false
     private static let logger = Logger(subsystem: "dev.streamdrive.cloud", category: "changestream")
 
-    /// `baseURL` is the service issuer (https, or loopback http in tests); nothing is sent until `start()`.
+    /// `baseURL` is the service issuer, held to `policy` like ParaAirCloudHTTP (https; loopback http only where the
+    /// policy allows it); nothing is sent until `start()`.
     public init(baseURL: URL, driveID: String, tokens: any ParaAirCloudTokenProvider, options: Options = .init(),
-                configuration: URLSessionConfiguration = .ephemeral, handler: @escaping @Sendable (Event) -> Void) throws {
+                policy: ParaAirCloudTransportPolicy = .current, configuration: URLSessionConfiguration = .ephemeral,
+                handler: @escaping @Sendable (Event) -> Void) throws {
         guard ParaAirCloudIDs.isDriveID(driveID) else { throw DriveError(EINVAL, "Invalid ParaAir Cloud drive identifier") }
-        guard var parts = URLComponents(url: baseURL, resolvingAgainstBaseURL: false), let scheme = parts.scheme?.lowercased(),
+        let issuer = try ParaAirCloudIssuer.validate(baseURL.absoluteString)
+        try policy.validate(issuer)
+        guard var parts = URLComponents(url: issuer, resolvingAgainstBaseURL: false), let scheme = parts.scheme?.lowercased(),
               scheme == "https" || scheme == "http" else { throw DriveError(EINVAL, "Invalid ParaAir Cloud address") }
         parts.scheme = scheme == "https" ? "wss" : "ws"
         parts.path = "/v1/drives/\(driveID)/changes/stream"
