@@ -20,10 +20,12 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
     public enum Closure: Sendable, Equatable {
         /// The token's time ran out (close 4001 "expired"): reconnect now, with a current token.
         case expired
+        /// A newer connection of the same person or credential to this drive replaced it (close 4008): wait long.
+        case replaced
         /// The service refused the request: `errno` EACCES (signed out, 401), ENOENT (no such drive or no access),
         /// EPERM (forbidden or suspended), EINVAL (anything else it refused).
         case refused(Int32)
-        /// The connection failed, went quiet, or the service closed it (a deploy, a newer socket of the same person).
+        /// The connection failed, went quiet, the Mac slept, or the service closed it (a deploy).
         case dropped
         /// `close()` was called.
         case closedByClient
@@ -49,6 +51,9 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var pingSent: DispatchTime?
     private var opened = DispatchTime.now()
+    /// The wall clock and uptime at the last check: the wall clock running ahead of uptime means the Mac slept, and
+    /// the connection from before can't be trusted.
+    private var lastCheck = (wall: Date(), uptime: DispatchTime.now())
     private var received = false
     private var finished = false
     private static let logger = Logger(subsystem: "dev.streamdrive.cloud", category: "changestream")
@@ -69,8 +74,16 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
         config.httpShouldSetCookies = false; config.httpCookieAcceptPolicy = .never
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.waitsForConnectivity = false
+        // A quiet drive sends nothing for hours. URLSession's own timeouts must not end the connection; the handshake
+        // and pong checks below decide when it is lost.
+        config.timeoutIntervalForRequest = Self.longest; config.timeoutIntervalForResource = Self.longest
         self.configuration = config
         super.init()
+    }
+
+    deinit {
+        timer?.cancel()
+        session?.invalidateAndCancel()
     }
 
     /// Connects in the background. The token may need a refresh (network), so this never blocks the caller.
@@ -93,7 +106,7 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
             finish(error.code == EACCES ? .refused(EACCES) : .dropped); return
         } catch { finish(.dropped); return }
         bearer = token
-        var request = URLRequest(url: url, timeoutInterval: options.openTimeout)
+        var request = URLRequest(url: url, timeoutInterval: Self.longest)
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue("mac/" + ParaAirCloudConfiguration.clientVersion, forHTTPHeaderField: "X-ParaAir-Client")
         let delegateQueue = OperationQueue()
@@ -104,6 +117,7 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
         task.maximumMessageSize = 4096
         self.session = session; self.task = task
         opened = .now()
+        lastCheck = (Date(), .now())
         task.resume()
         receive(task)
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -135,12 +149,17 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
     }
 
     private static let tick: DispatchTimeInterval = .seconds(5)
+    static let closeExpired = 4001, closeReplaced = 4008
+    private static let longest: TimeInterval = 7 * 86_400
 
     /// Every few seconds: gives up on a handshake that takes too long, sends a ping every `pingInterval` and treats a
     /// ping without a pong after `pongTimeout` as a lost connection.
     private func tick() {
         guard !finished, let task else { return }
-        let now = DispatchTime.now()
+        let now = DispatchTime.now(), wall = Date()
+        let slept = wall.timeIntervalSince(lastCheck.wall) - Double(now.uptimeNanoseconds - lastCheck.uptime.uptimeNanoseconds) / 1e9
+        lastCheck = (wall, now)
+        if slept > 10 { Self.logger.notice("change stream: the Mac slept"); finish(.dropped); return }
         if !received {
             if now > opened + options.openTimeout { Self.logger.notice("change stream handshake timed out"); finish(.dropped) }
             return
@@ -163,9 +182,12 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
     private var lastPong: DispatchTime?
 
     /// The task ended: a close frame, an HTTP refusal of the upgrade, or a network failure.
-    private func finishFromTask(_ task: URLSessionWebSocketTask) {
+    private func finishFromTask(_ task: URLSessionWebSocketTask, code: Int? = nil, reason: Data? = nil) {
         guard !finished else { return }
-        if let reason = task.closeReason, String(decoding: reason, as: UTF8.self) == "expired" { finish(.expired); return }
+        let closeCode = code ?? task.closeCode.rawValue
+        let closeReason = (reason ?? task.closeReason).map { String(decoding: $0, as: UTF8.self) }
+        if closeCode == Self.closeExpired || closeReason == "expired" { finish(.expired); return }
+        if closeCode == Self.closeReplaced || closeReason == "replaced" { finish(.replaced); return }
         if let status = (task.response as? HTTPURLResponse)?.statusCode, status != 101 {
             switch status {
             case 401:
@@ -193,7 +215,7 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
 
     fileprivate func closed(_ task: URLSessionTask, code: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         guard let task = task as? URLSessionWebSocketTask, self.task === task else { return }
-        finishFromTask(task)
+        finishFromTask(task, code: code.rawValue, reason: reason)
     }
     fileprivate func completed(_ task: URLSessionTask) {
         guard let task = task as? URLSessionWebSocketTask, self.task === task else { return }

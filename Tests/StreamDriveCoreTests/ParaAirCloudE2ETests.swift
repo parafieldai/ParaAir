@@ -78,8 +78,6 @@ final class ParaAirCloudE2ETests: XCTestCase {
         XCTAssertEqual(body["apiVersion"] as? Int, 1)
     }
 
-    /// Activities must run on the main actor; the blocking engine calls may (only the app forbids that).
-    @MainActor
     /// The change stream (cloud README "Change feed"): the newest cursor on connecting, then each committed change's
     /// cursor, which the feed then returns; and `changes --follow --push` prints a change long before its 60 s poll.
     func testE2E03ChangeStream() async throws {
@@ -136,6 +134,8 @@ final class ParaAirCloudE2ETests: XCTestCase {
         XCTAssertEqual(printed.last?["change"] as? String, "mkdir")
     }
 
+    /// Activities must run on the main actor; the blocking engine calls may (only the app forbids that).
+    @MainActor
     func testE2E02FullFlow() async throws {
         XCTAssertFalse(admin.isEmpty); XCTAssertFalse(email.isEmpty)
         let vault = TestConnectionVault()

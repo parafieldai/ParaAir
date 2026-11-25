@@ -709,6 +709,7 @@ final class CLIApplication {
                 return CLIExecution(stdout: "", stderr: "", exitCode: 0)
             }
             let page: ParaAirCloudChangePage, folders: [String]
+            notices?.pulling()
             do { (page, folders) = try engine.readChangesAndFolders(since: cursor) ; failures = 0 }
             catch let error as DriveError where follow && Self.passing(error) {
                 // Offline or the service is busy: keep following, waiting longer each time, up to a minute.
@@ -726,7 +727,13 @@ final class CLIApplication {
             guard follow else { return CLIExecution(stdout: "", stderr: "", exitCode: 0) }
             polls += 1
             if let limit = maxFollowPolls, polls >= limit { return CLIExecution(stdout: "", stderr: "", exitCode: 0) }
-            if let notices { notices.wait(after: cursor, poll: TimeInterval(interval)) } else { system.sleep(TimeInterval(interval)) }
+            if let notices {
+                // A healthy stream on a quiet drive means no poll for minutes: check for a gone parent or reader
+                // at least every `interval` seconds while waiting too (the check at the top of the loop then ends it).
+                notices.wait(after: cursor, poll: TimeInterval(interval), gone: { self.system.parentProcess() != parent || self.system.outputClosed() })
+            } else {
+                system.sleep(TimeInterval(interval))
+            }
         }
     }
 
@@ -972,6 +979,10 @@ struct SetupStatus: Encodable {
     /// and codes are added; a rename or removal is a new version. Integrations gate on this, not on the app's build.
     static let currentContractVersion = 1
     var contractVersion = SetupStatus.currentContractVersion
+    /// Additions within the contract version that an integration may want to check before using them (open set):
+    /// `changes.push`, `changes --follow --push`.
+    static let currentCapabilities = ["changes.push"]
+    var capabilities = SetupStatus.currentCapabilities
     struct App: Encodable { var installed: Bool; var path: String?; var running: Bool; var version: String?; var build: String? }
     /// `otherCopies`: other registered copies of the app that still exist. macOS can pick the wrong copy's extension,
     /// so a setup guide asks the person to keep only the installed one.

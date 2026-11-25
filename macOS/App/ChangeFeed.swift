@@ -51,6 +51,8 @@ final class ChangeFeedMonitor {
     /// Stream events since the last tick, applied by the tick (which keeps a drive's state in a local across awaits).
     private var heard: [String: [(id: Int, event: ParaAirCloudChangeStream.Event)]] = [:]
     private var woke = false
+    /// Between willSleep and didWake: no new connections.
+    private var asleep = false
     private var nextStreamID = 0
     private var loop: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
@@ -91,12 +93,13 @@ final class ChangeFeedMonitor {
             MainActor.assumeIsolated { self?.sleeping() }
         })
         observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.woke = true }
+            MainActor.assumeIsolated { self?.asleep = false; self?.woke = true }
         })
     }
 
-    /// A socket left open over sleep is dead on waking; close them now, and reconnect on waking.
+    /// A socket left open over sleep is dead on waking; close them now, open none until waking, and reconnect then.
     private func sleeping() {
+        asleep = true
         for state in states.values { state.stream?.close() }
     }
 
@@ -104,9 +107,15 @@ final class ChangeFeedMonitor {
         heard[key, default: []].append((id, event))
     }
 
-    /// Applies the stream events heard since the last call, and a wake.
-    private func catchUp(_ state: inout DriveState, key: String, now: TimeInterval) {
-        if woke { state.push.reconnectSoon(now: now) }
+    /// Applies the stream events heard since the last call, and a wake (`wake`: once per drive and tick).
+    private func catchUp(_ state: inout DriveState, key: String, now: TimeInterval, wake: Bool = false) {
+        if wake {
+            // A connection from before the sleep can't be trusted: drop it (its events are ignored from here on),
+            // reconnect at once, and read the feed for what changed meanwhile.
+            closeStream(&state)
+            state.push.reconnectNow(now: now)
+            state.due = now
+        }
         for (id, event) in heard.removeValue(forKey: key) ?? [] where id == state.streamID {
             switch event {
             case .cursor(let cursor, let first):
@@ -114,12 +123,15 @@ final class ChangeFeedMonitor {
                 state.push.heard(cursor: cursor, first: first)
             case .closed(let closure):
                 state.stream = nil
-                state.push.closed(expired: closure == .expired, now: now, jitter: .random(in: 0.8...1.2))
+                state.push.closed(closure == .expired ? .expired : closure == .replaced ? .replaced : .other, now: now,
+                                  jitter: .random(in: 0.8...1.2))
                 // Anything missed while it went down shows within a poll.
                 state.due = min(state.due, now + interval)
                 if closure != .expired, closure != .closedByClient { log.notice("change stream closed: \(String(describing: closure), privacy: .public)") }
             }
         }
+        // No stream means down, whatever order its last events came in.
+        if state.stream == nil, !state.push.isDown { state.push.closed(.other, now: now) }
     }
 
     private func closeStream(_ state: inout DriveState) {
@@ -147,17 +159,19 @@ final class ChangeFeedMonitor {
             var state = states[key] ?? DriveState(schedule: FeedPollSchedule(fast: interval, now: start), push: FeedPushSchedule(now: start),
                                                   due: start, failureWait: interval)
             if !state.mounted { state.schedule.wake(now: start); state.due = start; state.mounted = true }
-            catchUp(&state, key: key, now: start)
+            catchUp(&state, key: key, now: start, wake: woke)
             if state.stream != nil, state.streamProfile != profile { closeStream(&state); state.push = FeedPushSchedule(now: start) }
 
             // The stream, once the drive's engine is open (after its first read of the feed).
-            if state.stream == nil, state.push.shouldConnect(now: start), let box = engines[key], box.profile == profile {
+            if !asleep, state.stream == nil, state.push.shouldConnect(now: start), let box = engines[key], box.profile == profile {
                 nextStreamID += 1
                 let id = nextStreamID
                 state.streamID = id; state.streamProfile = profile
                 state.push.connecting()
+                // In order: the main queue runs these as the stream's queue sends them (Tasks wouldn't promise that).
                 let sink: @Sendable (ParaAirCloudChangeStream.Event) -> Void = { [weak self] event in
-                    Task { @MainActor in self?.streamEvent(event, key: key, id: id) }
+                    let monitor = self
+                    DispatchQueue.main.async { MainActor.assumeIsolated { monitor?.streamEvent(event, key: key, id: id) } }
                 }
                 let made = await Task.detached(priority: .utility) { try? box.engine.changeStream(sink) }.value
                 guard self.target == target else { made?.close(); return true }
@@ -165,14 +179,17 @@ final class ChangeFeedMonitor {
                     state.stream = made
                     made.start()
                 } else {
-                    state.push.closed(expired: false, now: Self.now)
+                    state.push.closed(.other, now: Self.now)
                 }
+                // Stored now, so stop() and sleeping() see it while this tick waits on the feed below.
+                states[key] = state
             }
 
             let pull = state.push.isUp ? state.push.pullDue(now: start) && start >= state.failureUntil : start >= state.due
             guard pull else { states[key] = state; continue }
             let existing = engines[key].flatMap { $0.profile == profile ? $0 : nil }
-            let result: Result<(EngineBox, Int, Int, Int64), Error> = await Task.detached(priority: .utility) {
+            state.push.pulling()
+            let result: Result<(EngineBox, Int, Int, Int64, Bool), Error> = await Task.detached(priority: .utility) {
                 do {
                     let box = try existing ?? EngineBox(engine: Engine.open(profile: profile, stateRoot: root), profile: profile)
                     let batch = try box.engine.followChanges(consumer: "app")
@@ -188,17 +205,18 @@ final class ChangeFeedMonitor {
                         }
                     }
                     for folder in folders { Housekeeping.touchRefreshMarker(in: folder, mountPoint: mount) }
-                    return .success((box, folders.count, (batch?.changes.count ?? 0) + (batch?.reset == true ? 1 : 0), batch?.cursor ?? 0))
+                    return .success((box, folders.count, (batch?.changes.count ?? 0) + (batch?.reset == true ? 1 : 0), batch?.cursor ?? 0,
+                                     batch?.more ?? false))
                 } catch { return .failure(error) }
             }.value
-            guard self.target == target else { return true }
+            guard self.target == target else { state.stream?.close(); return true }
             let done = Self.now
             catchUp(&state, key: key, now: done)
             switch result {
-            case .success(let (box, folders, changes, cursor)):
+            case .success(let (box, folders, changes, cursor, more)):
                 engines[key] = box
                 state.failureWait = interval; state.failureUntil = 0
-                state.push.pulled(reached: cursor, now: done)
+                state.push.pulled(reached: cursor, now: done, complete: !more)
                 state.due = done + state.schedule.next(changes: changes, now: done)
                 if folders > 0 { log.notice("changes from other devices refreshed folders=\(folders)") }
             case .failure(let error):

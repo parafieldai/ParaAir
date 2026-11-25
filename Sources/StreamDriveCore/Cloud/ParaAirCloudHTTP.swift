@@ -113,6 +113,9 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
     }
     deinit { monitor?.cancel(); session?.invalidateAndCancel() }
 
+    /// A copy of this session's configuration (proxies, protocol classes), for a connection that needs its own session.
+    var configuration: URLSessionConfiguration { session.configuration }
+
     public func sendSync(_ request: Request, bearer: String?) throws -> Response {
         if Self.forbidsMainThread { dispatchPrecondition(condition: .notOnQueue(.main)) }
         dispatchPrecondition(condition: .notOnQueue(queue))

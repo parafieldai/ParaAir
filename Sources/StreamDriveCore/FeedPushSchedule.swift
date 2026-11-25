@@ -14,6 +14,16 @@ public struct FeedPushSchedule: Sendable, Equatable {
         case connecting
         case up
     }
+    /// Why a stream closed, for when to reconnect.
+    public enum Closing: Sendable, Equatable {
+        /// Its token's time ran out: reconnect at once.
+        case expired
+        /// A newer connection of the same person replaced it (too many on one drive): wait the longest, without
+        /// shortening later waits, so followers sharing an account don't take turns replacing each other.
+        case replaced
+        /// Anything else: the doubling wait.
+        case other
+    }
     public let minimumGap: TimeInterval
     public let safety: TimeInterval
     public let shortestRetry: TimeInterval
@@ -27,6 +37,8 @@ public struct FeedPushSchedule: Sendable, Equatable {
     public private(set) var unknown = false
     private var lastPull: TimeInterval
     private var retry: TimeInterval
+    /// `heard` when the pull in progress started.
+    private var heardAtPull: Int64?
 
     public init(minimumGap: TimeInterval = 1, safety: TimeInterval = 600, shortestRetry: TimeInterval = 2, longestRetry: TimeInterval = 300,
                 now: TimeInterval) {
@@ -36,6 +48,7 @@ public struct FeedPushSchedule: Sendable, Equatable {
     }
 
     public var isUp: Bool { phase == .up }
+    public var isDown: Bool { if case .down = phase { return true }; return false }
 
     /// Whether to open a connection now.
     public func shouldConnect(now: TimeInterval) -> Bool {
@@ -50,18 +63,25 @@ public struct FeedPushSchedule: Sendable, Equatable {
         if let cursor { heard = max(heard ?? cursor, cursor) } else if first { unknown = true }
     }
 
-    /// The stream closed. `expired`: its token's time ran out, so reconnect at once. `jitter` (around 1) spreads the
-    /// reconnects of many Macs after the service drops them all at once.
-    public mutating func closed(expired: Bool, now: TimeInterval, jitter: Double = 1) {
-        if expired { phase = .down(retryAt: now); return }
-        phase = .down(retryAt: now + retry * jitter)
-        retry = min(longestRetry, retry * 2)
+    /// The stream closed. `jitter` (around 1) spreads the reconnects of many Macs after the service drops them all at
+    /// once.
+    public mutating func closed(_ closing: Closing, now: TimeInterval, jitter: Double = 1) {
+        switch closing {
+        case .expired:
+            phase = .down(retryAt: now)
+        case .replaced:
+            phase = .down(retryAt: now + longestRetry * jitter)
+        case .other:
+            phase = .down(retryAt: now + retry * jitter)
+            retry = min(longestRetry, retry * 2)
+        }
     }
 
-    /// Connect again soon, with the shortest wait (the Mac woke, the network came back).
-    public mutating func reconnectSoon(now: TimeInterval) {
+    /// Reconnect at once with the shortest wait from here on, whatever the phase (the Mac woke: a connection from
+    /// before is not to be trusted, and the caller has closed it).
+    public mutating func reconnectNow(now: TimeInterval) {
         retry = shortestRetry
-        if case .down = phase { phase = .down(retryAt: now) }
+        phase = .down(retryAt: now)
     }
 
     /// While up: whether to pull now.
@@ -76,9 +96,17 @@ public struct FeedPushSchedule: Sendable, Equatable {
         return max(0, lastPull + (behind ? minimumGap : safety) - now)
     }
 
-    /// A pull at `now` reached `cursor` (whether or not the stream was up).
-    public mutating func pulled(reached cursor: Int64, now: TimeInterval) {
+    /// A pull starts (stream up or not).
+    public mutating func pulling() { heardAtPull = heard }
+
+    /// A pull at `now` reached `cursor`. `complete`: it read to the end of the feed. A complete pull that stopped
+    /// short of a cursor heard before it started will never reach it (the service's stored cursor is ahead of its feed,
+    /// as after a database restore): that cursor is forgotten, so the follower doesn't pull every second for nothing.
+    /// A cursor heard during the pull is kept, and pulled next.
+    public mutating func pulled(reached cursor: Int64, now: TimeInterval, complete: Bool = true) {
         reached = cursor; lastPull = now; unknown = false
+        if complete, let before = heardAtPull, heard == before, before > cursor { heard = cursor }
+        heardAtPull = nil
     }
 
     /// The stream told of something the last pull didn't reach (or nothing was pulled yet, or it knew no cursor).

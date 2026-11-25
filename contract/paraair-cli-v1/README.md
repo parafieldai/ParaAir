@@ -46,6 +46,7 @@ So an integration should:
 ```
 {
   "contractVersion": 1,
+  "capabilities": [string],
   "app": {"installed": bool, "path"?: string, "running": bool, "version"?: string, "build"?: string},
   "extension": {"state": string, "otherCopies": [string]},
   "accounts": [{"id": string, "email": string, "issuer": string, "state": string,
@@ -57,6 +58,7 @@ So an integration should:
 }
 ```
 
+- `capabilities` (open set): additions within this version that you may want to check for before using them. `changes.push`: `changes --follow --push`. A build without the field has none.
 - `app.path` is present when the app is installed. `build` is CFBundleVersion, which grows with every release; `version` is CFBundleShortVersionString.
 - `extension.state` (open set): `enabled`, `disabled`, `notDiscovered` (also when the app isn't installed), `unknown`. Treat an unknown value like `unknown`.
 - `extension.otherCopies`: paths of other copies of the app that macOS has registered and that still exist (a download, a backup). macOS can switch on the wrong copy's extension, so ask the person to keep only the installed one. Empty when there are none or the app isn't installed.

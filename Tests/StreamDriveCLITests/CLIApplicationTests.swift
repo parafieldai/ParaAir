@@ -651,6 +651,7 @@ extension CLIApplicationTests {
         let app = CLIApplication(environment: ["STREAMDRIVE_HOME": root.path], system: fake.system)
         let installed = try object(app.run(["setup-status", "--json"]))
         XCTAssertEqual(installed["contractVersion"] as? Int, 1)
+        XCTAssertEqual(installed["capabilities"] as? [String], ["changes.push"])
         XCTAssertEqual((installed["accounts"] as? [[String: Any]])?.count, 0)
         fake.installed = false
         let missing = app.run(["setup-status", "--json"])
@@ -938,6 +939,47 @@ extension CLIApplicationTests {
                        ["path": "/records/x.json", "version": "pv:8000", "expectedVersion": "pv:9001"])
         let stale = app.run(["restore-version", "/Volumes/ParaOS/records/x.json", "pv:8000", "--expected-version", "pv:1", "--json"])
         XCTAssertEqual(stale.exitCode, 16); XCTAssertEqual(try object(stale)["code"] as? String, "version_conflict")
+    }
+
+    func testChangesFollowPushStopsWhenItsParentIsGoneWhileWaiting() throws {
+        // With --push a quiet drive means no poll at all; the wait still asks every --interval whether the parent is
+        // gone. Calls: 1 taken at start, 2 before the first poll, 3 on entering the wait, 4 within a second after.
+        let (follower, _, fake, printed) = try mountedCloud()
+        follower.maxFollowPolls = 10
+        fake.parentGoneAtCall = 4
+        let started = Date()
+        let result = follower.run(["changes", "/Volumes/ParaOS", "--follow", "--push", "--interval", "1", "--json"])
+        XCTAssertEqual(result.exitCode, 0, result.stderr)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10)
+        XCTAssertEqual(fake.sleeps, 0, "a pushed follower waits on the stream; it doesn't sleep between polls")
+        XCTAssertEqual(try lines(printed()).count, 3, "the following line and the first page")
+    }
+
+    func testChangeNoticesAskWhetherToStopAtLeastEveryPollWhileTheStreamIsQuiet() {
+        final class Quiet: ChangeNotices.Connection {
+            let up: () -> Void
+            init(up: @escaping () -> Void) { self.up = up }
+            func start() { DispatchQueue.global().async(execute: up) }
+            func close() {}
+        }
+        let notices = ChangeNotices { handler in Quiet { handler(.cursor(10, first: true)) } }
+        var asked = 0
+        let started = Date()
+        notices.wait(after: 10, poll: 0.2, gone: { asked += 1; return asked >= 4 })
+        let waited = Date().timeIntervalSince(started)
+        XCTAssertEqual(asked, 4)
+        XCTAssertGreaterThan(waited, 0.35, "the stream was up and quiet: only the poll interval woke the wait")
+        XCTAssertLessThan(waited, 3)
+        notices.close()
+
+        // A notice beyond the cursor ends the wait without asking for long.
+        var handler: (@Sendable (ParaAirCloudChangeStream.Event) -> Void)?
+        let told = ChangeNotices { made in handler = made; return Quiet { made(.cursor(10, first: true)) } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { handler?(.cursor(11, first: false)) }
+        let before = Date()
+        told.wait(after: 10, poll: 60)
+        XCTAssertLessThan(Date().timeIntervalSince(before), 3)
+        told.close()
     }
 
     func testChangesFollowStopsWhenItsParentOrItsReaderIsGone() throws {

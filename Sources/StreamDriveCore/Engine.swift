@@ -60,6 +60,8 @@ public struct RemoteChangeBatch: Sendable {
     public var folders: [String]
     public var reset: Bool
     public var cursor: Int64
+    /// The feed had more after `cursor` than one pass reads (maxPages): follow again soon.
+    public var more = false
 }
 
 /// Sequential prefetch window; `maxBlocks == 0` disables readahead.
@@ -1843,13 +1845,14 @@ public final class Engine {
     public func followChanges(consumer: String, maxPages: Int = 10) throws -> RemoteChangeBatch? {
         guard try backend.collaboration() != nil else { return nil }
         let saved: FeedCursor? = try lock.withLock(timeout: 10) { try db.get("feed", consumer) }
-        var cursor: Int64, changes: [ParaAirCloudChange] = [], folders: [String] = [], reset = false
+        var cursor: Int64, changes: [ParaAirCloudChange] = [], folders: [String] = [], reset = false, more = false
         if let start = saved?.cursor {
             cursor = start
             for _ in 0..<max(1, maxPages) {
                 let (page, named) = try pullChanges(since: cursor, limit: 500)
                 cursor = page.cursor
-                if page.reset { reset = true; changes = []; folders = named; break }
+                more = page.more
+                if page.reset { reset = true; more = false; changes = []; folders = named; break }
                 changes += page.changes
                 for folder in named where !folders.contains(folder) { folders.append(folder) }
                 if !page.more { break }
@@ -1859,7 +1862,7 @@ public final class Engine {
         }
         let reached = cursor
         try lock.withLock(timeout: 10) { try db.put("feed", consumer, FeedCursor(cursor: reached)) }
-        return RemoteChangeBatch(changes: changes, folders: folders, reset: reset, cursor: reached)
+        return RemoteChangeBatch(changes: changes, folders: folders, reset: reset, cursor: reached, more: more)
     }
 
     /// The drive's change stream (ParaAirCloudChangeStream), not started: `handler` hears the newest cursor the service

@@ -59,30 +59,63 @@ final class FeedPushScheduleTests: XCTestCase {
 
     func testReconnectWaitsDoubleUntilUpAndExpiryReconnectsAtOnce() {
         var push = FeedPushSchedule(shortestRetry: 2, longestRetry: 8, now: 0)
-        push.connecting(); push.closed(expired: false, now: 0)
+        push.connecting(); push.closed(.other, now: 0)
         XCTAssertFalse(push.shouldConnect(now: 1.9)); XCTAssertTrue(push.shouldConnect(now: 2))
-        push.connecting(); push.closed(expired: false, now: 2)
+        push.connecting(); push.closed(.other, now: 2)
         XCTAssertFalse(push.shouldConnect(now: 5.9)); XCTAssertTrue(push.shouldConnect(now: 6))
-        push.connecting(); push.closed(expired: false, now: 6)
-        push.connecting(); push.closed(expired: false, now: 14)
+        push.connecting(); push.closed(.other, now: 6)
+        push.connecting(); push.closed(.other, now: 14)
         XCTAssertFalse(push.shouldConnect(now: 21.9)); XCTAssertTrue(push.shouldConnect(now: 22), "capped at longestRetry")
         push.connecting(); push.heard(cursor: 1, first: true)
-        push.closed(expired: true, now: 30)
+        push.closed(.expired, now: 30)
         XCTAssertTrue(push.shouldConnect(now: 30), "an expired token reconnects at once")
-        push.connecting(); push.closed(expired: false, now: 30)
+        push.connecting(); push.closed(.other, now: 30)
         XCTAssertTrue(push.shouldConnect(now: 32), "being up reset the wait")
         XCTAssertFalse(push.pullDue(now: 40), "down: the caller polls")
         XCTAssertNil(push.untilPull(now: 40))
     }
 
-    func testReconnectSoonAfterWake() {
+    func testReconnectNowAfterWakeEvenWhenItLookedUp() {
         var push = FeedPushSchedule(shortestRetry: 2, longestRetry: 300, now: 0)
-        for t in stride(from: 0.0, to: 100, by: 10) { push.connecting(); push.closed(expired: false, now: t) }
+        for t in stride(from: 0.0, to: 100, by: 10) { push.connecting(); push.closed(.other, now: t) }
         XCTAssertFalse(push.shouldConnect(now: 100))
-        push.reconnectSoon(now: 100)
+        push.reconnectNow(now: 100)
         XCTAssertTrue(push.shouldConnect(now: 100))
-        push.connecting(); push.closed(expired: false, now: 100)
-        XCTAssertTrue(push.shouldConnect(now: 102))
+        push.connecting(); push.closed(.other, now: 100)
+        XCTAssertTrue(push.shouldConnect(now: 102), "the wait started over")
+        push.connecting(); push.heard(cursor: 4, first: true)
+        push.reconnectNow(now: 200)
+        XCTAssertTrue(push.isDown, "a connection from before the sleep isn't trusted")
+        XCTAssertTrue(push.shouldConnect(now: 200))
+    }
+
+    func testAReplacedConnectionWaitsTheLongestWithoutShorteningLaterWaits() {
+        var push = FeedPushSchedule(shortestRetry: 2, longestRetry: 300, now: 0)
+        push.connecting(); push.heard(cursor: 1, first: true)
+        push.closed(.replaced, now: 10)
+        XCTAssertFalse(push.shouldConnect(now: 309))
+        XCTAssertTrue(push.shouldConnect(now: 310))
+        push.connecting(); push.closed(.replaced, now: 310, jitter: 1.1)
+        XCTAssertFalse(push.shouldConnect(now: 639))
+        XCTAssertTrue(push.shouldConnect(now: 640))
+    }
+
+    func testACursorTheFeedNeverReachesIsForgottenAfterACompletePull() {
+        var push = FeedPushSchedule(now: 0)
+        push.pulled(reached: 100, now: 0)
+        // The service's stored cursor is ahead of its feed (a database restore): 500 is never reached.
+        push.connecting(); push.heard(cursor: 500, first: true)
+        XCTAssertTrue(push.pullDue(now: 1))
+        push.pulling(); push.pulled(reached: 120, now: 1, complete: true)
+        XCTAssertFalse(push.behind, "forgotten: no pull every second for nothing")
+        XCTAssertFalse(push.pullDue(now: 30))
+        // A cursor heard during a pull is kept and pulled next, even if this pull stopped short of it.
+        push.pulling(); push.heard(cursor: 130, first: false); push.pulled(reached: 125, now: 40, complete: true)
+        XCTAssertTrue(push.behind)
+        // An incomplete pull (more pages) forgets nothing.
+        push.pulling(); push.pulled(reached: 126, now: 41, complete: false)
+        XCTAssertTrue(push.behind)
+        XCTAssertTrue(push.pullDue(now: 42))
     }
 
     func testStreamMessages() {
