@@ -817,6 +817,18 @@ final class MenuModel: ObservableObject {
             if sidebarAttempts.insert(identity).inserted { addToSidebar(profile, automatically: true) }
         }
     }
+    /// FSKit's own mount (macOS 27 and later, with the entitlement): the only way a normal user's app can put a drive
+    /// under /Volumes. Without it the mount helper runs /sbin/mount -F, which can't create a folder in /Volumes.
+    var nativeMountAvailable: Bool {
+        if #available(macOS 27.0, *), ParaAirHasNativeMountEntitlement(),
+           NativeMountOperation.enabledByConfiguration(Bundle.main.infoDictionary ?? [:]) { return true }
+        return false
+    }
+    /// The drive can't be opened on this Mac: no native mount, and its mount point is under /Volumes (or not chosen yet,
+    /// which means /Volumes/<name>). A mount point elsewhere, set with the paraair CLI, still goes through the helper.
+    func needsNewerMacOS(_ profile: DriveProfile) -> Bool {
+        !nativeMountAvailable && (profile.mountPoint.map { $0.hasPrefix("/Volumes/") } ?? true)
+    }
     /// Reads the mount table again (local, no network). A drive mounted or unmounted outside ParaAir (the paraair CLI,
     /// Finder's eject, another app) isn't in `mounted` until the next reload, so every decision that depends on whether
     /// a drive is mounted reads it fresh first.
@@ -860,6 +872,11 @@ final class MenuModel: ObservableObject {
     /// with a kept folder's drive go to `otherDriveIssues`, not to the selected drive's message.
     private func mount(_ profile: DriveProfile, root: URL, readiness: AutoMountReadiness) {
         refreshMountTable()
+        if needsNewerMacOS(profile) {
+            // macOS 26: nothing to try; the home window says the drive needs macOS 27 (HomeInputs.needsNewerMacOS).
+            AppLog.mount.notice("mount skipped: needs macOS 27 for a drive in /Volumes")
+            return
+        }
         guard !mounting, !isMounted(profile) else {
             AppLog.mount.notice("mount skipped gate=\(self.mounting ? "mounting" : "mounted", privacy: .public)")
             return

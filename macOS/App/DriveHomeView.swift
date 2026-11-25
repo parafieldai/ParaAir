@@ -61,6 +61,7 @@ extension MenuModel {
             error: error,
             mountMessage: mountMessage,
             mountFailed: mountFailed,
+            needsNewerMacOS: profile.map(needsNewerMacOS) ?? false,
             mountMessageDrive: mountMessageFolder.flatMap { folder in
                 folder == stateRoot.path ? profile?.finderName : otherFolderDrive(folder)?.profile.finderName
             },
@@ -105,6 +106,8 @@ extension MenuModel {
                 if profile?.backend != .paraairCloud { self.pendingReconnectID = profile?.connectionID }
                 show("storage-settings")
             case .openSystemSettings: self.openExtensionSettings()
+            case .openSoftwareUpdate:
+                if let url = URL(string: "x-apple.systempreferences:com.apple.Software-Update-Settings.extension") { NSWorkspace.shared.open(url) }
             case .connectDrive: if let profile { self.continueSetup(profile) }
             case .openInFinder: if let profile { self.reveal(profile) }
             case .reviewChanges:
