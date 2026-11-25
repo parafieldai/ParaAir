@@ -9,7 +9,9 @@ appname = os.path.basename(application)
 format = "UDZO"
 files = [application]
 symlinks = {"Applications": "/Applications"}
-hide_extensions = [appname]
+# No hide_extensions: dmgbuild hides an extension by setting the Finder flag in com.apple.FinderInfo on the bundle
+# root, which makes `codesign --verify --deep --strict` on the mounted app fail ("detritus not allowed"). Finder
+# hides the .app extension by default anyway.
 icon = os.path.join(application, "Contents", "Resources", "ParaAirIcon.icns")
 
 background = defines["background"]  # noqa: F821
