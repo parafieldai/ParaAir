@@ -104,6 +104,7 @@ A build shows the ParaAir Cloud section in Storage Settings only when it knows a
 - The home window counts files waiting to upload, files blocked because the plan is full or sign-in ended, and files that changed on another device. Newly blocked or conflicting files also post one notification.
 - Uploads that keep failing (four failed attempts, or a quarter hour of failures) get their own notice instead of "waiting to upload": "Couldn’t upload 3 files: your storage refused access…", with how long the oldest has waited, and one notification per run of failures. `paraair status` prints the same line.
 - **Sign Out…** says how many files haven't uploaded yet and offers Upload First.
+- Legal pages: ParaAir Cloud sign-in links the ParaAir Cloud Terms and Privacy Policy, the plan sheet adds the Subscription Policy, and About ParaAir links the Terms of Service, Privacy Policy and the site's list of every legal page (`paraair.parafield.ai/legal`). The addresses live in one place, `macOS/App/LegalLinks.swift`, and the UI snapshot check confirms each one has its page under `site/`.
 
 CLI support (see `paraair help connect`): `paraair cloud-accounts`, `paraair cloud-drives --cloud-account ID`, `paraair connect NAME --cloud-account ID (--cloud-drive ID | --cloud-drive-name NAME)`, `paraair trash NAME` and `paraair restore NAME NODE_ID [--to PATH]`. For setup by another app, see "Setup by another app" below.
 

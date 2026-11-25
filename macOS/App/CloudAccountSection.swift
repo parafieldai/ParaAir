@@ -49,6 +49,7 @@ struct CloudAccountSection: View {
                 .disabled(model.isBusy || model.baseURL == nil)
         }
         if let message = model.message { ErrorLine(text: message) }
+        LegalLinksRow(pages: LegalLinks.signIn)
     }
 
     @ViewBuilder private var signingIn: some View {

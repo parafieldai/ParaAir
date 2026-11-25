@@ -24,6 +24,7 @@ struct UISnapshots {
         failures += checkVersionText()
         failures += checkUpdateGate()
         failures += checkButtonHeights()
+        failures += checkLegalLinks()
 
         for (name, input) in homeScenarios {
             for appearance in [NSAppearance.Name.aqua, .darkAqua]
@@ -72,6 +73,29 @@ struct UISnapshots {
             failures.forEach { print("FAIL: \($0)") }
             exit(1)
         }
+    }
+
+    /// The legal pages the app links, on the site that publishes them (site/*.html), and the About panel's links.
+    static func checkLegalLinks() -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: Bool, _ message: String) { if !condition { failures.append("legal links: " + message) } }
+        let site = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("site", isDirectory: true)
+        let pages = LegalLinks.signIn + LegalLinks.plans + LegalLinks.about
+        for page in pages {
+            expect(page.url.absoluteString == "https://paraair.parafield.ai/" + page.id, "\(page.id) is on paraair.parafield.ai")
+            // The site serves /terms from site/terms.html. Skipped until the site has legal pages (they ship with it).
+            if FileManager.default.fileExists(atPath: site.appendingPathComponent("legal.html").path) {
+                expect(FileManager.default.fileExists(atPath: site.appendingPathComponent(page.id + ".html").path), "site has \(page.id).html")
+            }
+        }
+        let credits = LegalLinks.aboutCredits()
+        var links: [URL] = []
+        credits.enumerateAttribute(.link, in: NSRange(location: 0, length: credits.length)) { value, _, _ in
+            if let url = value as? URL { links.append(url) }
+        }
+        expect(links == LegalLinks.about.map(\.url), "the About panel links every About page")
+        return failures
     }
 
     // MARK: Scenarios

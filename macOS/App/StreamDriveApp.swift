@@ -28,6 +28,7 @@ struct StreamDriveApp: App {
                     let version = AppVersionText.current
                     var options: [NSApplication.AboutPanelOptionKey: Any] = [.applicationVersion: version.title]
                     if let build = version.build { options[.version] = build }
+                    options[.credits] = LegalLinks.aboutCredits()
                     NSApp.orderFrontStandardAboutPanel(options: options)
                 }
             }

@@ -18,6 +18,7 @@ xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macos26.0" \
   "$root/macOS/App/CloudAccountSection.swift" "$root/macOS/App/CloudBillingPresentation.swift" "$root/macOS/App/CloudMembers.swift" \
   "$root/macOS/App/CloudPlanViews.swift" "$root/macOS/App/DriveActivity.swift" \
   "$root/macOS/App/LoginItem.swift" "$root/macOS/App/RecoverDrivePrompt.swift" "$root/macOS/App/ChangesReview.swift" \
+  "$root/macOS/App/LegalLinks.swift" \
   "$root/macOS/Tests/UISnapshots.swift" \
   "$products/StreamDriveCore.o" -lsqlite3 -o "$root/.build/uiux/ui-snapshots"
 "$root/.build/uiux/ui-snapshots" "$out"

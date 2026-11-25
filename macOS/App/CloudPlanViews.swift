@@ -91,6 +91,7 @@ struct CloudPlanSheet: View {
             } else {
                 choose
             }
+            LegalLinksRow(pages: LegalLinks.plans)
         }
         .padding(24)
         .frame(width: 640, alignment: .leading)
