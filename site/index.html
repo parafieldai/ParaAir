@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ParaAir: cloud storage as a Mac drive</title>
   <meta name="description" content="Cloud storage as a Mac drive. Open big files without downloading them first. Open source alpha for Apple Silicon Macs on macOS 26 or later.">
-  <meta name="color-scheme" content="dark light">
+  <meta name="color-scheme" content="light dark">
   <link rel="icon" href="glide.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <!-- Hallmark · macrostructure: custom (signature-field poster) · tone: calm-technical · anchor hue: Glide sage
-       theme: custom (brand) · paper #20282C / #F1EFE7 · accent #9AC7B4 · display New York (ui-serif) + body system-ui -->
+  <!-- Hallmark · macrostructure: custom (airflow poster) · tone: calm-technical · anchor hue: ink, sage accent
+       theme: custom (Air, shared with the Mac app) · paper #F7F8FA / #0C0D10 · ink #0E0F12 / #F6F7F9 · accent #9AC7B4
+       display system-ui 500 tracked -3.5% + body system-ui -->
   <a class="skip" href="#main">Skip to content</a>
 
   <header class="masthead">
@@ -23,58 +24,81 @@
       <span>ParaAir</span>
     </a>
     <nav class="nav" aria-label="Primary">
-      <a class="nav-link" href="pricing.html">Pricing</a>
-      <a class="nav-link" href="https://github.com/parafieldai/ParaAir" aria-label="ParaAir source code on GitHub">
-        <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
-        <span class="nav-label">GitHub</span>
-      </a>
+      <div class="nav-group">
+        <a class="nav-link" href="pricing.html">Pricing</a>
+        <a class="nav-link" href="https://github.com/parafieldai/ParaAir" aria-label="ParaAir source code on GitHub">
+          <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span class="nav-label">GitHub</span>
+        </a>
+      </div>
       <a class="nav-cta" href="#access">Download</a>
     </nav>
   </header>
 
   <main id="main">
     <section class="hero" id="top" aria-labelledby="hero-title">
-      <canvas class="field" data-field aria-hidden="true"></canvas>
       <div class="hero-text">
-        <h1 id="hero-title">Cloud storage, as a Mac drive.</h1>
+        <h1 id="hero-title">Cloud storage, <span class="tone">as a Mac drive.</span></h1>
         <p class="lede">Open big files without downloading them&nbsp;first.</p>
+        <div class="hero-action">
+          <a class="cta" data-release-download href="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.8/ParaAir-0.1.0-alpha.8.dmg">Download for Mac</a>
+          <p class="requires"><span data-release-label>0.1.0&nbsp;alpha&nbsp;8</span> · <span data-release-size>55&nbsp;MB</span> · <a data-release-notes href="https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.8">Release&nbsp;notes</a></p>
+          <p class="requires">Apple&nbsp;Silicon · macOS&nbsp;26&nbsp;or&nbsp;later</p>
+        </div>
       </div>
-      <div class="hero-action">
-        <a class="cta" data-release-download href="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.8/ParaAir-0.1.0-alpha.8.dmg">Download for Mac</a>
-        <p class="requires"><span data-release-label>0.1.0&nbsp;alpha&nbsp;8</span> · <span data-release-size>55&nbsp;MB</span> · <a data-release-notes href="https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.8">Release&nbsp;notes</a></p>
-        <p class="requires">Apple&nbsp;Silicon · macOS&nbsp;26&nbsp;or&nbsp;later</p>
-      </div>
+      <canvas class="airflow" data-airflow aria-hidden="true"></canvas>
     </section>
 
     <section class="scene scene-pieces" aria-labelledby="pieces-title" data-scene>
-      <div class="scene-copy">
-        <h2 id="pieces-title">Big files open in pieces.</h2>
+      <div class="scene-copy settle">
+        <h2 id="pieces-title">Big files open <span class="tone">in pieces.</span></h2>
         <p>Only the parts you open come down. A small cache keeps them close for next time.</p>
       </div>
-      <div class="lanes" aria-hidden="true">
-        <span class="lane-label lane-label-top">Your storage</span>
+      <div class="card lanes settle" aria-hidden="true">
+        <p class="file-name"><b>interview-a-cam.mov</b><span>in your storage</span></p>
         <div class="file-row" data-file-row></div>
-        <span class="lane-label lane-label-bottom">Your Mac</span>
+        <span class="lane-label lane-label-bottom">On your Mac</span>
       </div>
     </section>
 
     <section class="scene scene-saves" aria-labelledby="saves-title" data-scene>
-      <div class="loop" aria-hidden="true">
-        <span class="loop-end">Your Mac</span>
-        <span class="loop-path"><i></i><i></i><i></i></span>
-        <span class="loop-end">Your storage</span>
+      <div class="card loop-card settle" aria-hidden="true">
+        <div class="loop">
+          <span class="loop-end">Your Mac</span>
+          <span class="loop-path"><i></i><i></i><i></i></span>
+          <span class="loop-end">Your storage</span>
+        </div>
       </div>
-      <div class="scene-copy">
+      <div class="scene-copy settle">
         <h2 id="saves-title">Saves land on your Mac first.</h2>
         <p>Then they upload in the background.</p>
       </div>
     </section>
 
+    <section class="panel-shot" aria-labelledby="panel-title">
+      <div class="panel-copy settle">
+        <h2 id="panel-title">Your drive, <span class="tone">from the menu&nbsp;bar.</span></h2>
+        <p>See whether it’s connected, open it in Finder, and hear about an upload that needs&nbsp;you.</p>
+      </div>
+      <figure class="panel-figure settle">
+        <picture>
+          <source srcset="app-panel-dark.png" media="(prefers-color-scheme: dark)">
+          <img src="app-panel-light.png" width="320" height="251" alt="The ParaAir menu bar panel: Client Footage, connected, with Open in Finder, Show ParaAir and Storage Settings">
+        </picture>
+      </figure>
+    </section>
+
     <section class="choice" aria-labelledby="choice-title">
-      <h2 id="choice-title">Your storage, or ours.</h2>
+      <h2 id="choice-title" class="settle">Your storage, or ours.</h2>
       <div class="choice-pair">
-        <p><strong>Bring a bucket.</strong> Free and open source. Cloudflare R2 works today.</p>
-        <p><strong data-signup="invite">ParaAir Cloud is coming.</strong><strong data-signup="open" hidden>ParaAir Cloud.</strong> No buckets, no keys.</p>
+        <div class="card settle">
+          <strong>Bring a bucket.</strong>
+          <p>Free and open source. Cloudflare R2 works today.</p>
+        </div>
+        <div class="card settle">
+          <strong data-signup="invite">ParaAir Cloud is coming.</strong><strong data-signup="open" hidden>ParaAir Cloud.</strong>
+          <p>No buckets, no keys.</p>
+        </div>
       </div>
     </section>
 
@@ -90,6 +114,7 @@
         <p class="requires" data-signup="invite">ParaAir Cloud is invite-only for now. <a href="mailto:contact@parafield.ai?subject=ParaAir%20Cloud%20invite">Ask&nbsp;for&nbsp;an&nbsp;invite</a></p>
         <p class="requires" data-signup="open" hidden>ParaAir Cloud starts with a 7-day free trial. <a href="get-started.html">Get&nbsp;started</a></p>
       </div>
+      <canvas class="airflow airflow-close" data-airflow data-plane="off" aria-hidden="true"></canvas>
     </section>
   </main>
 

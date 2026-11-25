@@ -268,11 +268,13 @@ def masthead(root=""):
       <span>ParaAir</span>
     </a>
     <nav class="nav" aria-label="Primary">
-      <a class="nav-link" href="{root}pricing.html">Pricing</a>
-      <a class="nav-link" href="https://github.com/parafieldai/ParaAir" aria-label="ParaAir source code on GitHub">
-        <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="{GITHUB_PATH}"/></svg>
-        <span class="nav-label">GitHub</span>
-      </a>
+      <div class="nav-group">
+        <a class="nav-link" href="{root}pricing.html">Pricing</a>
+        <a class="nav-link" href="https://github.com/parafieldai/ParaAir" aria-label="ParaAir source code on GitHub">
+          <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="{GITHUB_PATH}"/></svg>
+          <span class="nav-label">GitHub</span>
+        </a>
+      </div>
       <a class="nav-cta" href="{root or './'}#access">Download</a>
     </nav>
   </header>"""
