@@ -1557,6 +1557,11 @@ struct UISnapshots {
                "a failed mount with the switch reading on walks through the switch again, with the picture and Try Again")
         var failedThenMounted = scenarios["36-couldnt-connect"]!; failedThenMounted.mounted = true
         expect(HomePresentation.make(failedThenMounted).status.title == "Connected", "a mounted drive never shows the failed step")
+        var failedAmongSeveral = scenarios["30-drives-other-failed"]!; failedAmongSeveral.mounted = false; failedAmongSeveral.mountFailed = true
+        let several = HomePresentation.make(failedAmongSeveral)
+        expect(several.notices.first?.id == "selected-mount-failed" && several.notices.first?.action == .openSystemSettings
+               && several.notices.first?.text.contains("off and on again") == true && !several.drives.isEmpty,
+               "with several drives, a failed mount of the selected one gets a notice with the switch step, and the list stays")
         var failedSwitchOff = scenarios["36-couldnt-connect"]!; failedSwitchOff.extensionState = .disabled
         expect(HomePresentation.make(failedSwitchOff).status.title == HomePresentation.make(scenarios["24-turn-on-first"]!).status.title
                || HomePresentation.make(failedSwitchOff).primary.action == .openSystemSettings && !HomePresentation.make(failedSwitchOff).offersTryAgain,

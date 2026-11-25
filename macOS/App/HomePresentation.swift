@@ -351,6 +351,13 @@ struct HomePresentation: Equatable {
                 result.notices.append(.init(id: "drive-" + row.id, text: "\(row.name): \(issue)", tone: .attention))
             }
         }
+        // The selected drive's mount failed with the switch reading on: the list keeps every drive's own action, and
+        // a notice names the drive and walks through the switch again, with the button that opens System Settings.
+        if input.mountFailed, !input.mounted, input.extensionState == .enabled, let name = input.driveName {
+            result.notices.insert(.init(id: "selected-mount-failed",
+                                        text: "\(name): macOS didn’t open the drive. In System Settings, go to General → Login Items & Extensions → By Category → File System Extensions, turn ParaAir file system off and on again, then connect it again.",
+                                        tone: .attention, action: .openSystemSettings, actionTitle: "Open System Settings"), at: 0)
+        }
         result.notices += selectedDriveNotices(input, named: input.driveName, mountDrive: input.mountMessageDrive, billing: true, listed: true)
         return result
     }

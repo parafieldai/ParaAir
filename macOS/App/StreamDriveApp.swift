@@ -79,7 +79,10 @@ enum AppLog {
 final class MenuModel: ObservableObject {
     @Published var profiles: [DriveProfile] = []
     @Published var error: String?
-    @Published var stateRoot: URL
+    @Published var stateRoot: URL {
+        // A failed mount belongs to the drive it was for; another folder's drive starts clean.
+        didSet { if stateRoot != oldValue { mountFailed = false } }
+    }
     private var mounted: Set<String> = []
     private var renewalTask: Task<Void, Never>?
     /// One long-lived pair of renewal actors per known state folder.
