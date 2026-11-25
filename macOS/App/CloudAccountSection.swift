@@ -127,6 +127,9 @@ struct CloudAccountSection: View {
                 Text(usage.planLine)
                     .font(.glideDisplay(.title))
                     .monospacedDigit()
+                if let scope = usage.scopeLine {
+                    Text(scope).font(.callout).foregroundStyle(Glide.quiet)
+                }
                 Text(used)
                     .font(.callout).monospacedDigit()
                     .foregroundStyle(Glide.quiet)

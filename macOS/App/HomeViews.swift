@@ -417,7 +417,12 @@ private struct PlanRows: View {
 
     var body: some View {
         if let plan = usage.planSize {
-            LabeledContent("Plan") { Text(plan).monospacedDigit() }
+            LabeledContent {
+                Text(plan).monospacedDigit()
+            } label: {
+                Text("Plan")
+                if let scope = usage.scopeLine { Text(scope) }
+            }
         }
         if let used = usage.usedSize {
             LabeledContent("Used") {

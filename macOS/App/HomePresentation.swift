@@ -628,6 +628,9 @@ struct CloudUsagePresentation: Equatable {
     var usedSize: String?
     /// A workspace with no storage until its free trial or a plan starts: `planLine` says so instead of figures.
     var unpaid = false
+    /// A team's plan size is the team's pooled storage (1 TB per seat on Team), not one person's: this names the team
+    /// and its seats so "25 TB" reads as the team's.
+    var scopeLine: String?
 
     static let unavailable = "Plan and usage are unavailable right now."
     static let checking = "Checking plan and usage…"
@@ -647,13 +650,19 @@ struct CloudUsagePresentation: Equatable {
             fraction: min(1, max(0, Double(usage.storedBytes) / Double(plan.storageLimitBytes))),
             retainedLine: "Kept for recovery: \(usage.retainedBytes > 0 ? format(usage.retainedBytes) : "none") (deleted files stay \(days))",
             transferLine: "Transfer this month: \(format(usage.transferBytes)) of \(format(plan.transferAllowanceBytes))",
-            planSize: limit, usedSize: used)
+            planSize: limit, usedSize: used, scopeLine: scope(workspace))
         if usage.throttled {
             var day = Date.FormatStyle.dateTime.month(.wide).day()
             day.timeZone = TimeZone(identifier: "UTC") ?? .current
             result.notice = "This month’s transfer allowance is used up, so downloads are slower until \(usage.periodEnd.formatted(day))."
         }
         return result
+    }
+
+    /// "Shared by the Studio team (25 seats)" for a team workspace; nil for a personal one.
+    static func scope(_ workspace: ParaAirCloudMe.Workspace?) -> String? {
+        guard let workspace, workspace.kind == "team", let seats = workspace.plan?.seats, seats > 0 else { return nil }
+        return "Shared by the \(workspace.name) team (\(seats) seat\(seats == 1 ? "" : "s"))"
     }
 
     static func format(_ bytes: Int64) -> String {

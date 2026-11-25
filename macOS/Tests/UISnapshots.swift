@@ -834,6 +834,14 @@ struct UISnapshots {
         var team = billingActive
         team.plan = .team; team.interval = .month; team.seats = 3; team.extraStorageTb = 2
         expect(make(team, kind: "team", seats: 3).summary == "Team, 3 seats, billed monthly, 2 TB added storage", "team summary counts seats")
+        // A team's plan size is its pooled storage: the plan says whose it is, so 25 TB doesn't read as one person's.
+        let teamUsage = CloudUsagePresentation.make(fixtureMe(stored: 1_240_000_000_000, kind: "team", seats: 25).workspaces.first, state: .loaded)
+        expect(teamUsage.planSize == "25 TB" && teamUsage.scopeLine == "Shared by the Studio team (25 seats)",
+               "a team's plan names the team and its seats")
+        expect(CloudUsagePresentation.make(fixtureMe(stored: 1, kind: "team", seats: 1).workspaces.first, state: .loaded).scopeLine
+               == "Shared by the Studio team (1 seat)", "one seat is singular")
+        expect(CloudUsagePresentation.make(fixtureMe(stored: 1).workspaces.first, state: .loaded).scopeLine == nil,
+               "a personal plan names no team")
         team.seats = 1
         expect(make(team, kind: "team").summary == "Team, 1 seat, billed monthly, 2 TB added storage", "one seat is singular")
 
