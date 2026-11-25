@@ -624,6 +624,34 @@ struct UISnapshots {
         settle { if case .failed = failing.members.list { return true } else { return false } }
         expect(failing.members.list == .failed("This Mac is offline."), "a list that can't load says why")
         try snap(failing, "failed")
+        // Seats decide whether an invitation buys one, so none starts on seat counts from before the last change.
+        let raceBox = MembersBox(fixtureMembers())
+        raceBox.listDelay = 0.4
+        let race = try model("race", team, raceBox)
+        race.members.email = "lena@example.com"
+        race.members.invite()
+        settle { race.members.work == nil }
+        race.members.email = "sam@example.com"
+        expect(race.members.refreshing && !race.members.canInvite, "no invitation while the list reloads after one")
+        race.members.invite()
+        done(race.members)
+        expect(raceBox.count(.add("sam@example.com", .member, true)) == 0, "the invitation typed during the reload wasn't sent")
+        expect(race.members.seats?.full == true && !race.members.canInvite, "the reloaded list shows the last seat taken")
+        // A slow Refresh reads the list before a role change; the change's own reload answers first. The older answer
+        // arrives last and must not put the old role back.
+        let readsBefore = raceBox.count(.list)
+        race.members.reload()
+        settle { raceBox.count(.list) > readsBefore }
+        raceBox.listDelay = 0
+        let jonas = race.members.members!.members[1]
+        race.members.change(jonas, to: .viewer)
+        settle { race.members.work == nil }
+        settle { raceBox.count(.list) >= 5 }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        done(race.members)
+        expect(race.members.members?.members.first { $0.userId == jonas.userId }?.role == "viewer",
+               "an older list read that returns late doesn't undo a change")
+
         // A refresh that fails after a change keeps the list and the change's message.
         failingBox.listFailure = nil
         failing.members.reload()
@@ -635,6 +663,8 @@ struct UISnapshots {
         expect(failing.members.members != nil && failing.members.outcome?.problem == false
                && failing.members.refreshError == "The list couldn’t be refreshed: This Mac is offline.",
                "a failed refresh after an invitation keeps both the list and the result")
+        failing.members.email = "sam@example.com"
+        expect(!failing.members.canInvite, "after a failed refresh, Refresh comes before the next invitation")
         owner.members.hide()
         expect(owner.members.list == .idle && owner.members.workspace == nil, "signing out forgets the list")
         return failures
@@ -2015,6 +2045,9 @@ final class MembersBox: @unchecked Sendable {
     private var value: ParaAirCloudMemberList
     private var log: [Call] = []
     private var failures: (list: DriveError?, add: DriveError?, remove: DriveError?) = (nil, nil, nil)
+    private var delay: TimeInterval = 0
+    /// How long a list request waits before answering with the list as it was when it arrived.
+    var listDelay: TimeInterval { get { lock.withLock { delay } } set { lock.withLock { delay = newValue } } }
     var listFailure: DriveError? { get { lock.withLock { failures.list } } set { lock.withLock { failures.list = newValue } } }
     var addFailure: DriveError? { get { lock.withLock { failures.add } } set { lock.withLock { failures.add = newValue } } }
     var removeFailure: DriveError? { get { lock.withLock { failures.remove } } set { lock.withLock { failures.remove = newValue } } }
@@ -2024,11 +2057,13 @@ final class MembersBox: @unchecked Sendable {
     var service: CloudMembersService {
         CloudMembersService(
             list: { _, _, _ in
-                try self.lock.withLock {
+                let (snapshot, wait) = try self.lock.withLock {
                     self.log.append(.list)
                     if let failure = self.failures.list { throw failure }
-                    return self.value
+                    return (self.value, self.delay)
                 }
+                if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+                return snapshot
             },
             add: { _, _, _, email, role, notify in
                 try self.lock.withLock {

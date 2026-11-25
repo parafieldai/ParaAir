@@ -183,6 +183,9 @@ final class CloudMembersModel: ObservableObject {
     let stateRoot: URL
     private let service: CloudMembersService
     private var generation = UUID()
+    /// The latest list request: only its answer updates the list, so an older GET that returns late can't put back
+    /// members or seats from before a change.
+    private var listRequest = UUID()
     private let log = Logger(subsystem: "dev.streamdrive.app", category: "cloud")
 
     init(stateRoot: URL, service: CloudMembersService) {
@@ -204,8 +207,11 @@ final class CloudMembersModel: ObservableObject {
         return .make(seats: members.workspace.seats, used: members.workspace.seatsUsed,
                      billedTeam: CloudSeatPresentation.isBilledTeam(workspace?.billing))
     }
+    /// Only with seat counts from a list read after the last change: an invitation decides whether it buys a seat from
+    /// them, so none starts while the list is reloading or after a reload failed.
     var canInvite: Bool {
-        guard work == nil, rules.canManage, CloudMemberText.validEmail(email) != nil, let seats else { return false }
+        guard work == nil, !refreshing, refreshError == nil, rules.canManage, CloudMemberText.validEmail(email) != nil,
+              let seats else { return false }
         return !seats.full || seats.invitationBuysSeat
     }
 
@@ -233,7 +239,7 @@ final class CloudMembersModel: ObservableObject {
     }
 
     private func reset() {
-        generation = UUID()
+        generation = UUID(); listRequest = UUID()
         if list != .idle { list = .idle }
         if refreshing { refreshing = false }
         if refreshError != nil { refreshError = nil }
@@ -247,18 +253,19 @@ final class CloudMembersModel: ObservableObject {
 
     func reload() {
         guard let workspace, let account, rules.canManage else { return }
-        let id = generation, root = stateRoot, service = service, workspaceID = workspace.id
+        let request = UUID(), root = stateRoot, service = service, workspaceID = workspace.id
+        listRequest = request
         if members == nil { list = .loading }
         refreshing = true
         Task {
-            defer { if generation == id { refreshing = false } }
+            defer { if listRequest == request { refreshing = false } }
             do {
                 let value = try await ParaAirCloudBlocking.run { try service.list(root, account, workspaceID) }
-                guard generation == id else { return }
+                guard listRequest == request else { return }
                 list = .loaded(value)
                 refreshError = nil
             } catch {
-                guard generation == id else { return }
+                guard listRequest == request else { return }
                 log.error("cloud members list failed errno=\((error as? DriveError)?.code ?? -1)")
                 // A list already on screen stays, with a line saying it may be out of date.
                 if members == nil { list = .failed(CloudAccountModel.message(error)) }
