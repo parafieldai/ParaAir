@@ -7,6 +7,20 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>ParaAir updates</description>
     <language>en</language>
     <item>
+      <title>ParaAir 0.1.0 alpha 11</title>
+      <pubDate>Thu, 26 Nov 2026 06:39:47 GMT</pubDate>
+      <sparkle:version>72</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.11</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>On macOS 26, Open System Settings now goes straight to ParaAir's switch in the File System Extensions list: one click, turn it on, Done.</li>
+<li>On macOS 26 this update turns the switch off once more (a macOS 26 issue Apple is fixing). ParaAir shows the step when it opens.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.11/ParaAir-0.1.0-alpha.11.zip" length="50016297" type="application/octet-stream" sparkle:edSignature="yy0QCEKQg9+vQA5Xde1Nu8hWK4SDfYEVYiVKjvUxJqUgz/W6ks45TSVcSiqj2gRDqjDaBA3TE7XX0VkK/XzZDA=="/>
+    </item>
+    <item>
       <title>ParaAir 0.1.0 alpha 10</title>
       <pubDate>Thu, 26 Nov 2026 05:12:41 GMT</pubDate>
       <sparkle:version>69</sparkle:version>
@@ -124,6 +138,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: lg5LQV6q3MkwsyNMahu6sDVae5ggE+G7Xbc77tQ8wbek6BeebWCjshujoEW+IjER/e4z+tZbL8pg/epzW76QDw==
-length: 9664
+edSignature: wNAeS9gngRHdAjWRYA2uJqffwooYAn9aR73L5K9/sILnkxFA5k3y42g2dQUkCAK1tefxkCWEDHKaHHF0x2efCg==
+length: 10733
 -->
