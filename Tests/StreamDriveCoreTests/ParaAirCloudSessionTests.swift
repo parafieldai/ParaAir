@@ -331,6 +331,22 @@ final class ParaAirCloudSessionTests: XCTestCase {
         XCTAssertFalse(olderThan(version("0.2.0", "90"), "0.1.73"))
     }
 
+    /// The header a request through the HTTP client really carries, read by the fake service, for the bundle's version
+    /// and build.
+    func testRequestsSendTheBuildInTheClientHeader() throws {
+        let record = try signIn()
+        let token = try XCTUnwrap(vault.stored(record.id)?.accessToken)
+        let api = ParaAirCloudAPI(http: try ParaAirCloudHTTP(baseURL: fake.issuer, policy: .init(allowsLoopbackHTTP: false),
+                                                             configuration: fake.configuration),
+                                  tokens: StaticAccessToken(token))
+        defer { ParaAirCloudConfiguration.VersionInfo.replace(nil) }
+        for (marketing, build, sent) in [("0.1.0", "72", "mac/0.1.72"), ("0.1.1", "999999", "mac/0.1.999999"), ("0.1.0", "1234567", "mac/0.1.0")] {
+            ParaAirCloudConfiguration.VersionInfo.replace(["CFBundleShortVersionString": marketing, "CFBundleVersion": build])
+            _ = try api.me()
+            XCTAssertEqual(fake.requests("GET /v1/me").last?.headers["x-paraair-client"], sent, "\(marketing) (\(build))")
+        }
+    }
+
     func testRenewalRefreshesOnlyDueSignedInAccounts() async throws {
         let due = try signIn(expiresAt: Date().addingTimeInterval(60))
         let later = try fake.saveAccount(fake.createAccount(), root: root, vault: vault)

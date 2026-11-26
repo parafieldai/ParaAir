@@ -27,6 +27,10 @@ struct SupportActions {
 /// `SupportDiagnostics` removes tokens, keys, file names and other people's addresses before anything is copied.
 enum SupportDiagnosticsCollector {
     static let timeout: TimeInterval = 20
+    /// More than this from one command is not a status report: it is left out, and the command stopped.
+    static let maxOutputBytes = 4 << 20
+    /// Collecting waits on the helper, so it runs here, never on the Swift concurrency pool's few threads.
+    static let queue = DispatchQueue(label: "dev.streamdrive.app.diagnostics", qos: .userInitiated)
 
     /// "Version 27.3 (Build 27D60)".
     static var system: String { ProcessInfo.processInfo.operatingSystemVersionString }
@@ -47,7 +51,9 @@ enum SupportDiagnosticsCollector {
 
     @MainActor static func copy(stateRoot: URL) async -> Bool {
         let version = AppVersionText.current.line
-        let text = await Task.detached(priority: .userInitiated) { collect(stateRoot: stateRoot, appVersion: version) }.value
+        let text = await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
+            queue.async { continuation.resume(returning: collect(stateRoot: stateRoot, appVersion: version)) }
+        }
         let board = NSPasteboard.general
         board.clearContents()
         let copied = board.setString(text, forType: .string)
@@ -58,7 +64,8 @@ enum SupportDiagnosticsCollector {
     static func collect(stateRoot: URL, appVersion: String) -> String {
         let root = stateRoot.standardizedFileURL
         let accounts = CloudAccountStore(root: root).list().accounts.filter { $0.state == .signedIn }.map(\.email)
-        let profile = (try? ProfileStore(root: root).list())?.first
+        let profiles = (try? ProfileStore(root: root).list()) ?? []
+        let profile = profiles.first
         let setup: SupportDiagnostics.Part
         var drive: (name: String, status: SupportDiagnostics.Part)?
         if let helper {
@@ -71,46 +78,96 @@ enum SupportDiagnosticsCollector {
         return SupportDiagnostics.text(.init(appVersion: appVersion, clientHeader: "mac/" + ParaAirCloudConfiguration.clientVersion,
                                              system: system, createdAt: Date(), setupStatus: setup, drive: drive,
                                              logs: logLines(since: Date().addingTimeInterval(-30 * 60)), accountEmails: accounts,
-                                             home: FileManager.default.homeDirectoryForCurrentUser.path))
+                                             home: FileManager.default.homeDirectoryForCurrentUser.path,
+                                             mountPoints: profiles.compactMap(\.mountPoint)))
     }
 
-    /// Runs the helper with JSON output, within `timeout`. Its stdout is read while it runs, so a long reply can't block it.
-    static func run(_ helper: URL, _ arguments: [String]) -> SupportDiagnostics.Part {
-        let process = Process(), output = Pipe()
+    /// Runs the helper with JSON output, within `timeout`, keeping at most `limit` bytes of it. Its stdout is read as it
+    /// arrives by a dispatch source, so a long reply can't block the helper and no thread is left waiting on the pipe:
+    /// once the helper exits, a process it left behind holding stdout gets a second, and then the pipe is closed.
+    static func run(_ helper: URL, _ arguments: [String], timeout: TimeInterval = timeout, limit: Int = maxOutputBytes) -> SupportDiagnostics.Part {
+        let command = "paraair " + arguments.joined(separator: " ")
+        let process = Process(), pipe = Pipe(), output = Output(limit: limit)
         process.executableURL = helper
         process.arguments = arguments
         // setup-status describes this copy of ParaAir, wherever it runs from.
         process.environment = ProcessInfo.processInfo.environment.merging(["PARAAIR_APP_PATH": Bundle.main.bundlePath]) { _, new in new }
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = output
+        process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-        let done = DispatchSemaphore(value: 0), read = DispatchSemaphore(value: 0)
-        let reply = Reply()
-        process.terminationHandler = { _ in done.signal() }
-        do { try process.run() } catch { return .unavailable("paraair \(arguments.first { !$0.hasPrefix("-") } ?? "") couldn’t start.") }
-        DispatchQueue.global(qos: .userInitiated).async {
-            reply.set(output.fileHandleForReading.readDataToEndOfFile())
-            read.signal()
+        process.terminationHandler = { _ in output.wake.signal() }
+        let reader = pipe.fileHandleForReading
+        reader.readabilityHandler = { output.read($0) }
+        do { try process.run() } catch {
+            output.stop(reader)
+            return .unavailable("paraair \(arguments.first { !$0.hasPrefix("-") } ?? "") couldn’t start.")
         }
-        if done.wait(timeout: .now() + timeout) == .timedOut {
+        let deadline = Date().addingTimeInterval(timeout)
+        var exitedAt: Date?
+        while !output.ended, Date() < deadline {
+            if exitedAt == nil, !process.isRunning { exitedAt = Date() }
+            if let exitedAt, Date().timeIntervalSince(exitedAt) > 1 { break }
+            _ = output.wake.wait(timeout: .now() + 0.05)
+        }
+        let ended = output.ended
+        output.stop(reader)
+        if process.isRunning {
             process.terminate()
-            _ = done.wait(timeout: .now() + 2)
+            let killAt = Date().addingTimeInterval(2)
+            while process.isRunning, Date() < killAt { _ = output.wake.wait(timeout: .now() + 0.05) }
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-            _ = read.wait(timeout: .now() + 2)
-            return .unavailable("paraair \(arguments.joined(separator: " ")) didn’t finish within \(Int(timeout)) seconds.")
         }
-        _ = read.wait(timeout: .now() + 5)
-        let data = reply.value
-        // A failing command prints its error as JSON too ({"error","exitCode","code"}); it is kept, redacted.
-        return data.isEmpty ? .unavailable("paraair \(arguments.joined(separator: " ")) printed nothing (exit \(process.terminationStatus)).") : .json(data)
+        if output.overLimit {
+            return .unavailable("\(command) printed more than \(limit >> 20) MB, so it was left out.")
+        }
+        guard ended || exitedAt != nil else {
+            return .unavailable("\(command) didn’t finish within \(Int(timeout)) \(Int(timeout) == 1 ? "second" : "seconds").")
+        }
+        let data = output.data
+        let exit = process.isRunning ? "" : " (exit \(process.terminationStatus))"
+        // A failing command prints its error as JSON too ({"error","exitCode","code"}); its code is kept, its message isn't.
+        return data.isEmpty ? .unavailable("\(command) printed nothing\(exit).") : .json(data)
     }
 
-    /// The helper's stdout, handed from the reading thread.
-    private final class Reply: @unchecked Sendable {
+    /// The helper's stdout as it arrives, up to `limit` bytes.
+    private final class Output: @unchecked Sendable {
         private let lock = NSLock()
-        private var data = Data()
-        func set(_ value: Data) { lock.withLock { data = value } }
-        var value: Data { lock.withLock { data } }
+        private let limit: Int
+        private var bytes = Data()
+        private var closed = false, atEnd = false, over = false
+        /// Signalled at the end of the output, past the limit and when the helper exits.
+        let wake = DispatchSemaphore(value: 0)
+
+        init(limit: Int) { self.limit = limit }
+
+        var data: Data { lock.withLock { bytes } }
+        /// End of file, or past the limit.
+        var ended: Bool { lock.withLock { atEnd } }
+        var overLimit: Bool { lock.withLock { over } }
+
+        /// From the readability handler: data is waiting, or the pipe is at its end.
+        func read(_ handle: FileHandle) {
+            lock.lock(); defer { lock.unlock() }
+            guard !closed else { return }
+            let chunk = handle.availableData
+            if chunk.isEmpty || bytes.count + chunk.count > limit {
+                over = !chunk.isEmpty; atEnd = true
+                close(handle)
+            } else {
+                bytes.append(chunk)
+            }
+        }
+
+        /// Stops reading and closes the pipe; nothing reads it afterwards.
+        func stop(_ handle: FileHandle) { lock.withLock { close(handle) } }
+
+        private func close(_ handle: FileHandle) {
+            guard !closed else { return }
+            closed = true
+            handle.readabilityHandler = nil
+            try? handle.close()
+            wake.signal()
+        }
     }
 
     /// This app's `dev.streamdrive` log lines since `since`, newest 200. Other processes' lines (the file system

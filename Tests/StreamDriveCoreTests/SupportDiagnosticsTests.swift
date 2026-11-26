@@ -69,9 +69,96 @@ final class SupportDiagnosticsTests: XCTestCase {
         }
         for kept in ["owner@example.com", "[email]", "Bearer [redacted]", "/Volumes/ParaAir/[path]", "code=-1", "code=[redacted]",
                      "\"pins\" : \"[1 pinned path removed]\"", "\"ownerName\" : \"[removed]\"", "\"lastError\" : \"[removed]\"",
-                     "\"uploadToken\" : \"[redacted]\"", "~/Downloads/ParaAir.app"] {
+                     "~/Downloads/ParaAir.app"] {
             XCTAssertTrue(text.contains(kept), "shows \(kept)\n\(text)")
         }
+        XCTAssertFalse(text.contains("uploadToken"), "a field the status doesn't document is left out\n\(text)")
+    }
+
+    /// The default drive name has a space, and file and folder names have spaces, apostrophes and quotes.
+    func testDiagnosticsRemovePathsInsideDrivesWithSpaces() {
+        let scrubber = SupportDiagnostics.Scrubber(allowedEmails: [], home: home, mountPoints: ["/Volumes/ParaAir Cloud/"])
+        XCTAssertEqual(scrubber.scrub("open failed /Volumes/ParaAir Cloud/Q3 Board Deck.pdf"), "open failed /Volumes/ParaAir Cloud/[path]")
+        XCTAssertEqual(scrubber.scrub("/volumes/paraair cloud/Q3 Board Deck.pdf"), "/volumes/paraair cloud/[path]", "APFS names ignore case")
+        for name in ["Lena's Notes/plan.txt", "Lena’s Notes/plan.txt"] {
+            let line = scrubber.scrub("open failed /Volumes/ParaAir Cloud/" + name + " errno=13")
+            XCTAssertEqual(line, "open failed /Volumes/ParaAir Cloud/[path]", "an apostrophe doesn't end the path")
+        }
+        XCTAssertEqual(scrubber.scrub("Couldn’t open “/Volumes/ParaAir Cloud/Acme/cut.mov” because it’s busy."),
+                       "Couldn’t open “/Volumes/ParaAir Cloud/[path]” because it’s busy.", "a closing curly quote ends it")
+        XCTAssertEqual(scrubber.scrub(#"{"file":"/Volumes/ParaAir Cloud/Acme/cut 2.mov","errno":5}"#),
+                       #"{"file":"/Volumes/ParaAir Cloud/[path]","errno":5}"#, "a closing straight quote ends it")
+        // Drives this Mac doesn't list keep only their name too.
+        let other = SupportDiagnostics.Scrubber(allowedEmails: [], home: home)
+        XCTAssertEqual(other.scrub("open failed /Volumes/Client Footage/Acme/cut.mov"), "open failed /Volumes/Client Footage/[path]")
+        XCTAssertEqual(other.scrub("open failed /Volumes/Work/Q3 Board Deck.pdf"), "open failed /Volumes/Work/[path]")
+        XCTAssertEqual(other.scrub("open failed /Volumes/Work/Lena's Notes/plan.txt"), "open failed /Volumes/Work/[path]")
+        XCTAssertEqual(other.scrub("first line /Volumes/Work/a b.pdf\nsecond line"), "first line /Volumes/Work/[path]\nsecond line")
+
+        // In the commands' JSON: setup-status names the mount points, including one outside /Volumes.
+        let setup = Data("""
+        {"contractVersion":1,"app":{"installed":true,"path":"/Applications/ParaAir.app","running":true},
+         "extension":{"state":"enabled","otherCopies":["/Volumes/ParaAir Cloud/Backups/Q3 Board Deck/ParaAir.app"]},
+         "accounts":[],"profiles":[{"profile":"Team","stateDirectory":"/Users/thomas/Library/Application Support/StreamDrive","backend":"paraairCloud",
+                                    "mountPoint":"/Users/thomas/Drives/Team Space","mounted":true,"healthy":true,"conflictCopies":false,"knownToApp":true}]}
+        """.utf8)
+        let text = SupportDiagnostics.text(.init(appVersion: "0.1.0 alpha 11 (72)", clientHeader: "mac/0.1.72", system: "Version 27.3",
+                                                 createdAt: Date(timeIntervalSince1970: 0), setupStatus: .json(setup), drive: nil,
+                                                 logs: .lines(["mount error: open failed /Users/thomas/Drives/Team Space/Q3 Board Deck.pdf"]),
+                                                 accountEmails: [], home: home, mountPoints: ["/Volumes/ParaAir Cloud"]))
+        for removed in ["Board Deck", "Backups"] { XCTAssertFalse(text.contains(removed), "removes \(removed)\n\(text)") }
+        for kept in ["\"/Volumes/ParaAir Cloud/[path]\"", "\"mountPoint\" : \"~/Drives/Team Space\"", "open failed ~/Drives/Team Space/[path]"] {
+            XCTAssertTrue(text.contains(kept), "shows \(kept)\n\(text)")
+        }
+    }
+
+    /// Of the commands' JSON only what the CLI contract documents is copied: a failing command's code and exit status
+    /// without its message, and no field added later.
+    func testDiagnosticsKeepOnlyDocumentedFields() {
+        let failed = Data(#"{"error":"Couldn’t open “/Volumes/ParaAir Cloud/Acme/cut.mov”","exitCode":1,"code":"failed"}"#.utf8)
+        let future = Data("""
+        {"contractVersion":2,"lastOpened":"Q3 Board Deck.pdf","app":{"installed":true,"recentFile":"Acme contract.pdf"},
+         "extension":{"state":"enabled","otherCopies":[],"note":{"by":"Lena"}},"accounts":[],
+         "profiles":[{"profile":"Team","mounted":true,"healthy":["Acme"],"lastPath":"/Clients/Acme/cut.mov"}]}
+        """.utf8)
+        let text = SupportDiagnostics.text(.init(appVersion: "0.1.0 alpha 11 (72)", clientHeader: "mac/0.1.72", system: "Version 27.3",
+                                                 createdAt: Date(timeIntervalSince1970: 0), setupStatus: .json(future),
+                                                 drive: ("Team", .json(failed)), logs: .lines([]), accountEmails: [], home: home))
+        for removed in ["Acme", "cut.mov", "Board Deck", "Lena", "lastOpened", "recentFile", "lastPath", "\"note\""] {
+            XCTAssertFalse(text.contains(removed), "removes \(removed)\n\(text)")
+        }
+        for kept in ["\"code\" : \"failed\"", "\"exitCode\" : 1", "\"error\" : \"[removed]\"", "\"contractVersion\" : 2",
+                     "\"profile\" : \"Team\"", "\"healthy\" : \"[removed]\"", "\"installed\" : true"] {
+            XCTAssertTrue(text.contains(kept), "shows \(kept)\n\(text)")
+        }
+    }
+
+    func testDiagnosticsRedactSecretsInEveryForm() {
+        let scrubber = SupportDiagnostics.Scrubber(allowedEmails: ["owner@example.com"], home: home)
+        let lines = [
+            "aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY&x=1", "AWS_SESSION_TOKEN=FwoGZXIvYXdzEBYaDHqa0AP",
+            "session_token=FwoGZXIvYXdzEBYaDHqa0AQ", "api_key=sk-abc123def456", "apikey=abc123def456ghi", "X-Api-Key=abc123def789",
+            "key AKIAIOSFODNN7EXAMPLE in use", #"{"SecretAccessKey": "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY2"}"#,
+            "SecretAccessKey: wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY3", "SessionToken: FwoGZXIvYXdzEBYaDHqa0AR",
+            "q=x%20pcs_secretsecret1&r=1", "body=%22pca_secretsecret2%22", "invite=lena%40studio.example", "next=%2522pcr_secretsecret3%2522",
+            "callback?code=12345678&state=s1", "code=AbC123xyz",
+        ]
+        let text = lines.map(scrubber.scrub).joined(separator: "\n")
+        for removed in ["wJalr", "FwoGZ", "abc123", "sk-abc", "AKIAIOSFODNN7EXAMPLE", "secretsecret", "lena", "studio.example", "12345678", "AbC123xyz"] {
+            XCTAssertFalse(text.contains(removed), "removes \(removed)\n\(text)")
+        }
+        for kept in ["aws_secret_access_key=[redacted]&x=1", "AWS_SESSION_TOKEN=[redacted]", "api_key=[redacted]", "apikey=[redacted]",
+                     "key [key] in use", #""SecretAccessKey": "[redacted]""#, "q=x [token]&r=1", "invite=[email]", "code=[redacted]&state=s1"] {
+            XCTAssertTrue(text.contains(kept), "shows \(kept)\n\(text)")
+        }
+        // What support needs stays: short error codes, the account's own address, and words that only end like a secret's.
+        XCTAssertEqual(scrubber.scrub("domain=NSCocoaErrorDomain code=-1 Code=516 owner@example.com"),
+                       "domain=NSCocoaErrorDomain code=-1 Code=516 owner@example.com")
+        // The home folder at the end of a line, or before punctuation, but not a folder whose name only starts with it.
+        XCTAssertEqual(scrubber.scrub("install error: moved to /Users/thomas"), "install error: moved to ~")
+        XCTAssertEqual(scrubber.scrub("moved to /Users/thomas."), "moved to ~.")
+        XCTAssertEqual(scrubber.scrub("\"/Users/thomas\", /Users/thomas/Downloads"), "\"~\", ~/Downloads")
+        XCTAssertEqual(scrubber.scrub("/Users/thomasina and /Users/thomas.old"), "/Users/thomasina and /Users/thomas.old")
     }
 
     func testDiagnosticsSayWhatIsMissing() {

@@ -20,7 +20,7 @@ The Mac client sends `X-ParaAir-Client: mac/<version>` on every request. The ser
 
 - Clients built from 2026-11-26 send `mac/<major>.<minor>.<build>`, where the build is `CFBundleVersion`, which grows with every release (`mac/0.1.72`). Earlier clients, every 0.1.0 alpha up to alpha 11, send `mac/0.1.0`, so their third number reads as build 0.
 - So `MIN_CLIENT_VERSION=0.1.73` refuses every earlier alpha and builds below 73, and accepts build 73 and later, and any 0.2 or later.
-- A client whose build has more than 6 digits sends its marketing version instead, as before.
+- A client whose build has more than 6 digits would send its marketing version instead, as before; `scripts/build-app.sh` refuses such a build number.
 
 ## `errors.json`
 

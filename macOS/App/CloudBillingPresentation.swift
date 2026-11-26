@@ -32,9 +32,11 @@ struct CloudBillingPresentation: Equatable {
     /// While a payment page is open: the sheet shows it again (or starts over), never a second checkout.
     static let finishPayment = Control(action: .choosePlan, title: "Finish Payment…")
     static let previousPlan = "Previous plan"
-    /// A team owner whose account can buy plans, but not Team (Stripe Managed Payments doesn't sell it): say so, so a
-    /// Personal plan isn't bought for a team drive it doesn't cover (review 2026-11-26).
+    /// A team owner whose team can't buy Team (Stripe Managed Payments doesn't sell it): say so, so a Personal plan isn't
+    /// bought for a team drive it doesn't cover (review 2026-11-26).
     static let teamUnavailable = "Team plans aren’t available yet, so this team workspace can’t get storage yet. A Personal plan covers only your personal workspace."
+    /// The same for a team whose plan ended: nothing here can start a new one.
+    static let teamPlanNotSold = "Team plans aren’t available yet, so this team can’t start a new plan."
 
     /// `planChoiceAvailable`: some workspace of the account offers checkout, so the plan sheet has something to sell.
     /// `pendingCheckout`: a payment page for this workspace is open and not paid yet.
@@ -69,6 +71,12 @@ struct CloudBillingPresentation: Equatable {
                                      planChoiceAvailable: Bool) -> CloudBillingPresentation {
         let owner = workspace.role == "owner"
         let checkout = billing.checkoutAvailable, portal = billing.portalAvailable
+        // The service sells this team no plan: billing is set up, the caller owns the team, and still `checkoutAvailable`
+        // is false. For a workspace without a live subscription that means Team has no price (Stripe Managed Payments
+        // doesn't sell it; contract README "What is sold"). Whether the account's other workspaces can buy (Personal
+        // already paid for, or not) doesn't change that (review 2026-11-26).
+        let teamNotSold = workspace.kind == ParaAirCloudBilling.Plan.team.rawValue && owner && !checkout && billing.provider != .none
+            && workspace.status != "suspended"
         var result = CloudBillingPresentation(summary: summary(billing))
         func day(_ date: Date?) -> String? { date.map(format) }
         switch billing.status {
@@ -80,8 +88,6 @@ struct CloudBillingPresentation: Equatable {
             // check out. Otherwise the sheet could sell only Personal, which adds nothing to this team (review 2026-11-26).
             let team = workspace.kind == ParaAirCloudBilling.Plan.team.rawValue
             let canChoose = team ? checkout : planChoiceAvailable
-            // The account can buy a plan, but not for this team the caller owns: Team isn't sold, or has no price.
-            let teamNotSold = team && owner && !checkout && planChoiceAvailable && workspace.status != "suspended"
             if isUnpaid(workspace) {
                 // "No storage yet" is the headline (Storage Settings) or the drive status (home, menu bar); this says what to do.
                 let trial = billing.trialDays.map { "Start your \($0)-day free trial to store files in ParaAir Cloud. Nothing is charged before it ends." }
@@ -141,10 +147,17 @@ struct CloudBillingPresentation: Equatable {
             result.date = deletion.map { Row(label: "Read-only until", value: $0) }
             let until = deletion.map { " until \($0)" } ?? ""
             let by = deletion == nil ? "" : " by then"
-            result.notice = .init(id: "billing", text: owner
-                ? "Your plan ended, so this workspace is read-only\(until). Choose a plan\(by), or the files are deleted."
-                : "This workspace’s plan ended, so it’s read-only\(until). Ask the workspace owner to choose a plan\(by), or the files are deleted.",
-                tone: .problem)
+            let readOnlyText: String
+            if teamNotSold {
+                // No Choose a Plan… to point at: say why, and what keeps the files.
+                readOnlyText = "Your team’s plan ended, so this workspace is read-only\(until). \(teamPlanNotSold) "
+                    + "Copy the files you need out of the drive\(by), or they’re deleted."
+            } else {
+                readOnlyText = owner
+                    ? "Your plan ended, so this workspace is read-only\(until). Choose a plan\(by), or the files are deleted."
+                    : "This workspace’s plan ended, so it’s read-only\(until). Ask the workspace owner to choose a plan\(by), or the files are deleted."
+            }
+            result.notice = .init(id: "billing", text: readOnlyText, tone: .problem)
             result.controls = (checkout ? [Control(action: .choosePlan, title: "Choose a Plan…", prominent: true)] : []) + (portal ? [managePlan] : [])
         case .pendingDeletion:
             // Deletion waits for the service's purge, so the date is when it became possible, not a promise.
@@ -152,7 +165,9 @@ struct CloudBillingPresentation: Equatable {
             let deletion = day(billing.deletionAt)
             result.date = deletion.map { Row(label: "Deletion scheduled", value: $0) }
             let ended = deletion.map { "The read-only period ended on \($0), so" } ?? "The read-only period ended, so"
-            result.notice = .init(id: "billing", text: owner
+            result.notice = .init(id: "billing", text: teamNotSold
+                ? "\(ended) this workspace’s files can be deleted at any time. \(teamPlanNotSold) Copy the files you need out of the drive now."
+                : owner
                 ? "\(ended) this workspace’s files can be deleted at any time. Choose a plan now to keep them."
                 : "\(ended) this workspace’s files can be deleted at any time. Ask the workspace owner to choose a plan now to keep them.",
                 tone: .problem)

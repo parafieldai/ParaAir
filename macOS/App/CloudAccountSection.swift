@@ -206,7 +206,7 @@ struct CloudAccountSection: View {
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text(CloudSignOutText.message(pending: pendingCount))
+                    Text(CloudSignOutText.message(model.pendingUploads))
                 }
             if model.isBusy || model.billingBusy { ProgressView().controlSize(.small) }
         }
@@ -233,12 +233,26 @@ struct CloudAccountSection: View {
 }
 
 /// The Sign Out confirmation's words. Signing out keeps the drive and its waiting files on this Mac; signing in again
-/// with the same account reuses its record, and the drive uploads them then.
+/// with the same account reuses its record, and the drive uploads them then. Only files that are just waiting, need the
+/// sign-in or are being retried upload then: a conflict waits for a decision, and a full plan, another Mac or a role
+/// still refuses the rest (review 2026-11-26).
 enum CloudSignOutText {
-    static func message(pending: Int) -> String {
-        guard pending > 0 else { return "This Mac stops reaching ParaAir Cloud until you sign in again. Files already on this Mac stay here." }
-        return UploadNotices.notUploaded(pending) + " If you sign out anyway, \(pending == 1 ? "it stays" : "they stay") on this Mac and "
-            + "\(pending == 1 ? "uploads" : "upload") after you sign in again with this account."
+    /// Files that upload by themselves once this account is signed in again.
+    static func resumable(_ activity: UploadActivity) -> Int {
+        activity.waiting + activity.blockedAuth + activity.failedOther + activity.failing
+    }
+
+    static func message(_ activity: UploadActivity?) -> String {
+        let pending = activity?.total ?? 0
+        guard let activity, pending > 0 else {
+            return "This Mac stops reaching ParaAir Cloud until you sign in again. Files already on this Mac stay here."
+        }
+        let resumable = resumable(activity)
+        let stay = UploadNotices.notUploaded(pending) + " If you sign out anyway, \(pending == 1 ? "it stays" : "they stay") on this Mac"
+        if resumable == 0 { return stay + "." }
+        let after = " after you sign in again with this account."
+        if resumable == pending { return stay + " and \(pending == 1 ? "uploads" : "upload")" + after }
+        return stay + ", and \(resumable) of them \(resumable == 1 ? "uploads" : "upload")" + after
     }
 }
 

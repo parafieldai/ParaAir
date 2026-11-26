@@ -41,7 +41,9 @@ cloud_loopback=0
 app_version="${PARAAIR_VERSION:-0.1.0}"
 app_build="${PARAAIR_BUILD:-1}"
 [[ "$app_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "PARAAIR_VERSION must be MAJOR.MINOR.PATCH, got $app_version." >&2; exit 1; }
-[[ "$app_build" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "PARAAIR_BUILD must be a positive whole number, got $app_build." >&2; exit 1; }
+# At most 6 digits: the app sends X-ParaAir-Client mac/<major>.<minor>.<build>, and the service reads up to 6 digits a
+# number; a longer build would make the app send mac/<marketing version> (ParaAirCloudConfiguration.clientVersion).
+[[ "$app_build" =~ ^[1-9][0-9]{0,5}$ ]] || { echo "PARAAIR_BUILD must be a positive whole number of at most 6 digits, got $app_build." >&2; exit 1; }
 if [[ -n "${PARAAIR_RELEASE_TAG:-}" && ! "$PARAAIR_RELEASE_TAG" =~ ^v${app_version//./\.}(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
   echo "PARAAIR_RELEASE_TAG ($PARAAIR_RELEASE_TAG) must be v$app_version or v$app_version-alpha|beta|rc.N." >&2; exit 1
 fi

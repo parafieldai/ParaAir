@@ -26,6 +26,7 @@ struct UISnapshots {
         failures += checkButtonHeights()
         failures += checkLegalLinks()
         failures += checkLaunchGaps()
+        failures += try checkDiagnosticsHelper()
 
         for (name, input) in homeScenarios {
             for appearance in [NSAppearance.Name.aqua, .darkAqua]
@@ -129,17 +130,28 @@ struct UISnapshots {
                "a version can't add fields to the email")
         expect(SupportButtons.line(.copied)?.hasPrefix("Diagnostics copied") == true && SupportButtons.line(.idle) == nil, "copying says it worked")
 
-        // Sign Out Anyway: the waiting files stay on this Mac and upload after signing in again.
-        expect(CloudSignOutText.message(pending: 3) == "3 files on this Mac haven’t uploaded yet. If you sign out anyway, they stay on this Mac "
+        // Sign Out Anyway: the waiting files stay on this Mac, and only those that are waiting, need the sign-in or are being
+        // retried upload after signing in again. Conflicts, a full plan, another Mac or a role still hold the rest.
+        expect(CloudSignOutText.message(UploadActivity(waiting: 3)) == "3 files on this Mac haven’t uploaded yet. If you sign out anyway, they stay on this Mac "
                + "and upload after you sign in again with this account.", "sign-out says waiting files stay and upload later")
-        expect(CloudSignOutText.message(pending: 1).contains("it stays on this Mac and uploads after"), "one file is singular")
-        expect(CloudSignOutText.message(pending: 0).hasPrefix("This Mac stops reaching ParaAir Cloud"), "nothing waiting keeps the plain message")
+        expect(CloudSignOutText.message(UploadActivity(blockedAuth: 1)).contains("it stays on this Mac and uploads after"), "one file is singular")
+        expect(CloudSignOutText.message(UploadActivity(waiting: 1, blockedQuota: 1, blockedAuth: 1, blockedElsewhere: 1, conflicts: 2))
+               == "6 files on this Mac haven’t uploaded yet. If you sign out anyway, they stay on this Mac, and 2 of them upload after you sign in again "
+               + "with this account.", "only the files that can upload are promised to")
+        expect(CloudSignOutText.message(UploadActivity(blockedQuota: 1, conflicts: 2))
+               == "3 files on this Mac haven’t uploaded yet. If you sign out anyway, they stay on this Mac.", "conflicts and a full plan aren't promised to upload")
+        let failingUploads = UploadActivity(failedOther: 1, failure: UploadFailureSummary(count: 2, errno: EIO, oldestChangeNanoseconds: 1))
+        expect(CloudSignOutText.resumable(failingUploads) == 3 && CloudSignOutText.message(failingUploads).hasSuffix("and upload after you sign in again with this account."),
+               "uploads being retried do upload after signing in again")
+        expect(CloudSignOutText.message(UploadActivity()).hasPrefix("This Mac stops reaching ParaAir Cloud")
+               && CloudSignOutText.message(nil).hasPrefix("This Mac stops reaching ParaAir Cloud"), "nothing waiting keeps the plain message")
 
-        // Account deletion: files still waiting to upload, and how to keep them.
-        expect(CloudAccountDeletionText.waitingUploads(2) == "2 files on this Mac haven’t uploaded yet. They can’t upload once the account is deleted: "
+        // Account deletion: files still waiting to upload on this drive (the app follows the selected drive's uploads only).
+        expect(CloudAccountDeletionText.waitingUploads(2) == "2 files on this drive haven’t uploaded yet. They can’t upload once the account is deleted: "
                + "wait for them to upload, or copy them out of the drive in Finder, before you confirm.", "deletion names the waiting files")
+        expect(CloudAccountDeletionText.waitingUploads(1)?.hasPrefix("1 file on this drive hasn’t uploaded yet. It can’t") == true, "one file is singular")
         expect(CloudAccountDeletionText.waitingUploads(0) == nil, "nothing waiting, no line")
-        expect(CloudAccountDeletionText.waitingUploads(nil)?.hasPrefix("Files on this Mac that haven’t uploaded yet") == true, "an unknown count still warns")
+        expect(CloudAccountDeletionText.waitingUploads(nil)?.hasPrefix("Files on this drive that haven’t uploaded yet") == true, "an unknown count still warns")
 
         // Team where the service doesn't sell it (Stripe Managed Payments): no Team price in either period.
         let teamID = "ws_01J9ZX5Q4WJ3M8K2V7N6R1T0YD"
@@ -175,7 +187,11 @@ struct UISnapshots {
         expect(teamDrive(teamOff, unpaid: false).controls.isEmpty, "nor from a team drive with an admin-set plan")
         expect(teamDrive(teamOff, role: "member").notice?.text == "This workspace has no storage yet. Ask the workspace owner to choose a plan."
                && teamDrive(teamOff, role: "member").noStorageDetail == nil, "a member is still sent to the owner")
-        expect(teamDrive(teamOff, choice: false).notice?.text == "Choose a plan to store files in ParaAir Cloud.", "nothing sold at all: the plain notice")
+        // The owner already pays for Personal, so no workspace of the account can check out (`planChoiceAvailable` false):
+        // still Team isn't sold, never "Choose a plan" with no button (review 2026-11-26).
+        expect(teamDrive(teamOff, choice: false).notice?.text == CloudBillingPresentation.teamUnavailable
+               && teamDrive(teamOff, choice: false).controls.isEmpty, "Team not sold, whatever the account's other workspaces can buy")
+        expect(teamDrive(ParaAirCloudBilling(provider: .none, status: .none), choice: false).noStorageDetail == nil, "billing off: not about Team")
         let teamOn = ParaAirCloudBilling(provider: .paddle, status: .none, checkoutAvailable: true)
         expect(teamDrive(teamOn).controls == [.init(action: .choosePlan, title: "Choose a Plan…", prominent: true)]
                && teamDrive(teamOn, unpaid: false).controls == [CloudBillingPresentation.choosePlan], "a team that can buy Team offers it")
@@ -185,6 +201,37 @@ struct UISnapshots {
         let homeTeam = HomePresentation.make(home)
         expect(homeTeam.status.detail == CloudBillingPresentation.teamUnavailable && homeTeam.primary.action == .openInFinder,
                "the home window says Team isn't available instead of asking the owner to ask the owner")
+        // The same team drive for an owner whose personal workspace already has a plan: nothing can check out.
+        let paidPersonal = ParaAirCloudMe.Workspace(id: "ws_01J9ZX5Q4WJ3M8K2V7N6R1T0YE", name: "Personal", kind: "personal", role: "owner",
+                                                    status: "active", plan: fixturePlan(seats: 1), usage: fixtureUsage(stored: 1), billing: billingActive)
+        let personalPaid = fixtureMe(stored: 0, billing: teamOff, kind: "team", unpaid: true, extra: [paidPersonal])
+        let choiceWhenPaid = personalPaid.workspaces.contains { $0.billing?.checkoutAvailable == true }
+        home.cloudUsage = CloudUsage(workspace: personalPaid.workspaces.first, state: .loaded, planChoiceAvailable: choiceWhenPaid)
+        let homePaid = HomePresentation.make(home)
+        expect(!choiceWhenPaid && home.cloudUsage?.billing.notice?.text == CloudBillingPresentation.teamUnavailable
+               && homePaid.status.detail == CloudBillingPresentation.teamUnavailable && !homePaid.status.detail.contains("Ask the workspace owner"),
+               "a team owner who already pays for Personal is told Team isn't available, not to choose a plan or ask the owner")
+
+        // A team whose plan ended, where Team isn't sold: no Choose a Plan… button, so no "Choose a plan".
+        let teamEnded = ParaAirCloudBilling(provider: .stripe, status: .readOnly, plan: .team, interval: .month, seats: 3,
+                                           currentPeriodEnd: day("2026-10-05"), readOnlyAt: day("2026-10-05"), deletionAt: day("2026-11-04"),
+                                           portalAvailable: true)
+        let readOnlyTeam = teamDrive(teamEnded, unpaid: false, choice: false)
+        expect(readOnlyTeam.notice?.text == "Your team’s plan ended, so this workspace is read-only until November 4, 2026. "
+               + CloudBillingPresentation.teamPlanNotSold + " Copy the files you need out of the drive by then, or they’re deleted."
+               && readOnlyTeam.controls == [CloudBillingPresentation.managePlan], "a read-only team says Team can't be bought, not to choose a plan")
+        var teamPurge = teamEnded
+        teamPurge.status = .pendingDeletion; teamPurge.portalAvailable = false
+        let pendingTeam = teamDrive(teamPurge, unpaid: false, choice: true)
+        expect(pendingTeam.notice?.text == "The read-only period ended on November 4, 2026, so this workspace’s files can be deleted at any time. "
+               + CloudBillingPresentation.teamPlanNotSold + " Copy the files you need out of the drive now." && pendingTeam.controls.isEmpty,
+               "a team pending deletion says Team can't be bought, not to choose a plan")
+        expect(teamDrive(teamEnded, unpaid: false, role: "member").notice?.text.contains("Ask the workspace owner to choose a plan") == true,
+               "a member of the ended team is still sent to the owner")
+        var teamEndedSold = teamEnded
+        teamEndedSold.checkoutAvailable = true
+        expect(teamDrive(teamEndedSold, unpaid: false).notice?.text.contains("Choose a plan by then") == true
+               && teamDrive(teamEndedSold, unpaid: false).controls.first?.action == .choosePlan, "where Team is sold, the owner chooses a plan")
 
         // The sheet starts on the drive's own plan, and Team seats on what the members use.
         let both = CloudPlanChoice.make(fixtureMe(stored: 1, billing: billingBeta, extra: [fixtureTeam(billing: billingBeta)]),
@@ -199,10 +246,48 @@ struct UISnapshots {
         expect(CloudPlanChoice.defaultSeats(nil, members: members) == 1, "no team, one seat")
 
         var copy = [CloudBillingPresentation.teamUnavailable, notSoldCard.price, notSoldCard.detail, CloudPlanOffer.notSold(.personal).detail,
-                    CloudPlanChoice.notSold(.team), CloudSignOutText.message(pending: 3), CloudAccountDeletionText.waitingUploads(2) ?? "",
+                    CloudPlanChoice.notSold(.team), CloudSignOutText.message(UploadActivity(waiting: 1, conflicts: 2)), CloudAccountDeletionText.waitingUploads(2) ?? "",
+                    CloudBillingPresentation.teamPlanNotSold,
                     SupportLinks.diagnosticsHint]
         copy += [SupportButtons.CopyState.working, .copied, .failed].compactMap(SupportButtons.line)
         expect(!copy.joined(separator: "\n").contains("\u{2014}"), "new copy avoids em dashes")
+        return failures
+    }
+
+    /// Copy Diagnostics runs the bundled CLI (review 2026-11-26): what it prints is capped, a helper that hangs is
+    /// stopped, and one that leaves a process holding its output open keeps nothing waiting on the pipe.
+    static func checkDiagnosticsHelper() throws -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: Bool, _ message: String) { if !condition { failures.append("diagnostics helper: " + message) } }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("paraair-ui-helper-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func helper(_ name: String, _ script: String) throws -> URL {
+            let url = folder.appendingPathComponent(name)
+            try ("#!/bin/sh\n" + script + "\n").write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+            return url
+        }
+        let run: (URL, [String], TimeInterval, Int) -> SupportDiagnostics.Part = SupportDiagnosticsCollector.run
+
+        let failed = run(try helper("failed", #"printf '{"code":"failed","exitCode":1}'; exit 1"#), ["status", "Team", "--json"], 20, 4 << 20)
+        expect(failed == .json(Data(#"{"code":"failed","exitCode":1}"#.utf8)), "a failing command's JSON is read: \(failed)")
+
+        let big = run(try helper("big", "yes | head -c 5000000"), ["status", "Team", "--json"], 20, SupportDiagnosticsCollector.maxOutputBytes)
+        expect(big == .unavailable("paraair status Team --json printed more than 4 MB, so it was left out."), "output past 4 MB is left out: \(big)")
+
+        var started = Date()
+        let lingering = run(try helper("lingering", "sleep 4 &\nprintf '{}'"), ["setup-status", "--json"], 20, 4 << 20)
+        expect(lingering == .json(Data("{}".utf8)) && Date().timeIntervalSince(started) < 3,
+               "a process left holding stdout delays the reply by about a second, not until it ends: \(lingering), \(Date().timeIntervalSince(started)) s")
+
+        let pidFile = folder.appendingPathComponent("pid")
+        started = Date()
+        let hung = run(try helper("hung", "echo $$ > '\(pidFile.path)'\nexec sleep 30"), ["setup-status", "--json"], 1, 4 << 20)
+        let pid = (try? String(contentsOf: pidFile, encoding: .utf8)).flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        expect(hung == .unavailable("paraair setup-status --json didn’t finish within 1 second.") && Date().timeIntervalSince(started) < 4,
+               "a helper that hangs is given up on: \(hung)")
+        expect(pid.map { kill($0, 0) != 0 } == true, "and stopped")
         return failures
     }
 

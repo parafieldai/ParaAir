@@ -59,7 +59,16 @@ public enum ParaAirCloudConfiguration {
     /// (`CFBundleVersion`), which grows with every release whatever the marketing version: `mac/0.1.72` is 0.1.x build
     /// 72, and `MIN_CLIENT_VERSION=0.1.73` refuses that build and every earlier alpha. Without a build of up to 6 digits
     /// the marketing version is sent as before; anything else is sent as `dev`, which only a dev-mode service accepts.
-    public static var clientVersion: String { clientVersion(info: Bundle.main.infoDictionary ?? [:]) }
+    public static var clientVersion: String { clientVersion(info: VersionInfo.current) }
+
+    /// The Info.plist values `clientVersion` reads: the main bundle's, unless a test set others to check the header
+    /// that requests really carry.
+    enum VersionInfo {
+        private static let lock = NSLock()
+        nonisolated(unsafe) private static var replacement: [String: String]?
+        static var current: [String: Any] { lock.withLock { replacement } ?? Bundle.main.infoDictionary ?? [:] }
+        static func replace(_ value: [String: String]?) { lock.withLock { replacement = value } }
+    }
 
     static func clientVersion(info: [String: Any]) -> String {
         guard let marketing = info["CFBundleShortVersionString"] as? String,

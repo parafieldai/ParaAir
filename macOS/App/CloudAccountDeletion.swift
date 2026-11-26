@@ -69,13 +69,15 @@ enum CloudAccountDeletionText {
         }
     }
 
-    /// Files this Mac hasn't uploaded yet can't upload once the account is gone: say how many, and how to keep them.
-    /// Nil when none are waiting; without a count, the general warning.
+    /// Files this drive hasn't uploaded yet can't upload once the account is gone: say how many, and how to keep them.
+    /// Nil when none are waiting; without a count, the general warning. The count is the selected drive's only (the
+    /// app follows one drive's uploads), so it says "this drive", not "this Mac".
     static func waitingUploads(_ count: Int?) -> String? {
         let keep = "wait for them to upload, or copy them out of the drive in Finder, before you confirm."
-        guard let count else { return "Files on this Mac that haven’t uploaded yet can’t upload once the account is deleted: " + keep }
+        guard let count else { return "Files on this drive that haven’t uploaded yet can’t upload once the account is deleted: " + keep }
         guard count > 0 else { return nil }
-        return UploadNotices.notUploaded(count) + " \(count == 1 ? "It" : "They") can’t upload once the account is deleted: " + keep
+        return (count == 1 ? "1 file on this drive hasn’t uploaded yet." : "\(count) files on this drive haven’t uploaded yet.")
+            + " \(count == 1 ? "It" : "They") can’t upload once the account is deleted: " + keep
     }
 
     static func confirms(_ typed: String, email: String) -> Bool {
