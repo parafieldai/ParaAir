@@ -20,12 +20,18 @@ import tempfile
 import time
 
 
+class OperationFailed(Exception):
+    """An operation that ran but did not do its job (a nonzero exit, no thumbnail)."""
+
+
 def measured(operation):
-    """Times one operation. A failed read is recorded (errno and time to failure), not raised: a drive's
+    """Times one operation. A failure is recorded (error and time to failure), not raised: a drive's
     error rate is part of the result, and summaries leave failed samples out."""
     start = time.perf_counter()
     try:
         result = operation()
+    except OperationFailed as error:
+        return {"milliseconds": None, "failedAfterMilliseconds": (time.perf_counter() - start) * 1000, "error": str(error)}
     except OSError as error:
         return {"milliseconds": None, "failedAfterMilliseconds": (time.perf_counter() - start) * 1000,
                 "error": f"{error.__class__.__name__}: errno {error.errno}"}
@@ -33,6 +39,15 @@ def measured(operation):
         return {"milliseconds": None, "failedAfterMilliseconds": (time.perf_counter() - start) * 1000,
                 "error": f"timed out after {error.timeout:g} s"}
     return {"milliseconds": (time.perf_counter() - start) * 1000, "result": result}
+
+
+def failures(value):
+    """Failed operations anywhere in a round: every record carrying an error, including warm samples."""
+    if isinstance(value, dict):
+        return (1 if "error" in value else 0) + sum(failures(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(failures(v) for v in value)
+    return 0
 
 
 def summary(values):
@@ -168,16 +183,23 @@ def main():
                 finally:
                     os.close(fd)
             entry["distantRange"] = counted(distant)
-            fd = open_file(file)
-            try:
-                entry["warmFirstRangeMilliseconds"] = [measured(lambda: len(os.pread(fd, args.range_bytes, 0)))["milliseconds"]
-                                                       for _ in range(args.samples)]
-            finally:
-                os.close(fd)
+            opened = measured(lambda: open_file(file))
+            if "error" in opened:
+                entry["warmFirstRange"] = {"open": opened, "samples": []}
+            else:
+                fd = opened.pop("result")
+                try:
+                    entry["warmFirstRange"] = {"open": opened, "samples": [measured(lambda: len(os.pread(fd, args.range_bytes, 0)))
+                                                                         for _ in range(args.samples)]}
+                finally:
+                    os.close(fd)
             if args.video_seek is not None:
                 def frame():
                     process = subprocess.run([ffmpeg, "-v", "error", "-ss", str(args.video_seek), "-i", str(file),
                                               "-frames:v", "1", "-f", "null", "-"], capture_output=True, text=True, timeout=300)
+                    if process.returncode != 0:
+                        last = (process.stderr.strip().splitlines() or [""])[-1][:200]
+                        raise OperationFailed(f"ffmpeg exited {process.returncode}: {last}")
                     return process.returncode
                 entry["videoSeekFrame"] = counted(frame)
             if args.quick_look:
@@ -185,9 +207,17 @@ def main():
                     def thumbnail():
                         process = subprocess.run(["/usr/bin/qlmanage", "-t", "-s", "256", "-o", directory, str(file)],
                                                  capture_output=True, text=True, timeout=120)
-                        return {"exitCode": process.returncode, "thumbnails": len(list(Path(directory).iterdir()))}
+                        thumbnails = len(list(Path(directory).iterdir()))
+                        if process.returncode != 0 or thumbnails == 0:
+                            raise OperationFailed(f"qlmanage exited {process.returncode} with {thumbnails} thumbnails")
+                        return {"exitCode": process.returncode, "thumbnails": thumbnails}
                     entry["quickLook"] = counted(thumbnail)
             if args.sequential:
+                if args.evict:
+                    # The range reads, thumbnails and seeks above may have cached part or all of the file; untimed.
+                    entry["evictedBeforeSequential"] = paraair("cache", args.profile, "--evict", "--json").get("evictedBytes")
+                    if args.settle:
+                        time.sleep(args.settle)
                 cold = counted(lambda: sequential(file, size))
                 warm = counted(lambda: sequential(file, size))
                 for record in (cold, warm):
@@ -205,13 +235,14 @@ def main():
                       "openAndFirstRangeMilliseconds": summary(values("openAndFirstRange")),
                       "distantRangeMilliseconds": summary(values("distantRange")),
                       "warmFirstRangeMilliseconds": summary([statistics.median(w) for w in
-                                                             ([v for v in r["warmFirstRangeMilliseconds"] if v is not None] for r in rounds) if w]),
+                                                             ([v["milliseconds"] for v in r["warmFirstRange"]["samples"]
+                                                               if v["milliseconds"] is not None] for r in rounds) if w]),
                       "videoSeekFrameMilliseconds": summary(values("videoSeekFrame")),
                       "quickLookMilliseconds": summary(values("quickLook")),
                       "sequentialColdMiBPerSecond": summary(values("sequentialCold", "mebibytesPerSecond")),
                       "sequentialWarmMiBPerSecond": summary(values("sequentialWarm", "mebibytesPerSecond")),
                   },
-                  "failedOperations": sum(1 for r in rounds for value in r.values() if isinstance(value, dict) and "error" in value)}
+                  "failedOperations": sum(failures(r) for r in rounds)}
         report["candidates"].append(record)
     print(json.dumps(report, indent=2))
 

@@ -34,6 +34,15 @@ def curl(url, proxy, *extra):
     return json.loads(process.stdout) if process.returncode == 0 else {"error": process.stderr.strip()[:200]}
 
 
+def bulk_ok(result, field, size):
+    """A bulk sample counts only with HTTP 200 and the whole requested size moved; a 429 or 5xx is an error."""
+    if "error" in result:
+        return result
+    if result["code"] != 200 or result[field] != size:
+        return {"error": f"HTTP {result['code']}, {result[field]} of {size} bytes"}
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--proxy", help="curl --proxy value, for a route other than the default")
@@ -55,14 +64,15 @@ def main():
             "tcpConnect": summary([r["connect"] * 1000 for r in good]),
             "errors": len(runs) - len(good)}
     size = args.bulk_mib << 20
-    down = [curl(f"https://speed.cloudflare.com/__down?bytes={size}", args.proxy) for _ in range(args.bulk_samples)]
+    down = [bulk_ok(curl(f"https://speed.cloudflare.com/__down?bytes={size}", args.proxy), "down", size)
+            for _ in range(args.bulk_samples)]
     report["bulk"]["downloadMiBPerSecond"] = summary([r["down"] / (1 << 20) / r["total"] for r in down if "error" not in r])
     with tempfile.NamedTemporaryFile(prefix="path-up-") as payload:
         for _ in range(args.bulk_mib):
             payload.write(os.urandom(1 << 20))
         payload.flush()
-        up = [curl("https://speed.cloudflare.com/__up", args.proxy, "-X", "POST", "-H", "Content-Type: application/octet-stream",
-                   "--data-binary", "@" + payload.name) for _ in range(args.bulk_samples)]
+        up = [bulk_ok(curl("https://speed.cloudflare.com/__up", args.proxy, "-X", "POST", "-H", "Content-Type: application/octet-stream",
+                           "--data-binary", "@" + payload.name), "up", size) for _ in range(args.bulk_samples)]
     report["bulk"]["uploadMiBPerSecond"] = summary([r["up"] / (1 << 20) / r["total"] for r in up if "error" not in r])
     report["bulk"]["errors"] = [r["error"] for r in down + up if "error" in r]
     print(json.dumps(report, indent=2))

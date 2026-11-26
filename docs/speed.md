@@ -31,6 +31,8 @@ How fast ParaAir drives are, measured through the mounted Finder volume on one M
 | Tunnel (ParaAir's route) | Seattle | 389 / 417 / 510 ms | 8.0 MiB/s (2.9–13.1) | 4.7 MiB/s (3.6–5.2) |
 | Direct, Hong Kong | Hong Kong | 80 / 55 / 612 ms | 57.1 MiB/s (53.5–57.5) | 53.1 MiB/s (50.3–53.6) |
 
+A recheck at 20:27 that also required HTTP 200 and the full size for every bulk sample (none failed) gave the same picture: tunnel 12.5 MiB/s down (5.4–14.0) and 3.9 up (3.7–4.0); direct 55.2 down and 41.9 up.
+
 ParaAir can't be faster than the route it takes: on this Mac, every ParaAir number below sits under the tunnel row. Read the results as a share of that ceiling, not as what a direct connection would give.
 
 ### Local floors
@@ -123,8 +125,9 @@ python3 scripts/measure-upload.py --target-dir /Volumes/SpeedTest/bench --scratc
 
 - **Time to first byte** is `open()` plus the first 64 KiB read of a file whose blocks aren't cached. File details may already be cached (the cloud drive keeps them up to 2 minutes), so this is the data path, not a first-ever lookup.
 - **Distant seek** is one 64 KiB read at 85% of the video. **Video seek** is ffmpeg opening the file and decoding the frame at 120 s, which reads the `moov` index at the end and the keyframe region, like a player jumping ahead.
-- **Sequential** reads the whole file in 1 MiB reads, cold, then again warm. Reads use `F_NOCACHE`, so macOS's page cache doesn't answer them; warm means ParaAir's own cache.
-- Each operation records the drive's `objectGetRequests` and `objectReadBytes` before and after, which shows whether a cold round really went to storage and how much it fetched. A failed operation is recorded with its error and time to failure, and left out of the medians.
+- **Sequential** reads the whole file in 1 MiB reads, cold (the read cache is emptied again just before, since the earlier operations may have filled it), then again warm. Reads use `F_NOCACHE`, so macOS's page cache doesn't answer them; warm means ParaAir's own cache.
+- Each operation records the drive's `objectGetRequests` and `objectReadBytes` before and after, which shows whether a cold round really went to storage and how much it fetched. A failed operation is recorded with its error and time to failure, and left out of the medians: an I/O error, a timeout, ffmpeg exiting nonzero, or Quick Look making no thumbnail.
+- **Uploads** are timed end to end, from the start of the copy until the drive reports nothing pending. The drive's pending-byte figure is journal space, not transfer progress, so no upload-only rate is derived from it. A round that doesn't finish stops the run.
 - **Medians and spread** are over rounds; min–max is shown, not a percentile, because 5 rounds can't support one.
 
 ## Caveats

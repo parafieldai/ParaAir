@@ -5,8 +5,9 @@ Each round writes a freshly generated random file into a local scratch folder (n
 ParaAir Cloud's content-addressed chunks can't be skipped as duplicates), copies it into --target-dir on the
 mounted drive with /bin/cp, then polls `paraair status --json` until the drive has nothing left to upload.
 It reports the copy time (what Finder's progress bar shows), the time until the upload finished, and the
-upload rate from the first upload progress to the end. The copy on the drive and the local file are deleted
-after each round unless --keep is given. Rounds report the median and the spread.
+end-to-end rate. The copy on the drive and the local file are deleted after each round unless --keep is given
+(a copy the drive won't delete yet is reported, not raised). A round that doesn't finish stops the run, so its
+pending upload can't slow the next one. Rounds report the median and the spread.
 """
 import argparse
 import json
@@ -57,7 +58,7 @@ def main():
     before = status()
     if before["pendingUploads"]:
         parser.error(f"The drive already has {before['pendingUploads']} pending uploads; wait for them first")
-    rounds = []
+    rounds, stopped = [], None
     for number in range(args.rounds):
         if number and args.gap_seconds:
             time.sleep(args.gap_seconds)
@@ -67,47 +68,51 @@ def main():
             for _ in range(args.size_mib):
                 out.write(os.urandom(1 << 20))
         record = {"round": number + 1, "file": name, "bytes": size}
+        rounds.append(record)
         try:
             start = time.perf_counter()
             subprocess.run(["/bin/cp", str(source), str(copy)], check=True, timeout=args.timeout_seconds)
-            copied = time.perf_counter()
-            record["copySeconds"] = copied - start
-            timeline, first_progress, done = [], None, None
+            record["copySeconds"] = time.perf_counter() - start
+            timeline, done = [], None
+            record["timeline"] = timeline
             while time.perf_counter() - start < args.timeout_seconds:
                 now = status()
                 elapsed = time.perf_counter() - start
                 timeline.append({"seconds": round(elapsed, 2), **now})
-                if first_progress is None and now["pendingWriteBytes"] < size:
-                    first_progress = elapsed
                 if now["pendingUploads"] == 0:
                     done = elapsed
                     break
                 time.sleep(args.poll_seconds)
-            record["timeline"] = timeline
             record["uploadedSeconds"] = done
-            record["firstProgressSeconds"] = first_progress
             if done is not None:
                 record["endToEndMiBPerSecond"] = size / (1 << 20) / done
-                window = done - (first_progress if first_progress is not None and first_progress < done else record["copySeconds"])
-                record["uploadMiBPerSecond"] = size / (1 << 20) / window if window > 0 else None
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError) as error:
+            record["error"] = f"{error.__class__.__name__}: {error}"[:300]
         finally:
             source.unlink(missing_ok=True)
             if not args.keep:
-                copy.unlink(missing_ok=True)
-        rounds.append(record)
+                try:
+                    copy.unlink(missing_ok=True)
+                except OSError as error:
+                    # A file whose upload is still running can refuse deletion (EAGAIN); keep the measurements.
+                    record["cleanupError"] = f"{error.__class__.__name__}: errno {error.errno}"
+        if record.get("uploadedSeconds") is None:
+            stopped = (f"Round {number + 1} did not finish uploading; later rounds were skipped so its pending work "
+                       "doesn't slow them. Check `paraair uploads` before deleting its copy by hand.")
+            break
 
     print(json.dumps({
         "limitations": "Upload completion is the drive's own pending-upload count reaching zero, polled every "
-                       f"{args.poll_seconds} s, so times are rounded up to the poll. The upload rate starts at the first "
-                       "poll that saw pending bytes fall (or at the end of the copy), so it includes the drive's wait "
-                       "before it starts a closed file's upload only when no progress was seen earlier.",
+                       f"{args.poll_seconds} s, so times are rounded up to the poll. The rate is end to end, from the "
+                       "start of the copy: pendingWriteBytes is journal space, not transfer progress, and uploads can "
+                       "start while the copy is still running, so no separate upload-only rate is derived.",
+        "stopped": stopped,
         "settings": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
         "rounds": rounds,
         "summary": {
             "copySeconds": summary([r.get("copySeconds") for r in rounds]),
             "uploadedSeconds": summary([r.get("uploadedSeconds") for r in rounds]),
             "endToEndMiBPerSecond": summary([r.get("endToEndMiBPerSecond") for r in rounds]),
-            "uploadMiBPerSecond": summary([r.get("uploadMiBPerSecond") for r in rounds]),
         },
     }, indent=2))
 
