@@ -45,7 +45,7 @@
         <div class="hero-action">
           <a class="cta" data-release-download href="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.9/ParaAir-0.1.0-alpha.9.dmg">Download for Mac</a>
           <p class="requires"><span data-release-label>0.1.0&nbsp;alpha&nbsp;9</span> · <span data-release-size>55&nbsp;MB</span> · <a data-release-notes href="https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.9">Release&nbsp;notes</a></p>
-          <p class="requires">Apple&nbsp;Silicon · macOS&nbsp;27&nbsp;or&nbsp;later</p>
+          <p class="requires">Free and open source · Apple&nbsp;Silicon · macOS&nbsp;27&nbsp;or&nbsp;later</p>
         </div>
       </div>
     </section>
@@ -88,6 +88,23 @@
           <img src="app-panel-light.png" width="320" height="251" alt="The ParaAir menu bar panel: Client Footage, connected, with Open in Finder, Show ParaAir and Storage Settings">
         </picture>
       </figure>
+    </section>
+
+    <div class="airspace" data-flight="gap" aria-hidden="true"></div>
+
+    <section class="story open-source" aria-labelledby="open-title">
+      <h2 id="open-title">Open source, everything on your&nbsp;Mac.</h2>
+      <div class="open-copy">
+        <p class="say">The app, the drive Finder shows, the <code>paraair</code> command and the bridge to the JuiceFS engine underneath are public under the Apache 2.0 licence. Read what runs on your Mac, build it yourself, or point it at your own&nbsp;storage.</p>
+        <a class="source-link" href="https://github.com/parafieldai/ParaAir"><svg class="source-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>Read the source on GitHub</a>
+      </div>
+      <dl class="repo" aria-label="What the public repository holds">
+        <div><dt>macOS/App</dt><dd>The app and its menu bar panel</dd></div>
+        <div><dt>macOS/Extension</dt><dd>The file system extension behind the drive in Finder</dd></div>
+        <div><dt>Sources</dt><dd>The <code>paraair</code> command and the core it shares with the app</dd></div>
+        <div><dt>native</dt><dd>The bridge to JuiceFS, the engine that keeps your files in pieces</dd></div>
+        <div><dt>contract</dt><dd>The ParaAir Cloud API, written down</dd></div>
+      </dl>
     </section>
 
     <section class="story choice" aria-labelledby="choice-title">
