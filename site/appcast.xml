@@ -7,6 +7,21 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>ParaAir updates</description>
     <language>en</language>
     <item>
+      <title>ParaAir 0.1.0 alpha 10</title>
+      <pubDate>Thu, 26 Nov 2026 05:12:41 GMT</pubDate>
+      <sparkle:version>69</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.10</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>The drive now opens in Finder on macOS 26 too, writable, in /Volumes like on macOS 27.</li>
+<li>On macOS 26, ParaAir asks once for an OK under App Background Activity in Login Items &amp; Extensions. It uses it only to make the drive's folder in /Volumes.</li>
+<li>A new look that matches the ParaAir site: the planes in the header, flat buttons and hairline sections.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.10/ParaAir-0.1.0-alpha.10.zip" length="50014955" type="application/octet-stream" sparkle:edSignature="Jo8pWX/DIs3VC/M1MguhAHkUmFQaH1UA/z5MyTPUXSKUohLVUe/H6tTxPsxXx51XsTmjrGdzUlbBpnXH3xqMDQ=="/>
+    </item>
+    <item>
       <title>ParaAir 0.1.0 alpha 9</title>
       <pubDate>Thu, 26 Nov 2026 02:44:52 GMT</pubDate>
       <sparkle:version>65</sparkle:version>
@@ -109,6 +124,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: LtijmdV58iikXX2hAynWtRddQ3yqsFjACvW28/v3smeCe+q0vY6B+8sZ0li0efEgHiZWTS2JRQiDR51LQlGMAQ==
-length: 8501
+edSignature: lg5LQV6q3MkwsyNMahu6sDVae5ggE+G7Xbc77tQ8wbek6BeebWCjshujoEW+IjER/e4z+tZbL8pg/epzW76QDw==
+length: 9664
 -->
