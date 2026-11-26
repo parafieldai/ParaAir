@@ -7,6 +7,23 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>ParaAir updates</description>
     <language>en</language>
     <item>
+      <title>ParaAir 0.1.0 alpha 9</title>
+      <pubDate>Thu, 26 Nov 2026 02:44:52 GMT</pubDate>
+      <sparkle:version>65</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.9</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>A new look for every screen, in light and dark, with gentle motion that respects Reduce Motion.</li>
+<li>Changes from other Macs arrive in about half a second: each ParaAir Cloud drive keeps one connection open instead of checking every few seconds.</li>
+<li>If a drive won't connect, ParaAir walks you through the switch in System Settings again, with a picture and Try Again.</li>
+<li>Mounting a drive right after ejecting it outside ParaAir works again.</li>
+<li>On macOS 26, ParaAir says the drive needs macOS 27 instead of showing an unclear warning.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.9/ParaAir-0.1.0-alpha.9.zip" length="49949406" type="application/octet-stream" sparkle:edSignature="ZLt3hKOf88sZX+qZCW3UXx4J/GAb/oc2lgPXmwsX6YCuYx+k287W1pvDVhZt3KVGpFwbM+Ul6ehnNRo99n2/Dw=="/>
+    </item>
+    <item>
       <title>ParaAir 0.1.0 alpha 8</title>
       <pubDate>Wed, 25 Nov 2026 12:54:06 GMT</pubDate>
       <sparkle:version>57</sparkle:version>
@@ -92,6 +109,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: FGJkZbem4/6MxTV2WYuzjKl08NPnwa/xPq6I/R3O2Qt4uUQ29c1S2nyl4L16M3bnqghxI/tKu2olbb73jWTwBg==
-length: 7155
+edSignature: LtijmdV58iikXX2hAynWtRddQ3yqsFjACvW28/v3smeCe+q0vY6B+8sZ0li0efEgHiZWTS2JRQiDR51LQlGMAQ==
+length: 8501
 -->
