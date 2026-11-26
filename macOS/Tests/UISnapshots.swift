@@ -1502,6 +1502,32 @@ struct UISnapshots {
                "after an intermediate change, returning to ParaAir still shows the paid plan")
         expect(!waiter.paymentWaitTimedOut && waiter.pendingCheckout == nil, "a live plan ends the wait")
 
+        // A new plan bought over one cancelled at once outside the app (still live, checkout offered): the open page stays
+        // pending, with Finish Payment…, while the old plan runs out and goes read-only, and settles only once the new
+        // plan holds (payments review 2026-11-26).
+        let overSummary = SummaryBox(fixtureMe(stored: 1, billing: billingCancelledElsewhere))
+        let over = try model("over-cancelled", overSummary, recorder: BillingRecorder())
+        over.perform(.choosePlan)
+        agree(over, personal)
+        expect(over.pendingCheckout != nil, "a page opens over a plan cancelled elsewhere")
+        over.reloadSummary()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        expect(over.pendingCheckout != nil && over.checkout == .opened(stripeCheckout), "the old, still live plan doesn't settle the new page")
+        expect(CloudBillingPresentation.make(over.workspace, state: .loaded, planChoiceAvailable: true, pendingCheckout: true).controls.first?.title
+               == "Finish Payment…", "the open page is offered again, not a new choice")
+        var lapsed = billingReadOnly
+        lapsed.provider = .stripe
+        overSummary.me = fixtureMe(stored: 1, billing: lapsed, status: "read_only")
+        over.reloadSummary()
+        settle { over.workspace?.billing?.status == .readOnly }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        expect(over.pendingCheckout != nil, "the old plan going read-only keeps the unpaid page while checkout is offered")
+        overSummary.me = fixtureMe(stored: 1, billing: billingActive)
+        over.reloadSummary()
+        settle { over.workspace?.billing?.status == .active }
+        settle { over.pendingCheckout == nil }
+        expect(over.pendingCheckout == nil, "the new plan settles the page")
+
         // The merchant and the terms come from the offer, not from the workspace's earlier processor: an ended Stripe
         // plan bought again through Paddle says Paddle charges.
         let switched = try model("switched", SummaryBox(fixtureMe(stored: 1, billing: billingReadOnlyStripe, status: "read_only")),

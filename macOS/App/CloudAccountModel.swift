@@ -702,7 +702,10 @@ final class CloudAccountModel: ObservableObject {
         // A plan bought over one that is over at the processor but still live (cancelled at once elsewhere, or ended
         // during a failed payment's retries) settles only once the service no longer sells over it.
         let holds = CloudBillingPresentation.holdsPlan(billing)
-        guard expired || billing == nil || holds || billing?.status != pending.status else { return }
+        // A status that moved on settles the page only once checkout is no longer offered: while it is, the page can
+        // still be paid (the old plan going read-only under an unpaid replacement page keeps the page and its controls).
+        let movedOn = billing?.status != pending.status && billing?.checkoutAvailable != true
+        guard expired || billing == nil || holds || movedOn else { return }
         log.notice("cloud checkout settled live=\(holds) expired=\(expired)")
         setPending(nil)
         if !holds, case .opened = checkout {

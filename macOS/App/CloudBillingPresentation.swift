@@ -56,7 +56,7 @@ struct CloudBillingPresentation: Equatable {
             return .init(controls: workspace.plan?.manageUrl == nil ? [] : [managePlan])
         }
         var result = presentation(workspace, billing, planChoiceAvailable: planChoiceAvailable)
-        if pendingCheckout, !billing.isLive {
+        if pendingCheckout, !holdsPlan(billing) {
             let prominent = result.controls.first { $0.action == .choosePlan }?.prominent ?? false
             result.controls = [Control(action: .choosePlan, title: finishPayment.title, prominent: prominent)]
                 + result.controls.filter { $0.action != .choosePlan }
