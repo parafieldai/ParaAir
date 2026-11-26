@@ -1,0 +1,92 @@
+<!doctype html>
+<!-- Source of site/og-card.png, the 1200x630 link preview (og:image, twitter:image) for every page.
+     Render it with scripts/build-site-images.sh, which screenshots this file in headless Chrome at 1200x630.
+     It is the home page's first screen in the light theme: the mark and name, the headline with the lead plane's
+     sage trail under "Mac drive.", the grey flock in its own airspace (never over words), and the lede.
+     Colours and type follow site/styles.css (:root, h1, .under, .brand). Not deployed: scripts/ is not site/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ParaAir link preview</title>
+<style>
+  :root {
+    --paper: #F7F8FA; --ink: #0E0F12; --ink-2: #646974; --sage: #9AC7B4; --sage-line: #5E9C83;
+    --plane-grey: #A4A9B2; --plane-fold: #D3D7DD;
+    --font: system-ui, -apple-system, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+  }
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: var(--paper); }
+  body { position: relative; color: var(--ink); font-family: var(--font); -webkit-font-smoothing: antialiased; }
+  .brand { position: absolute; left: 72px; top: 60px; display: flex; align-items: center; gap: 14px;
+           font: 600 30px/1 var(--font); letter-spacing: -0.01em; }
+  .brand svg { width: 38px; height: 38px; }
+  .mark-a { fill: var(--ink); } .mark-b { fill: var(--sage); }
+  h1 { position: absolute; left: 68px; top: 172px; margin: 0;
+       font: 500 112px/0.96 var(--font); letter-spacing: -0.035em; }
+  .under { position: relative; white-space: nowrap; }
+  .under::after { content: ""; position: absolute; left: 0.02em; right: 0.04em; bottom: -0.02em; height: 0.075em;
+                  border-radius: 999px;
+                  background: linear-gradient(to right, color-mix(in oklab, var(--sage-line) 0%, transparent), var(--sage-line) 35%); }
+  .lead { position: absolute; left: calc(100% + 4px); bottom: -40px; width: 88px; height: 88px;
+          transform: rotate(-13deg); transform-origin: 30% 60%; }
+  .sky { position: absolute; inset: 0; }
+  .lede { position: absolute; left: 72px; bottom: 62px; margin: 0; font: 400 32px/1.2 var(--font); color: var(--ink-2);
+          letter-spacing: -0.005em; }
+  .site { position: absolute; right: 72px; bottom: 66px; margin: 0; font: 500 24px/1.2 var(--font); color: var(--ink-2); }
+</style>
+</head>
+<body>
+  <svg width="0" height="0" aria-hidden="true">
+    <!-- The mark with its nose along +x, as motion.js's sprite() draws a plane: rotated 45 degrees about its centre. -->
+    <symbol id="lead" viewBox="-330 -330 660 660">
+      <g transform="rotate(45) translate(-227 -230)">
+        <polygon fill="#0E0F12" points="0,150 454,0 316,298 244,208"/>
+        <polygon fill="#9AC7B4" points="244,208 316,298 156,460 168,256"/>
+      </g>
+    </symbol>
+    <symbol id="flock" viewBox="-330 -330 660 660">
+      <g transform="rotate(45) translate(-227 -230)">
+        <polygon fill="#A4A9B2" points="0,150 454,0 316,298 244,208"/>
+        <polygon fill="#D3D7DD" points="244,208 316,298 156,460 168,256"/>
+      </g>
+    </symbol>
+    <linearGradient id="trail" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0" stop-color="#A4A9B2" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#A4A9B2" stop-opacity="0"/>
+    </linearGradient>
+  </svg>
+
+  <!-- The flock: two greys, near planes larger with a faint trail, far ones small; 36 px apart, clear of the words. -->
+  <svg class="sky" viewBox="0 0 1200 630" aria-hidden="true">
+    <g transform="translate(1008 150) rotate(-11)">
+      <rect x="-104" y="-0.9" width="80" height="1.8" rx="0.9" fill="url(#trail)"/>
+      <use href="#flock" x="-29" y="-29" width="58" height="58"/>
+    </g>
+    <g transform="translate(1104 262) rotate(-14)">
+      <rect x="-92" y="-0.8" width="70" height="1.6" rx="0.8" fill="url(#trail)"/>
+      <use href="#flock" x="-25" y="-25" width="50" height="50"/>
+    </g>
+    <g transform="translate(902 238) rotate(-9)">
+      <use href="#flock" x="-18" y="-18" width="36" height="36"/>
+    </g>
+    <g transform="translate(1046 380) rotate(-12)">
+      <use href="#flock" x="-16" y="-16" width="32" height="32"/>
+    </g>
+    <g transform="translate(948 110) rotate(-15)">
+      <use href="#flock" x="-14" y="-14" width="28" height="28"/>
+    </g>
+  </svg>
+
+  <div class="brand">
+    <svg viewBox="0 0 454 460" aria-hidden="true">
+      <polygon class="mark-a" points="0,150 454,0 316,298 244,208"/>
+      <polygon class="mark-b" points="244,208 316,298 156,460 168,256"/>
+    </svg>
+    <span>ParaAir</span>
+  </div>
+
+  <h1>Cloud storage,<br>as a <span class="under">Mac&nbsp;drive.<svg class="lead" aria-hidden="true"><use href="#lead"/></svg></span></h1>
+
+  <p class="lede">Open big files without downloading them first.</p>
+  <p class="site">paraair.parafield.ai</p>
+</body>
+</html>

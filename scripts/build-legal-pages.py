@@ -58,7 +58,7 @@ def inline(text):
     def link(m):
         label, url = m.group(1), m.group(2).strip()
         url = local(url)
-        if not re.match(r"^(https://|mailto:|[a-z-]+\.html|#)", url):
+        if not re.match(r"^(https://|mailto:|/[a-z-]*(#|$)|#)", url):
             raise ValueError(f"refusing link target {url!r}")
         external = url.startswith("https://") and "paraair.parafield.ai" not in url
         attrs = ' rel="noopener"' if external else ""
@@ -94,10 +94,11 @@ SITE_PAGES = ["cloud-terms", "subscription-policy", "acceptable-use", "law-enfor
 
 
 def local(url):
-    """Site paths as the site links them (pricing.html): /privacy#9.7 becomes privacy.html#9.7. Pages serves both."""
-    m = re.match(r"^/([a-z-]+)(#.*)?$", url)
+    """Site paths as the site links them, extensionless (/privacy#9.7): the Worker serves /privacy and answers
+    /privacy.html with a 307 to it. A page name written as privacy.html becomes /privacy too."""
+    m = re.match(r"^/?([a-z-]+)(?:\.html)?(#.*)?$", url)
     known = {s for s, _, _ in DOCUMENTS} | {"legal", "pricing"}
-    return f"{m.group(1)}.html{m.group(2) or ''}" if m and m.group(1) in known else url
+    return f"/{m.group(1)}{m.group(2) or ''}" if m and m.group(1) in known else url
 
 
 # ----------------------------------------------------------------------------------------------------------- blocks
@@ -258,9 +259,34 @@ class Document:
 
 # --------------------------------------------------------------------------------------------------------- template
 
+SITE = "https://paraair.parafield.ai"
+CARD = (f"{SITE}/og-card.png", "The ParaAir paper plane and the words: Cloud storage, as a Mac drive.")
+
+
+def social(url, title, description):
+    """The link preview: Open Graph (Facebook, LinkedIn, Slack, iMessage, X's fallback) and X's own card tags.
+    Every page shares site/og-card.png (scripts/build-site-images.sh)."""
+    title, description = html.escape(title, quote=True), html.escape(description, quote=True)
+    return f"""
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ParaAir">
+  <meta property="og:url" content="{url}">
+  <meta property="og:title" content="{title}">
+  <meta property="og:description" content="{description}">
+  <meta property="og:image" content="{CARD[0]}">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="{html.escape(CARD[1], quote=True)}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{title}">
+  <meta name="twitter:description" content="{description}">
+  <meta name="twitter:image" content="{CARD[0]}">
+  <meta name="twitter:image:alt" content="{html.escape(CARD[1], quote=True)}">"""
+
+
 def masthead(root=""):
     return f"""  <header class="masthead">
-    <a class="brand" href="{root or './'}" aria-label="ParaAir home">
+    <a class="brand" href="/" aria-label="ParaAir home">
       <svg class="brand-mark" viewBox="0 0 454 460" aria-hidden="true">
         <polygon class="mark-a" points="0,150 454,0 316,298 244,208"/>
         <polygon class="mark-b" points="244,208 316,298 156,460 168,256"/>
@@ -269,35 +295,43 @@ def masthead(root=""):
     </a>
     <nav class="nav" aria-label="Primary">
       <div class="nav-group">
-        <a class="nav-link" href="{root}pricing.html">Pricing</a>
+        <a class="nav-link" href="/pricing">Pricing</a>
         <a class="nav-link" href="https://github.com/parafieldai/ParaAir" aria-label="ParaAir source code on GitHub">
           <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="{GITHUB_PATH}"/></svg>
           <span class="nav-label">GitHub</span>
         </a>
       </div>
-      <a class="nav-cta" href="{root or './'}#access">Download</a>
+      <a class="nav-cta" href="/#access">Download</a>
     </nav>
   </header>"""
 
 
-def footer(current, root=""):
-    links = "&nbsp;· ".join(f'<a href="{root}{s}.html"{" aria-current=\"page\"" if s == current else ""}>{label}</a>' for s, label in FOOTER_LINKS)
+def footer(current):
+    links = "&nbsp;· ".join(f'<a href="/{s}"{" aria-current=\"page\"" if s == current else ""}>{label}</a>' for s, label in FOOTER_LINKS)
     return f"""  <footer class="colophon">
     <nav class="colophon-legal" aria-label="Legal">{links}</nav>
     <p>ParaAir by Parafield · <a href="https://github.com/parafieldai/ParaAir">Source code</a> (Apache-2.0) · Built on <a href="https://github.com/juicedata/juicefs">JuiceFS</a> · © 2026</p>
   </footer>"""
 
 
-def page(slug_, title, description, body, current, root="", extra_head=""):
+def page(slug_, title, description, body, current, root="", indexed=True):
+    """`root` prefixes the page's own assets: "/" for 404.html, which is served at any unknown path. Links between pages
+    are root-relative and extensionless everywhere. A page that is not indexed (404.html) gets noindex instead of a
+    canonical address and a link preview."""
+    full_title = f"{title} · ParaAir"
+    url = f"{SITE}/{slug_}"
+    # The preview's title drops the " · ParaAir" suffix when the title already names ParaAir (og:site_name has it).
+    head = (f'\n  <link rel="canonical" href="{url}">' + social(url, title if "ParaAir" in title else full_title, description)
+            if indexed
+            else '\n  <meta name="robots" content="noindex">')
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(title)} · ParaAir</title>
+  <title>{html.escape(full_title)}</title>
   <meta name="description" content="{html.escape(description, quote=True)}">
-  <meta name="color-scheme" content="dark light">
-  <link rel="canonical" href="https://paraair.parafield.ai/{slug_}">{extra_head}
+  <meta name="color-scheme" content="dark light">{head}
   <link rel="icon" href="{root}glide.svg" type="image/svg+xml">
   <link rel="stylesheet" href="{root}styles.css">
 </head>
@@ -305,7 +339,7 @@ def page(slug_, title, description, body, current, root="", extra_head=""):
   <a class="skip" href="#main">Skip to content</a>
 {masthead(root)}
 {body}
-{footer(current, root)}
+{footer(current)}
   <script src="{root}legal.js" defer></script>
 </body>
 </html>
@@ -317,7 +351,7 @@ def document_page(slug_, short_title, description, doc):
     contents = (f'<nav class="toc" aria-label="Contents"><details><summary>Contents</summary><ol role="list">{toc}</ol></details></nav>'
                 if len(doc.toc) > 2 else "")
     lead = f"{doc.meta} · " if doc.meta else ""
-    meta = f'<p class="doc-meta">{lead}{COMPANY[0]} · <a href="legal.html">All legal documents</a></p>'
+    meta = f'<p class="doc-meta">{lead}{COMPANY[0]} · <a href="/legal">All legal documents</a></p>'
     body = f"""  <main id="main" class="legal">
     <div class="legal-head">
       <h1{' class="title-long"' if len(doc.title or short_title) > 36 else ''}>{inline(doc.title or short_title)}</h1>
@@ -334,7 +368,7 @@ def document_page(slug_, short_title, description, doc):
 
 
 def index_page(effective):
-    rows = "".join(f'<li><a href="{s}.html"><span class="legal-doc-title">{html.escape(t)}</span>'
+    rows = "".join(f'<li><a href="/{s}"><span class="legal-doc-title">{html.escape(t)}</span>'
                    f' <span class="legal-doc-note">{html.escape(note)}</span></a></li>' for s, t, note in DOCUMENTS)
     contacts = "".join(f"<div><dt>{html.escape(label)}</dt><dd>{inline(email)}</dd></div>" for label, email in CONTACTS)
     body = f"""  <main id="main" class="legal legal-index">
@@ -362,8 +396,7 @@ def not_found_page():
       <p class="doc-meta">The link may be old, or the address mistyped. Try the <a href="/">ParaAir home page</a>, <a href="/pricing">pricing</a> or <a href="/legal">legal documents</a>.</p>
     </div>
   </main>"""
-    return page("404", "Page not found", "This page does not exist.", body, "", root="/",
-                extra_head='\n  <meta name="robots" content="noindex">')
+    return page("404", "Page not found", "This page does not exist.", body, "", root="/", indexed=False)
 
 
 def main():

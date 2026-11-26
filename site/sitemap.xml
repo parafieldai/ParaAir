@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Every indexed page, at its canonical address. scripts/check-site.py fails if a page in site/ without noindex
+     is missing here, or if an address here is not a page's canonical one. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://paraair.parafield.ai/</loc></url>
+  <url><loc>https://paraair.parafield.ai/pricing</loc></url>
+  <url><loc>https://paraair.parafield.ai/get-started</loc></url>
+  <url><loc>https://paraair.parafield.ai/legal</loc></url>
+  <url><loc>https://paraair.parafield.ai/terms</loc></url>
+  <url><loc>https://paraair.parafield.ai/cloud-terms</loc></url>
+  <url><loc>https://paraair.parafield.ai/subscription-policy</loc></url>
+  <url><loc>https://paraair.parafield.ai/privacy</loc></url>
+  <url><loc>https://paraair.parafield.ai/acceptable-use</loc></url>
+  <url><loc>https://paraair.parafield.ai/copyright</loc></url>
+  <url><loc>https://paraair.parafield.ai/law-enforcement</loc></url>
+</urlset>
