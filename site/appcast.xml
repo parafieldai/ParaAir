@@ -7,6 +7,23 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>ParaAir updates</description>
     <language>en</language>
     <item>
+      <title>ParaAir 0.1.0 alpha 13</title>
+      <pubDate>Thu, 26 Nov 2026 16:38:51 GMT</pubDate>
+      <sparkle:version>88</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.13</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>A file ParaAir Cloud saved, whose answer never reached the Mac, is no longer treated as never sent, so it can't turn into a conflict copy or come back after you delete it.</li>
+<li>Copying a big folder no longer says "Couldn't upload" while the service is only pacing uploads.</li>
+<li>Plans cancelled outside the app offer Choose a Plan, and a new plan isn't shown as active before it's paid.</li>
+<li>Billing dates show their time in UTC.</li>
+<li>On macOS 26 this update turns the switch off once more. ParaAir shows the step when it opens.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.13/ParaAir-0.1.0-alpha.13.zip" length="50225926" type="application/octet-stream" sparkle:edSignature="6rY5oMQeDYe0X2iMGcAT8XHegKOmEfZ2PUO11B0J4t7X7sjpnrMU1Aer/9cWtQIDb/C98h09SWvyeGWo7kYHBg=="/>
+    </item>
+    <item>
       <title>ParaAir 0.1.0 alpha 12</title>
       <pubDate>Thu, 26 Nov 2026 14:12:01 GMT</pubDate>
       <sparkle:version>84</sparkle:version>
@@ -155,6 +172,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: Oi4fMUDffie25auW5ealKm+WiW4buYVw2gXU1GYj4QQ+u4HISExILyMQm2zIZDRZ45MhPHwjijec19rXim6/Ag==
-length: 12117
+edSignature: XjI2kN9dRVyjpUwDulX0tkqTRj4potVa7oh2/IdZmO52UAOmm/mIEshVvtzTd6wTAUXQnU+dQbRyB3THIQm3Cg==
+length: 13455
 -->
