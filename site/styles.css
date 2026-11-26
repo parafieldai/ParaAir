@@ -283,7 +283,8 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--tr
 .say { margin-top: var(--space-md); font-size: var(--text-lg); color: var(--ink-2); max-width: 36ch; }
 
 /* The file is its own name: hollow letters are still in storage, solid ones came down to the Mac. A down letter's
-   solid copy is clipped from the top by --fill (1 unless an animation frame is filling it), so it fills from the bottom. */
+   solid copy is clipped from the top by --fill (1 unless an animation frame is filling it), so it fills from the foot
+   of its ink (--base, a fraction of its box) up to the top of its ink (--cap): the x-height, or higher for i and t. */
 .file-demo { position: relative; margin-top: clamp(96px, 17vh, 200px); }
 .file {
   position: relative;
@@ -294,6 +295,8 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--tr
   -webkit-text-stroke: max(1.5px, 0.011em) var(--outline);
 }
 .file .down {
+  --base: 0.92;
+  --cap: 0.26;
   position: relative;
   display: inline-block;
   -webkit-text-stroke-color: color-mix(in oklab, var(--on) calc(var(--fill, 1) * 100%), var(--outline));
@@ -305,8 +308,9 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--tr
   top: 0;
   color: var(--on);
   -webkit-text-stroke-color: var(--on);
-  clip-path: polygon(-20% calc((1 - var(--fill, 1)) * 140% - 20%), 120% calc((1 - var(--fill, 1)) * 140% - 20%), 120% 120%, -20% 120%);
+  clip-path: polygon(-20% calc((var(--base) - var(--fill, 1) * (var(--base) - var(--cap))) * 100%), 120% calc((var(--base) - var(--fill, 1) * (var(--base) - var(--cap))) * 100%), 120% 120%, -20% 120%);
 }
+.file .down[data-ch="i"], .file .down[data-ch="t"] { --cap: 0.04; }
 /* The plane and the pieces it drops, across the whole window over the name and the air above it (the demo's top
    margin); motion.js places it. */
 .file-canvas { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
