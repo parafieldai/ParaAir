@@ -42,6 +42,11 @@ const cases = [
   [{ open: false, paused: false, billing: true, checkout: true }, { invite: true, open: false, billingOff: false }],
   // Sign-up open: billing is on (the production config check refuses SELF_SIGNUP without it).
   [{ open: true, paused: false, billing: true, checkout: true }, { invite: false, open: true, billingOff: false }],
+  // Malformed answers: nothing changes, and nothing says nobody is charged.
+  [{}, { invite: true, open: false, billingOff: false }],
+  [{ open: false, billing: null }, { invite: true, open: false, billingOff: false }],
+  [{ open: "false" }, { invite: true, open: false, billingOff: false }],
+  [[], { invite: true, open: false, billingOff: false }],
   // No answer: the page stays as written, which claims nothing about billing.
   ["network error", { invite: true, open: false, billingOff: false }],
   ["500", { invite: true, open: false, billingOff: false }],
