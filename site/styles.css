@@ -327,7 +327,9 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--tr
 .arc { position: relative; margin-top: clamp(32px, 5vh, 56px); height: clamp(236px, 28vw, 330px); }
 .arc svg { position: absolute; left: 0; right: 0; top: 0; width: 100%; height: calc(100% - 96px); overflow: visible; }
 .arc-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.arc path { fill: none; stroke: var(--rule-strong); stroke-width: 1.5; stroke-dasharray: 2 7; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+/* Without the script the path is the flown trail; with it (data-live) it is the dashed route the canvas flies over. */
+.arc path { fill: none; stroke: var(--sage-line); stroke-width: 2.5; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.arc[data-live] path { stroke: var(--rule-strong); stroke-width: 1.5; stroke-dasharray: 2 7; }
 .arc-end { position: absolute; bottom: 0; display: grid; gap: 2px; font-size: var(--text-base); }
 .arc-end b { font-weight: 600; color: var(--ink); }
 .arc-end > span:not(.arc-row) { color: var(--ink-2); font-variant-numeric: tabular-nums; }

@@ -572,7 +572,12 @@
       const box = arc.getBoundingClientRect(), s = svg.getBoundingClientRect();
       canvas.width = Math.round(box.width * ratio); canvas.height = Math.round(box.height * ratio);
       plane = sprite(40, css('--ink'), css('--sage'), ratio);
-      const centre = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2 - box.left, y: r.top + r.height / 2 - box.top, size: r.width }; };
+      // From layout, not the drawn box: while primed the Mac's pieces are shifted up to land, and the copies must
+      // still leave from their slots.
+      const centre = (el) => {
+        const end = el.closest('.arc-end');
+        return { x: end.offsetLeft + el.offsetLeft + el.offsetWidth / 2, y: end.offsetTop + el.offsetTop + el.offsetHeight / 2, size: el.offsetWidth };
+      };
       geo = { w: box.width, h: box.height, sx: s.width / 1000, sy: s.height / 220, ox: s.left - box.left, oy: s.top - box.top,
         mac: mac.map(centre), cloud: cloud.map(centre), on: css('--piece-on'), trail: css('--sage-line') };
       // The path leaves from above the middle of the Mac's row and lands above the middle of storage's, so pieces rise
@@ -612,7 +617,8 @@
       ctx.drawImage(plane, -plane.width / ratio / 2, -plane.height / ratio / 2, plane.width / ratio, plane.height / ratio);
       ctx.restore();
     };
-    // The scene at rest: the whole trail flown and the plane landed at storage (or, primed, waiting at the Mac).
+    // The scene at rest: the whole trail flown and the plane landed at storage (or, primed, waiting at the Mac). Without
+    // the script the page shows the trail as the path itself; data-live hands it to the canvas.
     const rest = () => {
       if (!geo) return;
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -676,8 +682,10 @@
       rest();
     });
 
+    arc.dataset.live = '';
     measure(); rest();
-    new ResizeObserver(() => { if (run) finish(); measure(); rest(); }).observe(arc);
+    // A new size puts the finished scene back, whether a run was flying or the scene was primed out of sight.
+    new ResizeObserver(() => { if (run || primed) finish(); measure(); rest(); }).observe(arc);
     new IntersectionObserver(([entry]) => { if (entry.isIntersecting) prime(); }, { rootMargin: '35% 0px 35% 0px' }).observe(arc);
     // Re-armed (and put back) only once the whole section is a third of a window away.
     new IntersectionObserver(([entry]) => { if (!entry.isIntersecting) { armed = true; if (!run) finish(); } }, { rootMargin: '35% 0px 35% 0px' })
