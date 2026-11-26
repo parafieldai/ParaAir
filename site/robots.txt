@@ -1,0 +1,5 @@
+# Everything on paraair.parafield.ai may be crawled. Cloudflare may serve its managed content signals above this file.
+User-agent: *
+Allow: /
+
+Sitemap: https://paraair.parafield.ai/sitemap.xml

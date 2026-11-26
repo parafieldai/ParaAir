@@ -1,0 +1,7 @@
+# How to report a security problem in ParaAir or ParaAir Cloud (RFC 9116). Report privately, never in a public issue.
+# The policy is SECURITY.md in the public repository. Renew Expires before it passes (scripts/check-site.py fails after).
+Contact: https://github.com/parafieldai/ParaAir/security/advisories/new
+Expires: 2027-11-01T00:00:00.000Z
+Policy: https://github.com/parafieldai/ParaAir/security/policy
+Preferred-Languages: en
+Canonical: https://paraair.parafield.ai/.well-known/security.txt
