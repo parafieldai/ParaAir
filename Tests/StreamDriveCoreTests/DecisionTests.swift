@@ -104,6 +104,19 @@ final class DecisionTests: XCTestCase {
         XCTAssertNil(try drive.status().failingUploads)
     }
 
+    // 2026-11-26 production review: copying a large folder into ParaAir Cloud meets its per-person change limit
+    // (rate_limited, EAGAIN); four quick throttled retries told the user uploads were failing within half a minute.
+    func testBeingAskedToSlowDownCountsOnlyByDuration() throws {
+        _ = try drive.create("/many.txt", directory: false)
+        backend.commitError = DriveError(EAGAIN, "ParaAir Cloud is busy. Try again shortly", disposition: .attemptNotDispatched)
+        var record = try XCTUnwrap(try drive.flushUploads().first)
+        for _ in 2...6 { record = try XCTUnwrap(try drive.flushUploads().first) }
+        XCTAssertEqual(record.failures, 6)
+        let since = try XCTUnwrap(record.failingSinceNanoseconds)
+        XCTAssertFalse(record.isFailing(now: since + 60_000_000_000), "six throttled tries in a minute are pacing, not failure")
+        XCTAssertTrue(record.isFailing(now: since + UploadFailurePolicy.standard.minDurationNanoseconds), "still refused after 15 minutes is")
+    }
+
     func testOneFailureCountsOnceItHasLastedLongEnough() throws {
         _ = try drive.create("/new.txt", directory: false)
         backend.commitError = DriveError(ENETDOWN, "Offline", disposition: .attemptNotDispatched)

@@ -22,11 +22,14 @@ public extension UploadRecord {
     var needsDecision: Bool { state == "conflict" || lastErrno == EROFS || lastErrno == EPERM }
 
     /// Uploads of this file keep failing. ParaAir keeps retrying; the change stays on this Mac.
-    /// Network errors count only by duration: retries come fast, so a short drop would
-    /// otherwise reach `minFailures` in about half a minute.
+    /// Network errors, and storage asking ParaAir to slow down (EAGAIN: ParaAir Cloud's
+    /// `rate_limited`, `chunk_busy` or too many open uploads), count only by duration: retries
+    /// come fast, so a short drop, or copying a large folder into a service that allows each
+    /// person about 300 new files a minute, would otherwise reach `minFailures` in about half a
+    /// minute and tell the user uploads are failing while they are only paced.
     func isFailing(now: Int64, policy: UploadFailurePolicy = .standard) -> Bool {
         guard !needsDecision, let code = lastErrno else { return false }
-        if failures >= policy.minFailures, !UploadFailureReason.unreachable.contains(code) { return true }
+        if failures >= policy.minFailures, !UploadFailureReason.unreachable.contains(code), code != EAGAIN { return true }
         guard let since = failingSinceNanoseconds, now >= since else { return false }
         return now - since >= policy.minDurationNanoseconds
     }
