@@ -363,7 +363,7 @@ struct CloudPlanSheet: View {
     @ViewBuilder private var opened: some View {
         let workspace = model.summary?.workspaces.first { $0.id == model.checkoutWorkspaceID }
         let billing = workspace?.billing
-        let paid = billing?.status == .active || billing?.status == .pastDue
+        let paid = (billing?.status == .active || billing?.status == .pastDue) && billing?.checkoutAvailable == false
         if let billing, paid {
             header(billing.inTrial ? "Your free trial has started"
                    : "Your \(billing.plan.map { $0 == .team ? "Team " : "Personal " } ?? "")plan is active", nil)
@@ -377,8 +377,8 @@ struct CloudPlanSheet: View {
                 }
                 let period = billing.interval == .year ? "Billed yearly" : billing.interval == .month ? "Billed monthly" : nil
                 let lines = billing.inTrial
-                    ? [billing.trialEndsAt.map { "Free trial until \(CloudBillingPresentation.format($0))." }, period.map { $0 + " after that." }]
-                    : [period.map { $0 + "." }, billing.currentPeriodEnd.map { "Renews \(CloudBillingPresentation.format($0))." }]
+                    ? [billing.trialEndsAt.map { "Free trial until \(CloudBillingPresentation.formatDeadline($0))." }, period.map { $0 + " after that." }]
+                    : [period.map { $0 + "." }, billing.currentPeriodEnd.map { "Renews \(CloudBillingPresentation.formatDeadline($0))." }]
                 Text(lines.compactMap { $0 }.joined(separator: " "))
                     .foregroundStyle(Air.quiet)
                     .fixedSize(horizontal: false, vertical: true)

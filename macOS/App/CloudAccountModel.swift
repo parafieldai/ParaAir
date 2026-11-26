@@ -82,9 +82,11 @@ final class CloudAccountModel: ObservableObject {
     /// Seconds between `/v1/me` reloads while waiting for a payment or a portal change: quick at first, then wider,
     /// about 15 minutes in all. Tests shorten it.
     var billingWatchDelays: [Double] = [3, 5, 10, 15, 30, 30, 60, 60, 120, 120, 180, 240]
-    /// How long an open payment page is remembered. Stripe expires a Checkout Session after 24 hours by default; any
-    /// older page is closed by the service when the next checkout starts, so forgetting it cannot cause a second charge.
-    nonisolated static let pendingLifetime: TimeInterval = 24 * 3600
+    /// How long an open payment page is remembered: an hour, as long as the service keeps a free-trial Checkout Session
+    /// open (it expires it then, so the trial the page shows is never shorter than promised; cloud README "Billing").
+    /// Other sessions last 24 hours at Stripe, but any older page is closed by the service when the next checkout starts,
+    /// so forgetting one sooner cannot cause a second charge; it only means Choose a Plan… starts a fresh page.
+    nonisolated static let pendingLifetime: TimeInterval = 3600
     /// Open payment pages by state folder and account for the life of the app, so a model replaced by a folder switch
     /// still knows the page it opened.
     private static var pendingCheckouts: [String: PendingCheckout] = [:]
@@ -697,10 +699,13 @@ final class CloudAccountModel: ObservableObject {
         guard let pending = pendingCheckout else { return }
         let billing = summary?.workspaces.first { $0.id == pending.workspaceID }?.billing
         let expired = Date().timeIntervalSince(pending.openedAt) > Self.pendingLifetime
-        guard expired || billing == nil || billing?.isLive == true || billing?.status != pending.status else { return }
-        log.notice("cloud checkout settled live=\(billing?.isLive == true) expired=\(expired)")
+        // A plan bought over one that is over at the processor but still live (cancelled at once elsewhere, or ended
+        // during a failed payment's retries) settles only once the service no longer sells over it.
+        let holds = CloudBillingPresentation.holdsPlan(billing)
+        guard expired || billing == nil || holds || billing?.status != pending.status else { return }
+        log.notice("cloud checkout settled live=\(holds) expired=\(expired)")
         setPending(nil)
-        if billing?.isLive != true, case .opened = checkout {
+        if !holds, case .opened = checkout {
             checkoutID = UUID(); checkout = .idle; checkoutWorkspaceID = nil; quote = .idle
             if planSheetPresented { loadOffer() }
         }

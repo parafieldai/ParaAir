@@ -26,6 +26,14 @@ struct CloudBillingPresentation: Equatable {
     /// the owner": its owner can't buy Team because the service doesn't sell it.
     var noStorageDetail: String?
 
+    /// The workspace's plan is in place: a live subscription the service won't sell over (`checkoutAvailable` false). A
+    /// subscription that is over at the processor but still gives access to a date (cancelled at once outside the app, or
+    /// during a failed payment's retries) is live without holding the plan: the service sells a new one over it.
+    static func holdsPlan(_ billing: ParaAirCloudBilling?) -> Bool {
+        guard let billing else { return false }
+        return billing.isLive && !billing.checkoutAvailable
+    }
+
     static let choosePlan = Control(action: .choosePlan, title: "Choose a Plan…")
     static let startTrial = "Start Free Trial…"
     static let managePlan = Control(action: .managePlan, title: "Manage Plan…")
@@ -78,7 +86,9 @@ struct CloudBillingPresentation: Equatable {
         let teamNotSold = workspace.kind == ParaAirCloudBilling.Plan.team.rawValue && owner && !checkout && billing.provider != .none
             && workspace.status != "suspended"
         var result = CloudBillingPresentation(summary: summary(billing))
-        func day(_ date: Date?) -> String? { date.map(format) }
+        // Each of these is a deadline the service keeps to the minute (a trial ends on the hour, a grace period at the time
+        // the payment failed), so it carries its UTC time: a US evening is the next day in UTC (launch-readiness P8).
+        func day(_ date: Date?) -> String? { date.map(formatDeadline) }
         switch billing.status {
         case .none:
             result.summary = nil
@@ -105,6 +115,15 @@ struct CloudBillingPresentation: Equatable {
             let after = day(billing.deletionAt).map { "Files then stay read-only until \($0) and are deleted after that." }
                 ?? "Files then stay read-only for 30 days and are deleted after that."
             let ends = end.map { " and ends on \($0)" } ?? ""
+            if checkout {
+                // The subscription is already over at the processor (cancelled at once outside the app, for example on
+                // link.com): nothing can resume it, and the service sells a new plan over it (B5 says so).
+                let what = billing.inTrial ? "free trial" : "plan"
+                result.notice = .init(id: "billing", text: "Your \(what) was cancelled\(ends) and can’t be resumed. \(after) "
+                                      + "To keep full access, choose a plan.", tone: .attention)
+                result.controls = [Control(action: .choosePlan, title: "Choose a Plan…", prominent: true)] + (portal ? [managePlan] : [])
+                break
+            }
             if billing.inTrial {
                 // Cancelled during the free trial: it ends then, and nothing is ever charged.
                 result.notice = .init(id: "billing", text: owner

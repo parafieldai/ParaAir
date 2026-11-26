@@ -224,13 +224,13 @@ struct UISnapshots {
                                            currentPeriodEnd: day("2026-10-05"), readOnlyAt: day("2026-10-05"), deletionAt: day("2026-11-04"),
                                            portalAvailable: true)
         let readOnlyTeam = teamDrive(teamEnded, unpaid: false, choice: false)
-        expect(readOnlyTeam.notice?.text == "Your team’s plan ended, so this workspace is read-only until November 4, 2026. "
+        expect(readOnlyTeam.notice?.text == "Your team’s plan ended, so this workspace is read-only until November 4, 2026 at 00:00 UTC. "
                + CloudBillingPresentation.teamPlanNotSold + " Copy the files you need out of the drive by then, or they’re deleted."
                && readOnlyTeam.controls == [CloudBillingPresentation.managePlan], "a read-only team says Team can't be bought, not to choose a plan")
         var teamPurge = teamEnded
         teamPurge.status = .pendingDeletion; teamPurge.portalAvailable = false
         let pendingTeam = teamDrive(teamPurge, unpaid: false, choice: true)
-        expect(pendingTeam.notice?.text == "The read-only period ended on November 4, 2026, so this workspace’s files can be deleted at any time. "
+        expect(pendingTeam.notice?.text == "The read-only period ended on November 4, 2026 at 00:00 UTC, so this workspace’s files can be deleted at any time. "
                + CloudBillingPresentation.teamPlanNotSold + " Copy the files you need out of the drive now." && pendingTeam.controls.isEmpty,
                "a team pending deletion says Team can't be bought, not to choose a plan")
         expect(teamDrive(teamEnded, unpaid: false, role: "member").notice?.text.contains("Ask the workspace owner to choose a plan") == true,
@@ -552,6 +552,13 @@ struct UISnapshots {
                                                          currentPeriodEnd: day("2026-11-12"), graceEndsAt: day("2026-10-26"),
                                                          readOnlyAt: day("2026-10-26"), deletionAt: day("2026-11-25"), checkoutAvailable: true,
                                                          portalAvailable: true)
+    /// Cancelled at once outside the app (link.com, Stripe support): the service keeps the period paid for, can't resume
+    /// it, and sells a new plan over it. A trial ending at 16:00 UTC shows that hour.
+    static let billingCancelledElsewhere = ParaAirCloudBilling(provider: .stripe, status: .active, plan: .personal, interval: .month, seats: 1,
+                                                               currentPeriodEnd: day("2026-12-03").addingTimeInterval(16 * 3600), cancelAtPeriodEnd: true,
+                                                               readOnlyAt: day("2026-12-03").addingTimeInterval(16 * 3600),
+                                                               deletionAt: day("2027-01-02").addingTimeInterval(16 * 3600), checkoutAvailable: true,
+                                                               portalAvailable: true)
     /// A team member's view of the owner's failed payment: the service offers members neither checkout nor the portal.
     static let billingMemberPastDue = ParaAirCloudBilling(provider: .stripe, status: .pastDue, plan: .team, interval: .month, seats: 3,
                                                           currentPeriodEnd: day("2026-11-12"), graceEndsAt: day("2026-10-26"),
@@ -1555,7 +1562,7 @@ struct UISnapshots {
         expect(make(nil, manageUrl: URL(string: "https://account.parafield.ai/plan")!).controls == [CloudBillingPresentation.managePlan],
                "a service without billing keeps its plan link")
         expect(make(billingPastDue, state: .failed) == empty, "a failed summary shows no billing")
-        expect(make(billingActive, state: .loading).date == Row(label: "Renews", value: "October 12, 2027"),
+        expect(make(billingActive, state: .loading).date == Row(label: "Renews", value: "October 12, 2027 at 00:00 UTC"),
                "billing stays visible while a refresh runs")
 
         let beta = make(billingBeta, choice: true)
@@ -1565,7 +1572,7 @@ struct UISnapshots {
 
         let active = make(billingActive)
         expect(active.summary == "Personal, billed yearly", "active summary names the plan and period")
-        expect(active.date == Row(label: "Renews", value: "October 12, 2027"), "active shows the renewal date in UTC")
+        expect(active.date == Row(label: "Renews", value: "October 12, 2027 at 00:00 UTC"), "active shows the renewal date in UTC")
         expect(active.notice == nil && active.controls == [CloudBillingPresentation.managePlan], "active offers Manage Plan… only")
         var team = billingActive
         team.plan = .team; team.interval = .month; team.seats = 3; team.extraStorageTb = 2
@@ -1582,42 +1589,42 @@ struct UISnapshots {
         expect(make(team, kind: "team").summary == "Team, 1 seat, billed monthly, 2 TB added storage", "one seat is singular")
 
         let cancelled = make(billingCancelled)
-        expect(cancelled.date == Row(label: "Ends", value: "November 12, 2026"), "a cancelled plan shows its end")
-        expect(cancelled.notice == HomePresentation.Notice(id: "billing", text: "Your plan is cancelled and ends on November 12, 2026. Files then stay "
-                                         + "read-only until December 12, 2026 and are deleted after that. To keep it, resume the plan in Manage Plan.",
+        expect(cancelled.date == Row(label: "Ends", value: "November 12, 2026 at 00:00 UTC"), "a cancelled plan shows its end")
+        expect(cancelled.notice == HomePresentation.Notice(id: "billing", text: "Your plan is cancelled and ends on November 12, 2026 at 00:00 UTC. Files then stay "
+                                         + "read-only until December 12, 2026 at 00:00 UTC and are deleted after that. To keep it, resume the plan in Manage Plan.",
                                          tone: .attention), "a cancelled plan says what happens and how to keep it")
 
         let pastDue = make(billingPastDue, kind: "team", seats: 3)
-        expect(pastDue.date == Row(label: "Grace period ends", value: "October 26, 2026"), "past due shows the grace end")
-        expect(pastDue.notice == HomePresentation.Notice(id: "billing", text: "Your last payment didn’t go through. Everything keeps working until October 26, 2026. "
+        expect(pastDue.date == Row(label: "Grace period ends", value: "October 26, 2026 at 00:00 UTC"), "past due shows the grace end")
+        expect(pastDue.notice == HomePresentation.Notice(id: "billing", text: "Your last payment didn’t go through. Everything keeps working until October 26, 2026 at 00:00 UTC. "
                                        + "Update your payment method by then to keep your plan.", tone: .attention), "past due notice")
         expect(pastDue.controls == [.init(action: .updatePayment, title: "Update Payment…", prominent: true)],
                "past due offers Update Payment… prominently")
         let ended = make(billingPastDueEnded)
-        expect(ended.date == Row(label: "Grace period ends", value: "October 26, 2026")
+        expect(ended.date == Row(label: "Grace period ends", value: "October 26, 2026 at 00:00 UTC")
                && ended.notice == HomePresentation.Notice(id: "billing", text: "Your last payment didn’t go through, so your subscription has ended. "
-                                       + "Everything keeps working until October 26, 2026. Choose a plan by then to keep full access.", tone: .attention)
+                                       + "Everything keeps working until October 26, 2026 at 00:00 UTC. Choose a plan by then to keep full access.", tone: .attention)
                && ended.controls == [.init(action: .choosePlan, title: "Choose a Plan…", prominent: true)],
                "past due after the processor ended the plan offers a new plan, not a new card")
         let member = make(billingMemberPastDue, kind: "team", role: "member", seats: 3)
         expect(member.controls.isEmpty && member.notice?.text
-               == "This workspace’s last payment didn’t go through. Everything keeps working until October 26, 2026. "
+               == "This workspace’s last payment didn’t go through. Everything keeps working until October 26, 2026 at 00:00 UTC. "
                + "Ask the workspace owner to update the payment method.", "a member is told to ask the owner")
 
         let readOnly = make(billingReadOnly)
         expect(readOnly.summaryLabel == "Previous plan" && active.summaryLabel == "Billing", "an ended plan is not shown as billed")
-        expect(readOnly.date == Row(label: "Read-only until", value: "November 4, 2026"), "read-only shows until when")
-        expect(readOnly.notice == HomePresentation.Notice(id: "billing", text: "Your plan ended, so this workspace is read-only until November 4, 2026. "
+        expect(readOnly.date == Row(label: "Read-only until", value: "November 4, 2026 at 00:00 UTC"), "read-only shows until when")
+        expect(readOnly.notice == HomePresentation.Notice(id: "billing", text: "Your plan ended, so this workspace is read-only until November 4, 2026 at 00:00 UTC. "
                                         + "Choose a plan by then, or the files are deleted.", tone: .problem),
                "read-only says why, until when and what to do")
         expect(readOnly.controls == [.init(action: .choosePlan, title: "Choose a Plan…", prominent: true), CloudBillingPresentation.managePlan],
                "read-only offers a plan first")
-        expect(make(billingReadOnly, role: "member").notice?.text == "This workspace’s plan ended, so it’s read-only until November 4, 2026. "
+        expect(make(billingReadOnly, role: "member").notice?.text == "This workspace’s plan ended, so it’s read-only until November 4, 2026 at 00:00 UTC. "
                + "Ask the workspace owner to choose a plan by then, or the files are deleted.", "a member is told to ask the owner")
 
         let pending = make(billingPendingDeletion)
-        expect(pending.date == Row(label: "Deletion scheduled", value: "October 10, 2026"), "pending deletion shows the date")
-        expect(pending.notice == HomePresentation.Notice(id: "billing", text: "The read-only period ended on October 10, 2026, so this workspace’s "
+        expect(pending.date == Row(label: "Deletion scheduled", value: "October 10, 2026 at 00:00 UTC"), "pending deletion shows the date")
+        expect(pending.notice == HomePresentation.Notice(id: "billing", text: "The read-only period ended on October 10, 2026 at 00:00 UTC, so this workspace’s "
                                        + "files can be deleted at any time. Choose a plan now to keep them.", tone: .problem),
                "pending deletion explains the date")
         expect(pending.controls == [.init(action: .choosePlan, title: "Choose a Plan…", prominent: true)], "pending deletion offers a plan")
@@ -1641,11 +1648,26 @@ struct UISnapshots {
         expect(make(ParaAirCloudBilling(provider: .stripe, status: .none, checkoutAvailable: true, trialDays: 7), choice: true).controls
                == [.init(action: .choosePlan, title: "Start Free Trial…")], "a beta workspace's first plan starts with the trial too")
         let inTrial = make(billingTrial)
-        expect(inTrial.date == .init(label: "Free trial ends", value: "October 19, 2026") && inTrial.summary == "Personal, billed monthly after the trial"
+        expect(inTrial.date == .init(label: "Free trial ends", value: "October 19, 2026 at 00:00 UTC") && inTrial.summary == "Personal, billed monthly after the trial"
                && inTrial.notice == nil && inTrial.controls == [CloudBillingPresentation.managePlan], "a trial shows when it ends")
-        expect(make(billingTrialCancelled).notice?.text == "Your free trial is cancelled and ends on October 19, 2026, and you won’t be charged. "
-               + "Files then stay read-only until November 18, 2026 and are deleted after that. To keep the plan, resume it in Manage Plan.",
+        expect(make(billingTrialCancelled).notice?.text == "Your free trial is cancelled and ends on October 19, 2026 at 00:00 UTC, and you won’t be charged. "
+               + "Files then stay read-only until November 18, 2026 at 00:00 UTC and are deleted after that. To keep the plan, resume it in Manage Plan.",
                "a cancelled trial says nothing is charged")
+
+        // Cancelled at once outside the app (payments review 2026-11-26): nothing to resume, so a new plan is offered.
+        let elsewhere = make(billingCancelledElsewhere)
+        expect(elsewhere.date == .init(label: "Ends", value: "December 3, 2026 at 16:00 UTC"), "a plan cancelled elsewhere shows its end with the hour")
+        expect(elsewhere.notice?.text == "Your plan was cancelled and ends on December 3, 2026 at 16:00 UTC and can’t be resumed. Files then stay read-only "
+               + "until January 2, 2027 at 16:00 UTC and are deleted after that. To keep full access, choose a plan.",
+               "a plan cancelled elsewhere says it can't be resumed")
+        expect(elsewhere.controls == [.init(action: .choosePlan, title: "Choose a Plan…", prominent: true), CloudBillingPresentation.managePlan],
+               "a plan cancelled elsewhere offers a new plan first")
+        expect(make(billingCancelled).controls == [CloudBillingPresentation.managePlan], "a plan cancelled in the portal still resumes there")
+        expect(!CloudBillingPresentation.holdsPlan(billingCancelledElsewhere) && !CloudBillingPresentation.holdsPlan(billingPastDueEnded)
+               && CloudBillingPresentation.holdsPlan(billingActive) && CloudBillingPresentation.holdsPlan(billingPastDue)
+               && !CloudBillingPresentation.holdsPlan(billingReadOnly) && !CloudBillingPresentation.holdsPlan(nil),
+               "a plan bought over one that is over at the processor isn't settled by the old one")
+        expect(CloudAccountModel.pendingLifetime == 3600, "an open payment page is remembered as long as a trial checkout stays open")
         expect(make(billingTrialCancelled).summary == "Personal, billed monthly", "a cancelled trial is never billed after it")
 
         // The home window carries the billing notice for ParaAir Cloud only; the menu bar panel shows it first.
@@ -1730,7 +1752,7 @@ struct UISnapshots {
         var unknownPlan = billingActive
         unknownPlan.plan = nil; unknownPlan.interval = nil
         let unknown = make(unknownPlan)
-        expect(unknown.summary == nil && unknown.date == Row(label: "Renews", value: "October 12, 2027") && unknown.controls == [CloudBillingPresentation.managePlan],
+        expect(unknown.summary == nil && unknown.date == Row(label: "Renews", value: "October 12, 2027 at 00:00 UTC") && unknown.controls == [CloudBillingPresentation.managePlan],
                "an unknown paid plan keeps its date and Manage Plan…")
         var crowded = billingPastDue
         crowded.seats = 1001
