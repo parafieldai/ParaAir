@@ -312,7 +312,7 @@ struct CloudPlanSheet: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AirSurface(radius: Air.Radius.inset, raised: false))
+        .background(AirSurface(radius: Air.Radius.inset))
         .accessibilityElement(children: .combine)
     }
 

@@ -2024,16 +2024,16 @@ struct UISnapshots {
         try bitmap.representation(using: .png, properties: [:])?.write(to: url)
     }
 
-    /// The ink button sits beside glass ones in a row, so both take the capsule height for their control size.
+    /// The ink button sits beside outlined ones in a row, so both take the capsule height for their control size.
     @MainActor
     static func checkButtonHeights() -> [String] {
         var failures: [String] = []
         for (name, size) in [("small", ControlSize.small), ("regular", .regular), ("large", .large), ("extraLarge", .extraLarge)] {
             let ink = NSHostingView(rootView: Button("Open System Settings") {}.buttonStyle(.airProminent).controlSize(size)).fittingSize.height
-            let glass = NSHostingView(rootView: Button("Check Again") {}.buttonStyle(.airGlass).controlSize(size)).fittingSize.height
+            let outline = NSHostingView(rootView: Button("Check Again") {}.buttonStyle(.airOutline).controlSize(size)).fittingSize.height
             let expected = AirButtonMetrics(size).height
-            if ink != expected || glass != expected {
-                failures.append("button height (\(name)): ink \(ink), glass \(glass), expected \(expected)")
+            if ink != expected || outline != expected {
+                failures.append("button height (\(name)): ink \(ink), outline \(outline), expected \(expected)")
             }
         }
         return failures

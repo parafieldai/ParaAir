@@ -60,7 +60,7 @@ struct DriveHomeContent: View {
     var body: some View {
         let presentation = self.presentation
         let listsDrives = !presentation.drives.isEmpty
-        AirPage(field: true) {
+        AirPage {
             // With several drives the header is ParaAir's, and its status sums them up; one drive's name or icon
             // would read as if its state were every drive's.
             VStack(alignment: .leading, spacing: 0) {
@@ -195,13 +195,13 @@ struct MenuBarPanel: View {
             }
             if presentation.showsPrimary { ActionRow(presentation: presentation, actions: actions, large: false) }
             if listsDrives {
-                AirRows(padding: 14) {
+                AirRows {
                     ForEach(presentation.drives) { row in
                         DriveListRow(row: row, compact: true, perform: actions.drive)
                     }
                 }
             }
-            PanelRule()
+            AirHairline()
             HStack(spacing: Air.Space.sm) {
                 Button("Show ParaAir", action: actions.showHome)
                 Button("Storage Settings…", action: actions.openStorageSettings)
@@ -212,7 +212,7 @@ struct MenuBarPanel: View {
                 if let loginItem { LoginItemToggle(model: loginItem, style: .panel) }
             }
             .controlSize(.small)
-            PanelRule()
+            AirHairline()
             HStack {
                 Menu {
                     AdvancedMenuItems(input: input, details: details, actions: actions)
@@ -238,15 +238,10 @@ struct MenuBarPanel: View {
     }
 }
 
-/// A hairline across the panel.
-private struct PanelRule: View {
-    var body: some View { Rectangle().fill(Air.rule).frame(height: 1).accessibilityHidden(true) }
-}
-
 // MARK: - Shared pieces
 
-/// The drive's name over its state, set as one two-tone headline: the name in ink, the state quiet beside its tone's
-/// symbol. When the state changes, the new words come out of a blur.
+/// The drive's name in ink with the sage line the lead plane drew beneath it, its state on a quiet line below, and in
+/// the window the planes in the open paper beside them. When the state changes, the new words come out of a blur.
 private struct DriveHeader: View {
     enum Size {
         case window, panel
@@ -275,52 +270,41 @@ private struct DriveHeader: View {
             .frame(width: size.icon, height: size.icon)
             .padding(.top, size == .window ? 4 : 1)
             .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: size == .window ? 1 : 3) {
+            VStack(alignment: .leading, spacing: size == .window ? 11 : 8) {
                 Text(name)
                     .airDisplay(size.display)
                     .foregroundStyle(Air.ink)
                     .lineLimit(1).truncationMode(.middle)
                     .minimumScaleFactor(0.8)
-                    .airClearsField()
-                statusLine
-                    .airClearsField()
+                    .airUnderlined()
+                StatusLine(status: status, size: size == .window ? 15 : 13)
+                    .airClearsFlight()
                     .id(status.title)
                     .airTransition(.words)
             }
             Spacer(minLength: 0)
         }
+        .airFlight(size == .window ? .window : .panel, seed: name, entrance: size == .window)
         .accessibilityElement(children: .combine)
-    }
-
-    @ViewBuilder private var statusLine: some View {
-        if size == .window {
-            // The state at the name's size when it fits on one line; long states step down rather than stack.
-            ViewThatFits(in: .horizontal) {
-                StatusHeadline(status: status, size: size.display).fixedSize()
-                StatusHeadline(status: status, size: 23).fixedSize()
-                StatusHeadline(status: status, size: 19).fixedSize(horizontal: false, vertical: true)
-            }
-        } else {
-            StatusLabel(status: status).font(.system(size: 13))
-        }
     }
 }
 
-/// The headline's second line: the tone's symbol, then the state in the quiet tone.
-private struct StatusHeadline: View {
+/// The state under the name: the tone's symbol, then the state in the quiet tone, shimmering while work is under way.
+private struct StatusLine: View {
     let status: HomePresentation.Status
     let size: CGFloat
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: size * 0.28) {
+        HStack(alignment: .firstTextBaseline, spacing: size * 0.4) {
             Image(systemName: StatusLabel.symbol(status.tone))
-                .font(.system(size: size * 0.58, weight: .semibold))
+                .font(.system(size: size * 0.9, weight: .semibold))
                 .foregroundStyle(StatusLabel.color(status.tone))
                 .accessibilityHidden(true)
             Text(status.title)
-                .airDisplay(size, weight: .regular)
+                .font(.system(size: size, weight: .medium))
                 .foregroundStyle(Air.quiet)
                 .airShimmer(status.tone == .working)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
