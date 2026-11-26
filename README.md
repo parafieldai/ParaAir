@@ -14,7 +14,7 @@ The canonical project directory, Swift package and generated Xcode project are n
 
 ## Build and local validation
 
-Requirements: Apple Silicon Mac, macOS 26+ for the filesystem, Xcode with the macOS SDK, Swift, Go and XcodeGen. The native script pins and verifies JuiceFS source and privately obtains its required Go toolchain. No package, driver, app or filesystem extension is installed by these scripts. Builds require 100 GiB free under this workspace's disk policy.
+Requirements: Apple Silicon Mac, macOS 27+ to open drives in Finder (the app also runs on macOS 26, where it can't mount into /Volumes and says so), Xcode with the macOS SDK, Swift, Go and XcodeGen. The native script pins and verifies JuiceFS source and privately obtains its required Go toolchain. No package, driver, app or filesystem extension is installed by these scripts. Builds require 100 GiB free under this workspace's disk policy.
 
 ```sh
 cd /Users/user/Documents/Automation-agents/ParaAir
