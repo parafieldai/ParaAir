@@ -545,6 +545,8 @@ final class MenuModel: ObservableObject {
             AppLog.setup.notice("login mount folder=\(root.path, privacy: .private(mask: .hash)) \(readiness.description, privacy: .public)")
             setOtherDriveIssue(issue == nil ? nil : Self.otherDriveNotice(profile, root: root), root: root)
             guard readiness.mounted || readiness.canStartMount else { continue }
+            // Stays queued until the /Volumes helper is allowed (macOS 26); allowing it resumes this.
+            if !readiness.mounted, usesVolumesHelper(profile), volumesHelperState == .needsApproval { continue }
             pendingLoginMounts.removeAll { $0 == root }
             if readiness.canStartMount { mount(profile, root: root, readiness: readiness) }
         }
@@ -856,9 +858,10 @@ final class MenuModel: ObservableObject {
         guard volumesHelperState == .needsApproval else { return volumesHelperState == .ready }
         volumesHelperState = VolumesHelper.state
         guard volumesHelperState == .ready else { return false }
-        AppLog.mount.notice("volumes helper approved; mounting the selected drive")
+        AppLog.mount.notice("volumes helper approved; mounting the waiting drives")
         volumesHelperWatch?.cancel()
         if let selected = profiles.first, !isMounted(selected) { mount(selected) }
+        resumeLoginMounts()
         return true
     }
     /// Reads the mount table again (local, no network). A drive mounted or unmounted outside ParaAir (the paraair CLI,
@@ -926,13 +929,17 @@ final class MenuModel: ObservableObject {
             showMountMessage("This build is missing its mount helper.", about: nil); return
         }
         let inVolumes = usesVolumesHelper(profile)
-        if inVolumes, volumesHelperState != .ready {
-            volumesHelperState = VolumesHelper.register()
+        if inVolumes {
+            // Read live each time: the switch can be turned off in System Settings while ParaAir runs.
+            volumesHelperState = VolumesHelper.state
+            if volumesHelperState != .ready { volumesHelperState = VolumesHelper.register() }
             switch volumesHelperState {
             case .ready: break
             case .needsApproval:
-                // The home window shows the Login Items step; approving it mounts the drive (volumesHelperApproved).
+                // The home window shows the Login Items step. Approving it mounts the selected drive and resumes
+                // another folder's request, kept queued here (volumesHelperApproved).
                 AppLog.mount.notice("mount waits: the /Volumes helper needs approval")
+                if !selected, !pendingLoginMounts.contains(where: { $0.path == root.path }) { pendingLoginMounts.append(root) }
                 return
             case .notRegistered, .unavailable:
                 AppLog.mount.error("mount route=helper volumes helper unavailable")
@@ -950,7 +957,15 @@ final class MenuModel: ObservableObject {
             do {
                 let status = try await Task.detached {
                     let point = inVolumes ? try VolumesHelper.mountPoint(finderName: profile.finderName) : nil
-                    return try Self.runMountHelper(helper, stateRoot: root, profileName: profile.name, mountPoint: point)
+                    do {
+                        let status = try Self.runMountHelper(helper, stateRoot: root, profileName: profile.name, mountPoint: point)
+                        if status != 0, let point { VolumesHelper.removeMountPoint(point) }
+                        return status
+                    } catch {
+                        // No empty /Volumes folder outlives a mount that didn't happen.
+                        if let point { VolumesHelper.removeMountPoint(point) }
+                        throw error
+                    }
                 }.value
                 guard root == stateRoot else {
                     // The helper exits 0 only once the volume is in the mount table.

@@ -582,6 +582,7 @@ private final class FakeSystem {
     var outputClosed = false
     var refreshWrites = false
     var onRefresh: ((String) -> Void)?
+    var macOS = 27
     var system: CLISystem {
         CLISystem(appInfo: { [unowned self] _ in installed ? .init(bundleID: "dev.streamdrive.app", version: "0.2.0", build: "42") : nil },
                   isRunning: { [unowned self] _ in running },
@@ -594,6 +595,7 @@ private final class FakeSystem {
                   sleep: { [unowned self] seconds in sleeps += 1; clock += seconds; onSleep?(sleeps) },
                   now: { [unowned self] in clock },
                   refreshFolder: { [unowned self] folder, point in refreshed.append((folder, point)); onRefresh?(folder); return refreshWrites },
+                  macOSMajorVersion: { [unowned self] in macOS },
                   parentProcess: { [unowned self] in
                       parentCalls += 1
                       if let gone = parentGoneAtCall, parentCalls >= gone { return 1 }
@@ -651,7 +653,7 @@ extension CLIApplicationTests {
         let app = CLIApplication(environment: ["STREAMDRIVE_HOME": root.path], system: fake.system)
         let installed = try object(app.run(["setup-status", "--json"]))
         XCTAssertEqual(installed["contractVersion"] as? Int, 1)
-        XCTAssertEqual(installed["capabilities"] as? [String], ["changes.push"])
+        XCTAssertEqual(installed["capabilities"] as? [String], ["changes.push", "mount.macos26"])
         XCTAssertEqual((installed["accounts"] as? [[String: Any]])?.count, 0)
         fake.installed = false
         let missing = app.run(["setup-status", "--json"])
@@ -773,6 +775,34 @@ extension CLIApplicationTests {
         XCTAssertEqual(app.run(["mount", "fixture"]).exitCode, 13)
         fake.installed = false
         XCTAssertEqual(app.run(["mount", "fixture"]).exitCode, 10)
+    }
+
+    /// macOS 26: the app's /Volumes helper takes "<name> 2" when another volume has the name, and the CLI follows the
+    /// folder the app saved, for this mount and the next.
+    func testMountOnMacOS26FollowsTheFolderTheAppChose() throws {
+        let root = try temporaryDirectory(), data = root.appendingPathComponent("data")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+        let state = root.appendingPathComponent("state")
+        let fake = FakeSystem(); fake.macOS = 26
+        let app = CLIApplication(environment: ["STREAMDRIVE_HOME": state.path], system: fake.system)
+        XCTAssertEqual(app.run(["connect", "fixture", "--fixture-root", data.path]).exitCode, 0)
+        let store = ProfileStore(root: state)
+        let other = MountedVolume(mountPoint: "/Volumes/fixture", type: "streamdrive")
+        fake.mounted = [other]
+        fake.onOpen = { _ in
+            fake.mounted = [other, MountedVolume(mountPoint: "/Volumes/fixture 2", type: "streamdrive")]
+            if var profile = try? store.load("fixture") { profile.mountPoint = "/Volumes/fixture 2"; try? store.save(profile, overwrite: true) }
+        }
+        let mounted = app.run(["mount", "fixture", "--wait", "5", "--json"])
+        XCTAssertEqual(mounted.exitCode, 0, mounted.stdout)
+        XCTAssertEqual(try object(mounted)["mountPoint"] as? String, "/Volumes/fixture 2")
+        XCTAssertEqual(fake.opened.count, 1, "the taken name doesn't stop the request on macOS 26")
+        // Mounting again: the saved folder may be passed back.
+        fake.mounted = [other]
+        XCTAssertEqual(app.run(["mount", "fixture", "--mount-point", "/Volumes/fixture 2", "--wait", "5"]).exitCode, 0)
+        fake.mounted = [other]
+        XCTAssertEqual(app.run(["mount", "fixture", "--mount-point", "/Volumes/elsewhere"]).exitCode, 2)
     }
 
     func testExtensionSettingsOpensTheListThatWorksAndWaitsForTheSwitch() throws {

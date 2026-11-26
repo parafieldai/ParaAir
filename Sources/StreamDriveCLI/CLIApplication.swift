@@ -576,12 +576,14 @@ final class CLIApplication {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    /// Asks the app to mount `profile` through FSKit (paraair://drive/mount), then waits for /Volumes/<Finder name>.
+    /// Asks the app to mount `profile` (paraair://drive/mount), then waits for the /Volumes folder the app saves to it:
+    /// /Volumes/<Finder name>, or on macOS 26 "<name> 2" … when another volume already has the name.
     private func mountThroughApp(_ profile: DriveProfile, stateRoot: URL, requested: String?, waitSeconds: Int,
                                  invocation: CLIInvocation) throws -> CLIExecution {
         let point = "/Volumes/" + profile.finderName
-        if let requested, requested != point {
-            throw CLIUsageError(message: "ParaAir mounts this drive at \(point); pass that or no --mount-point")
+        let saved = profile.mountPoint.flatMap { $0.hasPrefix("/Volumes/") ? $0 : nil }
+        if let requested, requested != point, requested != saved {
+            throw CLIUsageError(message: "ParaAir mounts this drive at \(saved ?? point); pass that or no --mount-point")
         }
         let app = try installedApp()
         let state = system.extensionState(app.path, app.bundleID)
@@ -589,30 +591,31 @@ final class CLIApplication {
             throw CLIOutcomeError(outcome: .extensionDisabled,
                                   message: ExtensionSetupGuidance.turnOn)
         }
-        guard !system.mountedVolumes().contains(where: { $0.mountPoint == point }) else {
+        // FSKit's own mount (macOS 27) uses exactly that name; on macOS 26 the app picks the next free one itself.
+        if system.macOSMajorVersion() >= 27, system.mountedVolumes().contains(where: { $0.mountPoint == point }) {
             throw DriveError(EBUSY, "Another volume is already mounted at \(point)")
         }
         try system.openURL(app.path, CLISystem.mountURL(profile: profile.name, stateDirectory: stateRoot.standardizedFileURL.path))
-        // Done when a ParaAir volume is at the point and the app has saved that point to this drive's profile, which it
-        // does only after checking the mounted volume serves this state folder. A volume that merely has the same name
-        // (another folder's drive) never counts.
+        // Done when a ParaAir volume is at the /Volumes point the app saved to this drive's profile, which it does only
+        // after checking the mounted volume serves this state folder (the drive wasn't mounted when this began). A
+        // volume that merely has the same name (another folder's drive) never counts.
         let store = ProfileStore(root: stateRoot)
-        let isUp = {
-            guard (try? store.load(profile.name))?.mountPoint == point else { return false }
-            return self.system.mountedVolumes().contains { $0.mountPoint == point && $0.isStreamDrive }
+        let mountedAt = { () -> String? in
+            guard let saved = (try? store.load(profile.name))?.mountPoint, saved.hasPrefix("/Volumes/") else { return nil }
+            return self.system.mountedVolumes().contains { $0.mountPoint == saved && $0.isStreamDrive } ? saved : nil
         }
         for _ in 0..<waitSeconds {
-            if isUp() { break }
+            if mountedAt() != nil { break }
             system.sleep(1)
         }
-        guard isUp() else {
+        guard let mountedPoint = mountedAt() else {
             if system.extensionState(app.path, app.bundleID) == "disabled" {
                 throw CLIOutcomeError(outcome: .extensionDisabled, message: ExtensionSetupGuidance.turnOn)
             }
             throw DriveError(ETIMEDOUT, "ParaAir didn’t finish mounting '\(profile.name)' within \(waitSeconds) seconds. Open ParaAir to see why")
         }
-        return try render(ProfileReference(profile: profile.name, backend: profile.backend.rawValue, mountPoint: point, mounted: true),
-                          invocation: invocation, text: "Mounted '\(profile.name)' at \(point).\n")
+        return try render(ProfileReference(profile: profile.name, backend: profile.backend.rawValue, mountPoint: mountedPoint, mounted: true),
+                          invocation: invocation, text: "Mounted '\(profile.name)' at \(mountedPoint).\n")
     }
     // MARK: Shared editing (versions, change feed, conflict copies, folder rules)
 
@@ -980,8 +983,9 @@ struct SetupStatus: Encodable {
     static let currentContractVersion = 1
     var contractVersion = SetupStatus.currentContractVersion
     /// Additions within the contract version that an integration may want to check before using them (open set):
-    /// `changes.push`, `changes --follow --push`.
-    static let currentCapabilities = ["changes.push"]
+    /// `changes.push`, `changes --follow --push`. `mount.macos26`, the app can open drives in Finder on macOS 26 too (in
+    /// /Volumes, after a one-time OK for its /Volumes helper); reported whatever macOS this runs on.
+    static let currentCapabilities = ["changes.push", "mount.macos26"]
     var capabilities = SetupStatus.currentCapabilities
     struct App: Encodable { var installed: Bool; var path: String?; var running: Bool; var version: String?; var build: String? }
     /// `otherCopies`: other registered copies of the app that still exist. macOS can pick the wrong copy's extension,

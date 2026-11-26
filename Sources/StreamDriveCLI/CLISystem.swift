@@ -70,6 +70,9 @@ struct CLISystem {
     /// (Housekeeping.touchRefreshMarker), so the drive's extension drops the kernel's caches for what changed there.
     /// False when nothing was written. Does nothing unless set, so tests never write into a real mount.
     var refreshFolder: (_ folder: String, _ mountPoint: String) -> Bool = { _, _ in false }
+    /// The macOS major version. On 27 and later the app mounts with FSKit's own call at exactly /Volumes/<Finder name>;
+    /// on 26 its /Volumes helper takes "<name> 2" … when another volume has the name.
+    var macOSMajorVersion: () -> Int = { ProcessInfo.processInfo.operatingSystemVersion.majorVersion }
     /// The parent process, so `changes --follow` can stop when whoever started it is gone (it was reparented).
     var parentProcess: () -> pid_t = { 1 }
     /// Whether standard output has no reader any more (a pipe whose read end was closed), so a follower stops without

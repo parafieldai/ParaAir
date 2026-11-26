@@ -6,7 +6,10 @@ import Security
 // process then mounts the drive there. Built from this file and Sources/StreamDriveCore/VolumesFolder.swift only.
 
 /// The signing identity this helper was signed with: its identifier (also its launchd label and Mach service name,
-/// "<app>.volumes") and the requirement for clients: that app or its command-line tool, signed by the same team.
+/// "<app>.volumes") and the requirement for clients: that app, signed by the same team. Not its command-line tool,
+/// which any process of the user can run: the app asks only for a drive it is about to mount, and removes the folder
+/// again if that mount fails, so nothing else can make empty folders in /Volumes that a real disk's name would then
+/// avoid. (On macOS 26 the CLI asks the app to mount a drive in /Volumes; it never calls this helper.)
 func signingIdentity() -> (service: String, clientRequirement: String)? {
     var code: SecCode?
     guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
@@ -21,7 +24,7 @@ func signingIdentity() -> (service: String, clientRequirement: String)? {
     let app = String(identifier.dropLast(".volumes".count))
     let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
     guard team.unicodeScalars.allSatisfy(safe.contains), app.unicodeScalars.allSatisfy(safe.contains) else { return nil }
-    return (identifier, "anchor apple generic and certificate leaf[subject.OU] = \"\(team)\" and (identifier \"\(app)\" or identifier \"\(app).cli\")")
+    return (identifier, "anchor apple generic and certificate leaf[subject.OU] = \"\(team)\" and identifier \"\(app)\"")
 }
 
 final class Service: NSObject, ParaAirVolumesService {

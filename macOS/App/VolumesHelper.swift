@@ -44,6 +44,21 @@ enum VolumesHelper {
         }
     }
 
+    /// Asks the helper to remove a /Volumes folder it made for a mount that then failed. Best effort: the helper
+    /// refuses anything but this user's empty folder with nothing mounted on it, and macOS removes the folder itself
+    /// when a drive unmounts.
+    static func removeMountPoint(_ path: String) {
+        guard path.hasPrefix(VolumesFolder.volumes + "/"), let team = ownTeamIdentifier() else { return }
+        let name = String(path.dropFirst(VolumesFolder.volumes.count + 1))
+        let connection = NSXPCConnection(machServiceName: serviceName, options: .privileged)
+        connection.remoteObjectInterface = NSXPCInterface(with: ParaAirVolumesService.self)
+        connection.setCodeSigningRequirement("anchor apple generic and certificate leaf[subject.OU] = \"\(team)\" and identifier \"\(serviceName)\"")
+        connection.resume()
+        defer { connection.invalidate() }
+        let reply = try? call(connection) { proxy, done in proxy.removeMountPoint(name) { done(nil, $0, $1) } }
+        AppLog.mount.notice("volumes helper removed unused folder code=\(reply?.code ?? -1)")
+    }
+
     /// Asks the helper for /Volumes/<Finder name>, or "<name> 2" … when another volume already has the name.
     static func mountPoint(finderName: String) throws -> String {
         guard let team = ownTeamIdentifier() else {

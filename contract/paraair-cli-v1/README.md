@@ -58,7 +58,7 @@ So an integration should:
 }
 ```
 
-- `capabilities` (open set): additions within this version that you may want to check for before using them. `changes.push`: `changes --follow --push`. A build without the field has none.
+- `capabilities` (open set): additions within this version that you may want to check for before using them. `changes.push`: `changes --follow --push`. `mount.macos26`: the app opens drives in Finder on macOS 26 as well as 27 (on 26 at `/Volumes/<name>` after a one-time OK for its `/Volumes` helper under App Background Activity in Login Items & Extensions). It is reported whatever macOS the Mac runs; an integration that runs on macOS 26 should require it. A build without the field has none.
 - `app.path` is present when the app is installed. `build` is CFBundleVersion, which grows with every release; `version` is CFBundleShortVersionString.
 - `extension.state` (open set): `enabled`, `disabled`, `notDiscovered` (also when the app isn't installed), `unknown`. Treat an unknown value like `unknown`.
 - `extension.otherCopies`: paths of other copies of the app that macOS has registered and that still exist (a download, a backup). macOS can switch on the wrong copy's extension, so ask the person to keep only the installed one. Empty when there are none or the app isn't installed.
