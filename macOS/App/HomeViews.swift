@@ -152,7 +152,7 @@ struct DriveHomeContent: View {
                 }
             }
         }
-        // Rows, notices and sections that come and go settle into place; the headline's words blur across.
+        // Rows, notices and sections that come and go settle into place; the state's words blur across.
         .airAnimation(AirMotion.settle, value: Self.motionKey(presentation))
         .airSurface()
         .frame(minWidth: 560, minHeight: 520)
@@ -195,13 +195,15 @@ struct MenuBarPanel: View {
             }
             if presentation.showsPrimary { ActionRow(presentation: presentation, actions: actions, large: false) }
             if listsDrives {
+                // The list's closing hairline is the panel's rule here.
                 AirRows {
                     ForEach(presentation.drives) { row in
                         DriveListRow(row: row, compact: true, perform: actions.drive)
                     }
                 }
+            } else {
+                AirHairline()
             }
-            AirHairline()
             HStack(spacing: Air.Space.sm) {
                 Button("Show ParaAir", action: actions.showHome)
                 Button("Storage Settings…", action: actions.openStorageSettings)
@@ -278,7 +280,6 @@ private struct DriveHeader: View {
                     .minimumScaleFactor(0.8)
                     .airUnderlined()
                 StatusLine(status: status, size: size == .window ? 15 : 13)
-                    .airClearsFlight()
                     .id(status.title)
                     .airTransition(.words)
             }

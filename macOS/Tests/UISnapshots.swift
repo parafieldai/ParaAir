@@ -2119,7 +2119,7 @@ struct UISnapshots {
 
     @MainActor
     static func render<V: View>(_ view: V, size: CGSize?, appearance: NSAppearance.Name, to url: URL) throws {
-        // Ambient motion (the airflow drift, the working shimmer) holds still, so captures show the resting frame.
+        // Ambient motion (the lead plane's entrance, the working shimmer) holds still, so captures show the resting frame.
         let host = NSHostingView(rootView: view.environment(\.controlActiveState, .key).environment(\.airAmbientMotion, false))
         let frameSize = size ?? host.fittingSize
         host.frame = NSRect(origin: .zero, size: frameSize)
