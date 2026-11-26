@@ -18,8 +18,11 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
         public var maxResponseBytes = 4 << 20
         /// Route template for logs, for example "GET /v1/drives/{d}/stat". Paths are never logged.
         public var route: String? = nil
-        /// Shorter idle timeout than the session's, for calls on latency-sensitive queues.
+        /// Idle timeout instead of the default (the configuration's, at most 30 s): shorter for calls on
+        /// latency-sensitive queues, longer (up to `ParaAirCloudConfiguration.chunkUploadTimeout`) for chunk uploads.
         public var timeout: TimeInterval? = nil
+        /// Stops the request when cancelled (ECANCELED); one started after the cancel is never sent.
+        var cancellation: ParaAirCloudCancellation? = nil
         public init(method: String, path: String, query: [URLQueryItem] = [], headers: [String: String] = [:],
                     body: Data? = nil, maxResponseBytes: Int = 4 << 20, route: String? = nil) {
             self.method = method; self.path = path; self.query = query; self.headers = headers
@@ -37,6 +40,8 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
 
     public let baseURL: URL
     let policy: ParaAirCloudTransportPolicy
+    /// The idle timeout of a request that doesn't ask for another: the configuration's, at most 30 s.
+    let defaultTimeout: TimeInterval
     /// Fail-fast window after an offline-class transport failure; tests shorten it.
     var offlineBackoffInterval: TimeInterval = 5
     private let queue = DispatchQueue(label: "dev.streamdrive.cloud.http")
@@ -55,6 +60,7 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
         let limit: Int
         let route: String
         let probe: Bool
+        var cancellation: ParaAirCloudCancellation?
         let started = DispatchTime.now()
         var response: HTTPURLResponse?
         var body = Data()
@@ -93,13 +99,16 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
         let issuer = try ParaAirCloudIssuer.validate(baseURL.absoluteString)
         try policy.validate(issuer)
         self.baseURL = issuer; self.policy = policy
+        defaultTimeout = min(configuration.timeoutIntervalForRequest, ParaAirCloudConfiguration.requestTimeout)
         super.init()
         let config = configuration.copy() as! URLSessionConfiguration
         config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
         config.httpShouldSetCookies = false; config.httpCookieAcceptPolicy = .never
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.waitsForConnectivity = false
-        config.timeoutIntervalForRequest = min(config.timeoutIntervalForRequest, 30)
+        // URLSession applies the shorter of the session's and the request's timeout, so the session allows the longest
+        // any request asks for and every request sets its own (`start`).
+        config.timeoutIntervalForRequest = max(defaultTimeout, ParaAirCloudConfiguration.chunkUploadTimeout)
         config.timeoutIntervalForResource = min(config.timeoutIntervalForResource, 600)
         config.httpMaximumConnectionsPerHost = 8
         let delegateQueue = OperationQueue()
@@ -215,7 +224,7 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
         guard let url = URL(string: baseURL.absoluteString + request.path + query) else { return refuse("address") }
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = request.method
-        urlRequest.timeoutInterval = min(request.timeout ?? .infinity, session.configuration.timeoutIntervalForRequest)
+        urlRequest.timeoutInterval = min(request.timeout ?? defaultTimeout, session.configuration.timeoutIntervalForRequest)
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue("mac/" + ParaAirCloudConfiguration.clientVersion, forHTTPHeaderField: "X-ParaAir-Client")
         for (name, value) in request.headers { urlRequest.setValue(value, forHTTPHeaderField: name) }
@@ -228,6 +237,10 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
         if closed {
             lock.unlock()
             completion(.failure(DriveError(EBADF, "The ParaAir Cloud connection is closed", disposition: .attemptNotDispatched))); return nil
+        }
+        if request.cancellation?.isCancelled == true {
+            lock.unlock()
+            completion(.failure(ParaAirCloudCancellation.stopped(disposition: .attemptNotDispatched))); return nil
         }
         var probe = false
         if let until = offlineUntil {
@@ -242,8 +255,11 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
         let state = Self.signposter.beginInterval("request", id: Self.signposter.makeSignpostID())
         let entry = Pending(limit: request.maxResponseBytes, route: route, probe: probe, signpost: state, completion: completion)
         entry.owner = self
+        entry.cancellation = request.cancellation
         pending[task.taskIdentifier] = entry
         lock.unlock()
+        // A cancel from here on cancels the task, before or after it starts; its completion reports ECANCELED.
+        request.cancellation?.register(task)
         task.resume()
         return task
     }
@@ -264,6 +280,7 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
         guard let task else { return nil }
         lock.lock(); defer { lock.unlock() }
         guard let state = pending.removeValue(forKey: task.taskIdentifier), state.completion != nil else { return nil }
+        state.cancellation?.unregister(task)
         return state
     }
 
@@ -342,12 +359,84 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let state = take(task) else { return }
-        if let error { finish(state, .failure(ParaAirCloudErrorMap.transport(error))); return }
+        if let error {
+            // Cancelled by its token (an upload stopped on purpose), not by closing the client.
+            if (error as? URLError)?.code == .cancelled, state.cancellation?.isCancelled == true {
+                finish(state, .failure(ParaAirCloudCancellation.stopped(disposition: .ambiguous))); return
+            }
+            finish(state, .failure(ParaAirCloudErrorMap.transport(error))); return
+        }
         lock.lock(); let response = state.response, body = state.body; lock.unlock()
         guard let response else { finish(state, .failure(DriveError(EIO, "ParaAir Cloud returned an invalid response", disposition: .ambiguous))); return }
         var headers: [String: String] = [:]
         for (key, value) in response.allHeaderFields { if let key = key as? String { headers[key.lowercased()] = String(describing: value) } }
         finish(state, .success(Response(status: response.statusCode, headers: headers, body: body)))
+    }
+}
+
+/// Stops work on purpose: an upload whose file was deleted, or every call of a drive being unmounted. Cancelling
+/// cancels the requests registered with it and with its children, wakes `wait`, and refuses requests started later.
+/// Its own lock is never held while a task is cancelled, and it never takes the HTTP client's lock.
+final class ParaAirCloudCancellation: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var cancelled = false
+    private var tasks: [Int: URLSessionTask] = [:]
+    private var children: [ObjectIdentifier: Weak] = [:]
+    private struct Weak { weak var value: ParaAirCloudCancellation? }
+
+    init() {}
+
+    /// The error of a request this stopped. Not sent: nothing reached the service. Cut off: it may have.
+    static func stopped(disposition: CommitDisposition) -> DriveError {
+        DriveError(ECANCELED, "The upload was stopped", disposition: disposition)
+    }
+
+    var isCancelled: Bool { condition.lock(); defer { condition.unlock() }; return cancelled }
+
+    /// A token cancelled with this one (already cancelled if this one is) that can also be cancelled on its own.
+    func child() -> ParaAirCloudCancellation {
+        let made = ParaAirCloudCancellation()
+        condition.lock()
+        let already = cancelled
+        if !already {
+            children = children.filter { $0.value.value != nil }
+            children[ObjectIdentifier(made)] = Weak(value: made)
+        }
+        condition.unlock()
+        if already { made.cancel() }
+        return made
+    }
+
+    func cancel() {
+        condition.lock()
+        guard !cancelled else { condition.unlock(); return }
+        cancelled = true
+        let running = Array(tasks.values), descendants = children.values.compactMap(\.value)
+        tasks = [:]; children = [:]
+        condition.broadcast()
+        condition.unlock()
+        for task in running { task.cancel() }
+        for child in descendants { child.cancel() }
+    }
+
+    /// Cancels `task` now if this is already cancelled, so its completion reports the stop.
+    func register(_ task: URLSessionTask) {
+        condition.lock()
+        if cancelled { condition.unlock(); task.cancel(); return }
+        tasks[task.taskIdentifier] = task
+        condition.unlock()
+    }
+
+    func unregister(_ task: URLSessionTask) {
+        condition.lock(); tasks[task.taskIdentifier] = nil; condition.unlock()
+    }
+
+    /// Sleeps up to `seconds`; false when cancelled before or during the wait.
+    func wait(_ seconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(max(0, seconds))
+        condition.lock(); defer { condition.unlock() }
+        while !cancelled, Date() < deadline { _ = condition.wait(until: deadline) }
+        return !cancelled
     }
 }
 

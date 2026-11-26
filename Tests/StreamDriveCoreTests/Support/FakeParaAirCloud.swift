@@ -82,6 +82,8 @@ final class FakeParaAirCloud: @unchecked Sendable {
         let query: [String: String]
         let headers: [String: String]
         let body: Data
+        /// The idle timeout the client gave the request.
+        var timeout: TimeInterval = 0
         var bearer: String? { headers["authorization"].map { String($0.dropFirst("Bearer ".count)) } }
     }
     struct Account { let userID: String; let workspaceID: String; let driveID: String; let email: String }
@@ -129,8 +131,16 @@ final class FakeParaAirCloud: @unchecked Sendable {
     /// Replaces the URL a checkout or portal reply carries (to test the client's host policy).
     var checkoutURLOverride: String?
     var portalURLOverride: String?
+    /// Chunk leases (the service's D1 lease, spec 4.4): a PUT of a leased chunk that isn't stored is 503 `chunk_busy`.
+    /// With `cutOffLease`, a chunk PUT cut off by an injected transport fault keeps its chunk leased that long, as the
+    /// service does for a PUT whose Worker was stopped. `busyRetryAfter` is the Retry-After of those answers.
+    var cutOffLease: TimeInterval?
+    var busyRetryAfter: Int?
 
     private let lock = NSRecursiveLock()
+    private var leases: [String: Date] = [:]                // sha → leased until
+    private var busyAnswers: [String: Int] = [:]            // sha → busy answers left
+    private var storedAfterBusy: Set<String> = []           // shas another PUT stores right after a busy answer
     private var nextID: Int64 = 1
     private var faults: [Fault] = []
     private var log: [LoggedRequest] = []
@@ -300,6 +310,16 @@ final class FakeParaAirCloud: @unchecked Sendable {
     func storedChunkCount(workspaceID: String) -> Int { locked { chunks[workspaceID]?.count ?? 0 } }
     func expireUploads() { locked { for key in uploads.keys { uploads[key]!.expiresAt = Date(timeIntervalSince1970: 0) } } }
     func dropChunk(workspaceID: String, sha256: String) { locked { chunks[workspaceID]?[sha256] = nil } }
+    /// Another PUT holds the chunk for `seconds`.
+    func leaseChunk(_ sha256: String, for seconds: TimeInterval) { locked { leases[sha256] = Date().addingTimeInterval(seconds) } }
+    /// The chunk's next `answers` PUTs are `chunk_busy`, however long they take to come.
+    func busyChunk(_ sha256: String, answers: Int) { locked { busyAnswers[sha256] = answers } }
+    /// The PUT that holds the chunk finishes right after the chunk's next busy answer: the chunk is stored.
+    func storeAfterBusy(_ sha256: String) { locked { _ = storedAfterBusy.insert(sha256) } }
+    /// The chunk PUTs that carried `sha256`.
+    func chunkPuts(_ sha256: String) -> Int {
+        locked { log.filter { $0.route == "PUT /v1/drives/{d}/chunks/{sha}" && $0.path.hasSuffix("/" + sha256) }.count }
+    }
     func isFenced(driveID: String, transactionID: String) -> Bool { locked { fences.contains(driveID + "|" + transactionID.lowercased()) } }
     func liveDriveCount(workspaceID: String) -> Int { locked { drives.values.filter { $0.workspace == workspaceID }.count } }
 
@@ -387,7 +407,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
         let route = Self.route(method: method, path: path)
         lock.lock()
         log.append(LoggedRequest(method: method, route: route, path: path, rawQuery: url.query(percentEncoded: true), query: query ?? [:],
-                                 headers: headers, body: body))
+                                 headers: headers, body: body, timeout: request.timeoutInterval))
         let wait = delays[route]
         inFlight[route, default: 0] += 1; peak[route] = max(peak[route] ?? 0, inFlight[route]!)
         lock.unlock()
@@ -405,6 +425,9 @@ final class FakeParaAirCloud: @unchecked Sendable {
             return .reply(dated(errorReply(status: status, code: code, retryAfter: retryAfter, missing: missing)))
         case .transport(let code, let after)?:
             if after { _ = dispatch(method: method, path: path, query: query, headers: headers, body: body) }
+            else if route == "PUT /v1/drives/{d}/chunks/{sha}", let lease = locked({ cutOffLease }) {
+                leaseChunk(String(path.split(separator: "/").last ?? ""), for: lease)
+            }
             return .transport(code)
         case .hang?: return .hang
         case .redirect(let location)?: return .redirect(location)
@@ -1442,6 +1465,15 @@ final class FakeParaAirCloud: @unchecked Sendable {
         guard let declared = upload.chunks.first(where: { $0.sha == sha }) else { throw Fail(code: "chunk_not_in_upload") }
         guard body.count == declared.size else { throw Fail(code: "size_mismatch") }
         if chunks[drive.workspace]?[sha] != nil { return json(200, ["stored": false]) }
+        let counted = (busyAnswers[sha] ?? 0) > 0
+        if counted || leases[sha].map({ $0 > Date() }) == true {
+            if counted { busyAnswers[sha]! -= 1 }
+            if storedAfterBusy.remove(sha) != nil {
+                guard Self.hex(body) == sha else { throw Fail(code: "chunk_hash_mismatch") }
+                chunks[drive.workspace, default: [:]][sha] = body; leases[sha] = nil; busyAnswers[sha] = nil
+            }
+            throw Fail(code: "chunk_busy", retryAfter: busyRetryAfter)
+        }
         guard Self.hex(body) == sha else { throw Fail(code: "chunk_hash_mismatch") }
         chunks[drive.workspace, default: [:]][sha] = body
         workspaces[drive.workspace]!.bytesIn += Int64(body.count)

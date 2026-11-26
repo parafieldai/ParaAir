@@ -17,6 +17,17 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
         public var capacityLifetime: TimeInterval = 60
         /// One attempt with this idle timeout: FSKit asks for capacity on its own queue.
         public var capacityTimeout: TimeInterval = 10
+        /// How long one upload keeps going after the service first refused a chunk (`putChunks`), waits and further
+        /// rounds of PUTs included, before it ends with the last refusal; the engine tries the file again later, and other
+        /// files upload meanwhile. Each wait is for a chunk that may go again within `longestChunkWait`.
+        public var chunkWaitBudget: TimeInterval = 30
+        public var longestChunkWait: TimeInterval = 10
+        /// The wait before a refused chunk (`chunk_busy`, throttled, a service error) goes again when the service names a
+        /// shorter one or none, doubled for each refusal in a row, up to the service's chunk lease. More than zero.
+        public var chunkRetryFloor: TimeInterval = 5
+        /// A chunk whose PUT stopped without an answer isn't sent again for this long, unless the service lists it as
+        /// stored: the service may keep it for that PUT until its lease runs out.
+        public var cutOffChunkWait: TimeInterval = ParaAirCloudConfiguration.chunkLease
         public init() {}
     }
 
@@ -38,6 +49,13 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
     private var unfenced = Set<String>()
     private var readBytes: Int64 = 0
     private var getRequests: Int64 = 0
+    /// Cancelled by `close`: every call in flight stops, including uploads' waits.
+    private let stopping = ParaAirCloudCancellation()
+    /// The upload in flight per transaction, and the transactions `cancelCommit` stopped.
+    private var commitsInFlight: [String: ParaAirCloudCancellation] = [:]
+    private var cancelledCommits = Set<String>()
+    /// Chunks the service didn't take, by SHA-256, and when each may be sent again (`putChunks`).
+    private var holds: [String: ChunkHold] = [:]
 
     /// No network and no Keychain access: validates the drive id and binds the volume identity.
     public convenience init(driveID: String, session: ParaAirCloudSession, options: Options = .init(), bindVolume: (String) throws -> Void) throws {
@@ -49,7 +67,8 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
          api: @escaping () throws -> ParaAirCloudAPI, now: @escaping () -> Date = { Date() }) throws {
         guard ParaAirCloudIDs.isDriveID(driveID) else { throw DriveError(EINVAL, "Invalid ParaAir Cloud drive identifier") }
         guard options.maxConcurrentChunkUploads > 0, options.manifestCacheEntries > 0, (1...4096).contains(options.manifestPage),
-              options.maxListEntries > 0 else { throw DriveError(EINVAL, "Invalid ParaAir Cloud backend options") }
+              options.maxListEntries > 0, options.chunkRetryFloor > 0, options.cutOffChunkWait >= 0, options.longestChunkWait >= 0,
+              options.chunkWaitBudget >= 0 else { throw DriveError(EINVAL, "Invalid ParaAir Cloud backend options") }
         self.driveID = driveID; self.options = options; self.makeAPI = api; self.now = now
         try bindVolume(Self.volumeIdentity(driveID: driveID))
     }
@@ -59,6 +78,7 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
         guard !closed else { throw DriveError(EBADF, "ParaAir Cloud drive is closed", disposition: .attemptNotDispatched) }
         if let apiInstance { return apiInstance }
         let created = try makeAPI()
+        created.cancellation = stopping
         apiInstance = created
         return created
     }
@@ -166,8 +186,26 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
         return TransferMetrics(objectReadBytes: readBytes, objectGetRequests: getRequests)
     }
 
+    /// Also stops what is in flight: requests end with ECANCELED and an upload stops where it is (the engine keeps its
+    /// change), so an unmounted drive's extension doesn't keep uploading.
     public func close() throws {
         lock.lock(); closed = true; manifests = [:]; manifestOrder = []; token = nil; lock.unlock()
+        stopping.cancel()
+    }
+
+    public func cancelCommit(transactionID: String, cancelled: Bool) {
+        let transaction = transactionID.lowercased()
+        lock.lock()
+        if cancelled {
+            // Each entry is a deleted file's change, which never uploads again; the set only has to outlive the delete.
+            if cancelledCommits.count >= 1024 { cancelledCommits.removeAll() }
+            cancelledCommits.insert(transaction)
+        } else {
+            cancelledCommits.remove(transaction)
+        }
+        let running = cancelled ? commitsInFlight[transaction] : nil
+        lock.unlock()
+        running?.cancel()
     }
 
     public func collaboration() throws -> DriveCollaboration? { self }
@@ -275,6 +313,81 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
 
     private struct UploadFailure: Error { var error: ParaAirCloudCallError }
 
+    /// A chunk the service didn't take: when it may be sent again, how many refusals in a row, and the latest.
+    private struct ChunkHold {
+        var until: Date
+        var streak: Int
+        var error: ParaAirCloudCallError
+    }
+    /// The chunks a round of `putChunks` left for later: when the first may go again, and the latest refusal.
+    private struct Deferred {
+        var earliest: Date
+        var error: ParaAirCloudCallError
+    }
+    /// How a refused chunk PUT is tried again.
+    enum ChunkRefusal: Equatable {
+        /// `chunk_busy`: another PUT holds this chunk. After the service's Retry-After; the other chunks go on.
+        case busy
+        /// Throttled (`rate_limited`): after the service's Retry-After.
+        case throttled
+        /// The service answered with an error of its own (it frees the chunk first): after a growing wait.
+        case serviceError
+        /// No answer: a timeout, a lost connection, or a 5xx the service didn't write (Cloudflare's own page when it
+        /// stopped the Worker). The PUT may have reached the service, which then keeps the chunk until its lease runs out.
+        case cutOff
+        /// Every refusal but `busy` is about the service, not the chunk: no further chunks are sent into it this round.
+        var stopsOtherChunks: Bool { self != .busy }
+    }
+
+    /// Nil for a failure that ends the upload: refused for good (quota, access, upload expired), offline (nothing was
+    /// sent; the client fails fast for a while), or stopped on purpose (ECANCELED, a closed client).
+    static func chunkRefusal(_ error: ParaAirCloudCallError) -> ChunkRefusal? {
+        switch error.code {
+        case .chunkBusy?: return .busy
+        case .rateLimited?: return .throttled
+        case .internal?, .unavailable?, .storageUnavailable?: return .serviceError
+        case nil where error.drive.disposition == .ambiguous && error.drive.code != ECANCELED && error.drive.code != EBADF:
+            return .cutOff
+        default: return nil
+        }
+    }
+
+    /// The most times one upload asks again which chunks the service lacks after a refusal.
+    static let maxChunkRounds = 8
+
+    /// Registers the upload of `transaction` so `cancelCommit` and `close` can stop it.
+    private func beginCommit(_ transaction: String) throws -> ParaAirCloudCancellation {
+        lock.lock(); defer { lock.unlock() }
+        guard !cancelledCommits.contains(transaction) else { throw ParaAirCloudCancellation.stopped(disposition: .attemptNotDispatched) }
+        let running = stopping.child()
+        commitsInFlight[transaction] = running
+        return running
+    }
+    private func endCommit(_ transaction: String, _ running: ParaAirCloudCancellation) {
+        lock.lock(); if commitsInFlight[transaction] === running { commitsInFlight[transaction] = nil }; lock.unlock()
+    }
+
+    /// Records that the service didn't take `sha`, and returns when it may be sent again.
+    private func hold(_ sha: String, after error: ParaAirCloudCallError, as refusal: ChunkRefusal) -> Date {
+        let at = now()
+        lock.lock(); defer { lock.unlock() }
+        // A refusal long after the last one starts a new streak.
+        let previous = holds[sha].flatMap { at.timeIntervalSince($0.until) < ParaAirCloudConfiguration.chunkLease ? $0 : nil }
+        let streak = (previous?.streak ?? 0) + 1
+        let growing = min(options.chunkRetryFloor * pow(2, Double(min(streak - 1, 16))), ParaAirCloudConfiguration.chunkLease)
+        let wait: TimeInterval
+        switch refusal {
+        case .cutOff: wait = options.cutOffChunkWait
+        case .busy, .throttled, .serviceError: wait = max(TimeInterval(error.retryAfterSeconds ?? 0), growing)
+        }
+        let until = at.addingTimeInterval(wait)
+        holds[sha] = ChunkHold(until: until, streak: streak, error: error)
+        // Only holds that ended long ago go: few chunks are refused at once, since a refusal of the service stops the
+        // round (`ChunkRefusal.stopsOtherChunks`).
+        if holds.count > 4096 { holds = holds.filter { at.timeIntervalSince($0.value.until) < ParaAirCloudConfiguration.chunkLease } }
+        return until
+    }
+
     /// Spec 2.4: failures before the commit POST is handed to URLSession are
     /// `.attemptNotDispatched`; fencing codes are `.transactionAbsent`; a 5xx or
     /// transport failure of the commit POST itself stays `.ambiguous`.
@@ -284,6 +397,8 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
             return drive.disposition == .transactionAbsent ? drive : drive.with(.attemptNotDispatched)
         }
         let transaction = commit.transactionID.lowercased()
+        let running = try beginCommit(transaction)
+        defer { endCommit(transaction, running) }
         var base: (refs: [ParaAirCloudManifestPage.ChunkRef], workspaceID: String)?
         let plan: ParaAirCloudChunkPlan
         var hashes: [String] = []
@@ -310,7 +425,7 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
         func reserve() throws -> FileEntry? {
             let result: ParaAirCloudReserveResult
             // A malformed acknowledgement (a plain DriveError) keeps its ambiguous disposition.
-            do { result = try api.rawReserve(driveID: driveID, request) }
+            do { result = try api.rawReserve(driveID: driveID, request, cancellation: running) }
             catch let error as ParaAirCloudCallError {
                 if error.drive.disposition == .ambiguous { opened = true }
                 throw notDispatched(error)
@@ -321,11 +436,15 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
             }
         }
         upload = ("", [])
+        // When the service first refused a chunk, and rounds since (`Options.chunkWaitBudget`, `maxChunkRounds`): rounds of
+        // slow PUTs count too, so a service that keeps cutting PUTs off can't hold the upload forever.
+        var firstRefusal: Date?, rounds = 0
         do {
             if let replayed = try reserve() { return replayed }
             while true {
+                let left: Deferred?
                 do {
-                    try putChunks(upload.missing, upload: upload.id, plan: plan, hashes: hashes, api: api, base: base)
+                    left = try putChunks(upload.missing, upload: upload.id, plan: plan, hashes: hashes, api: api, base: base, cancellation: running)
                 } catch let failure as UploadFailure {
                     if [.uploadExpired, .uploadNotFound].contains(failure.error.code), !revived {
                         revived = true
@@ -334,8 +453,22 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
                     }
                     throw notDispatched(failure.error)
                 } catch { throw notDispatched(error) }
+                if let left {
+                    // Some chunks wait. If the first may go again soon, wait for it, then ask the service which chunks it
+                    // still lacks (a reserve of the same transaction, no bodies): a held chunk another PUT finished meanwhile
+                    // is never sent again. Otherwise the upload ends here and the engine tries the file later.
+                    let at = now()
+                    let since = firstRefusal ?? at
+                    firstRefusal = since; rounds += 1
+                    let delay = max(0, left.earliest.timeIntervalSince(at))
+                    guard delay <= options.longestChunkWait, at.timeIntervalSince(since) + delay <= options.chunkWaitBudget,
+                          rounds <= Self.maxChunkRounds else { throw notDispatched(left.error) }
+                    guard running.wait(delay) else { throw ParaAirCloudCancellation.stopped(disposition: .attemptNotDispatched) }
+                    if let replayed = try reserve() { return replayed }
+                    continue
+                }
                 do {
-                    let result = try api.rawCommit(driveID: driveID, uploadID: upload.id, path: commit.path)
+                    let result = try api.rawCommit(driveID: driveID, uploadID: upload.id, path: commit.path, cancellation: running)
                     remember(result.capacity)
                     return try validated(result.entry, for: commit)
                 } catch let error as ParaAirCloudCallError {
@@ -399,24 +532,44 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
         }
     }
 
-    /// Uploads the missing chunks, at most `maxConcurrentChunkUploads` at a time, each
-    /// built just before its PUT so at most that many chunks are resident.
+    /// Uploads the missing chunks, at most `maxConcurrentChunkUploads` at a time, each built just before its PUT so at
+    /// most that many chunks are resident. A chunk the service refuses for now (`chunkRefusal`) is held (`hold`) and left
+    /// for later, and so is one still held from an earlier refusal, whose body isn't sent at all. A busy chunk doesn't
+    /// stop the others; a refusal of the service (throttled, its own error, a cut-off) stops sending further chunks this
+    /// round, and those not sent wait unheld for the next round. Returns what was left, or nil when the service has
+    /// every chunk. Any other failure stops the upload.
     private func putChunks(_ missing: [String], upload: String, plan: ParaAirCloudChunkPlan, hashes: [String], api: ParaAirCloudAPI,
-                           base: (refs: [ParaAirCloudManifestPage.ChunkRef], workspaceID: String)?) throws {
+                           base: (refs: [ParaAirCloudManifestPage.ChunkRef], workspaceID: String)?,
+                           cancellation: ParaAirCloudCancellation) throws -> Deferred? {
         var firstIndex: [String: Int] = [:]
         for (index, sha) in hashes.enumerated() where firstIndex[sha] == nil { firstIndex[sha] = index }
-        let work = try missing.map { sha -> Int in
+        let indices = try missing.map { sha -> Int in
             guard let index = firstIndex[sha] else { throw DriveError(EIO, "ParaAir Cloud asked for unknown data") }
             return index
         }
-        guard !work.isEmpty else { return }
+        var left: Deferred?
+        func leave(_ until: Date, _ error: ParaAirCloudCallError) {
+            left = Deferred(earliest: min(left?.earliest ?? until, until), error: error)
+        }
+        let started = now()
+        var work: [Int] = []
+        lock.lock()
+        for index in indices {
+            if let held = holds[hashes[index]], held.until > started { leave(held.until, held.error) } else { work.append(index) }
+        }
+        lock.unlock()
+        guard !work.isEmpty else { return left }
         let state = NSLock()
         var next = 0
         var failure: Error?
+        var serviceRefused = false
         DispatchQueue.concurrentPerform(iterations: min(options.maxConcurrentChunkUploads, work.count)) { _ in
             while true {
                 state.lock()
-                guard failure == nil, next < work.count else { state.unlock(); return }
+                guard failure == nil, !serviceRefused, next < work.count else { state.unlock(); return }
+                if cancellation.isCancelled {
+                    failure = ParaAirCloudCancellation.stopped(disposition: .attemptNotDispatched); state.unlock(); return
+                }
                 let index = work[next]; next += 1
                 state.unlock()
                 do {
@@ -427,10 +580,16 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
                         guard ParaAirCloudAPI.hex(SHA256.hash(data: bytes)) == hashes[index] else {
                             throw DriveError(EIO, "Pending local data changed during upload")
                         }
-                        do { try api.rawPutChunk(driveID: driveID, uploadID: upload, sha256: hashes[index], body: bytes); break }
-                        catch let error as ParaAirCloudCallError {
+                        do {
+                            try api.rawPutChunk(driveID: driveID, uploadID: upload, sha256: hashes[index], body: bytes, cancellation: cancellation)
+                            lock.lock(); holds[hashes[index]] = nil; lock.unlock()
+                            break
+                        } catch let error as ParaAirCloudCallError {
                             if [.sizeMismatch, .chunkHashMismatch].contains(error.code), !resent { resent = true; continue }
-                            throw UploadFailure(error: error)
+                            guard let refusal = Self.chunkRefusal(error) else { throw UploadFailure(error: error) }
+                            let until = hold(hashes[index], after: error, as: refusal)
+                            state.lock(); leave(until, error); if refusal.stopsOtherChunks { serviceRefused = true }; state.unlock()
+                            break
                         }
                     }
                 } catch {
@@ -440,6 +599,7 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
             }
         }
         if let failure { throw failure }
+        return left
     }
 }
 

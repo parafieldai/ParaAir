@@ -323,8 +323,10 @@ final class ParaAirCloudBackendTests: XCTestCase {
         XCTAssertEqual(fake.requests(reserveRoute).count, 3)
         fake.inject(route: reserveRoute, status: 429, code: "too_many_uploads")
         expectDriveError(EAGAIN, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/b", Data("b".utf8))) }
-        fake.injectTransport(.timedOut, route: putRoute, times: 3)
+        // A chunk PUT is sent once per attempt: a resend carries the whole body.
+        fake.injectTransport(.timedOut, route: putRoute)
         expectDriveError(ETIMEDOUT, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/c", Data("c".utf8))) }
+        XCTAssertEqual(fake.requests(putRoute).count, 1)
         fake.inject(route: putRoute, status: 422, code: "chunk_hash_mismatch", times: 2)
         expectDriveError(EIO, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/d", Data("d".utf8))) }
         XCTAssertEqual(fake.requests(commitRoute).count, 0)
@@ -342,10 +344,12 @@ final class ParaAirCloudBackendTests: XCTestCase {
     /// identity, and the service matches open uploads only by transaction, so otherwise every
     /// retry reserves the full size again until the abandoned uploads expire (12 h).
     func testFailedAttemptAfterReserveReleasesItsReservation() throws {
-        let b = try backend()
+        // A cut-off chunk may go again after 0.2 s, never within the attempt that lost it.
+        var options = ParaAirCloudBackend.Options(); options.cutOffChunkWait = 0.2; options.longestChunkWait = 0
+        let b = try backend(options)
         let reserved = { self.fake.reservedBytes(workspaceID: self.account.workspaceID) }
         let first = UUID().uuidString
-        fake.injectTransport(.timedOut, route: putRoute, times: 3)
+        fake.injectTransport(.timedOut, route: putRoute)
         expectDriveError(ETIMEDOUT, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/a", seededBytes(1000, seed: 31), transaction: first)) }
         XCTAssertTrue(fake.isFenced(driveID: account.driveID, transactionID: first))
         XCTAssertEqual(reserved(), 0)
@@ -357,22 +361,245 @@ final class ParaAirCloudBackendTests: XCTestCase {
         XCTAssertEqual(reserved(), 0)
         // The fence is unreachable too: it is sent before the next commit.
         let unreachable = UUID().uuidString, third = seededBytes(1000, seed: 33)
-        fake.injectTransport(.timedOut, route: putRoute, times: 3)
+        fake.injectTransport(.timedOut, route: putRoute)
         fake.injectTransport(.timedOut, route: fenceRoute, times: 3)
         expectDriveError(ETIMEDOUT, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/c", third, transaction: unreachable)) }
         XCTAssertFalse(fake.isFenced(driveID: account.driveID, transactionID: unreachable))
         XCTAssertEqual(reserved(), 1000)
+        Thread.sleep(forTimeInterval: 0.25)
         XCTAssertEqual(try b.commit(create("/c", third)).size, 1000)
         XCTAssertTrue(fake.isFenced(driveID: account.driveID, transactionID: unreachable))
         XCTAssertEqual(reserved(), 0)
         // A retry under the same identity resumes its upload instead of fencing it.
         let resumed = UUID().uuidString, fourth = seededBytes(1000, seed: 34)
-        fake.injectTransport(.timedOut, route: putRoute, times: 3)
+        fake.injectTransport(.timedOut, route: putRoute)
         fake.injectTransport(.timedOut, route: fenceRoute, times: 3)
         expectDriveError(ETIMEDOUT, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/d", fourth, transaction: resumed)) }
+        Thread.sleep(forTimeInterval: 0.25)
         XCTAssertEqual(try b.commit(create("/d", fourth, transaction: resumed)).size, 1000)
         XCTAssertFalse(fake.isFenced(driveID: account.driveID, transactionID: resumed))
         XCTAssertEqual(reserved(), 0)
+    }
+
+    // MARK: A slow or refusing service (docs/speed.md, Bottlenecks 2)
+
+    /// Quick waits for refused chunks, so these tests run in well under a second each.
+    private func pacing(floor: TimeInterval = 0.1, longest: TimeInterval = 2, budget: TimeInterval = 5, cutOff: TimeInterval = 120) -> ParaAirCloudBackend.Options {
+        var options = ParaAirCloudBackend.Options()
+        options.chunkRetryFloor = floor; options.longestChunkWait = longest; options.chunkWaitBudget = budget; options.cutOffChunkWait = cutOff
+        return options
+    }
+    private func chunks(of data: Data) -> [Data] {
+        stride(from: 0, to: data.count, by: chunk).map { data.subdata(in: $0..<min($0 + chunk, data.count)) }
+    }
+
+    /// A chunk another PUT holds doesn't stop the file's other chunks, and isn't sent again until its wait is over; the
+    /// client never sleeps on `chunk_busy` inside the PUT (which resent the whole body each time).
+    func testBusyChunkWaitsWhileTheOthersUpload() throws {
+        let data = seededBytes(chunk + 1000, seed: 40), parts = chunks(of: data)
+        let b = try backend(pacing(floor: 0.25))
+        fake.busyChunk(sha(parts[0]), answers: 2)
+        fake.clearLog()
+        let started = Date()
+        XCTAssertEqual(try b.commit(create("/busy.bin", data)).size, Int64(data.count))
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.75, "waits of 0.25 s, then 0.5 s")
+        XCTAssertEqual(fake.contents(driveID: account.driveID, path: "/busy.bin"), data)
+        XCTAssertEqual(fake.chunkPuts(sha(parts[0])), 3, "busy, busy again after 0.25 s, then stored after 0.5 s more")
+        XCTAssertEqual(fake.chunkPuts(sha(parts[1])), 1, "the other chunk uploads meanwhile")
+        XCTAssertEqual(fake.requests(reserveRoute).count, 3, "the service is asked which chunks it lacks before each resend")
+        XCTAssertEqual(fake.requests(commitRoute).count, 1)
+    }
+
+    /// Ask first: a held chunk that another PUT stored meanwhile is never sent again.
+    func testHeldChunkStoredMeanwhileIsNotSentAgain() throws {
+        let data = seededBytes(chunk + 1000, seed: 41), parts = chunks(of: data)
+        let b = try backend(pacing(floor: 0.2))
+        fake.busyChunk(sha(parts[0]), answers: 5)
+        fake.storeAfterBusy(sha(parts[0]))
+        fake.clearLog()
+        XCTAssertEqual(try b.commit(create("/raced.bin", data)).size, Int64(data.count))
+        XCTAssertEqual(fake.chunkPuts(sha(parts[0])), 1)
+        XCTAssertEqual(fake.chunkPuts(sha(parts[1])), 1)
+        XCTAssertEqual(fake.requests(reserveRoute).count, 2, "asked once more after the wait, and the chunk wasn't missing")
+        XCTAssertEqual(fake.contents(driveID: account.driveID, path: "/raced.bin"), data)
+    }
+
+    /// The service's Retry-After sets the wait when it is longer than the client's own.
+    func testBusyChunkWaitsForRetryAfter() throws {
+        let data = seededBytes(2000, seed: 42)
+        fake.leaseChunk(sha(data), for: 0.5); fake.busyRetryAfter = 1
+        let b = try backend(pacing(floor: 0.05))
+        let started = Date()
+        XCTAssertEqual(try b.commit(create("/after.bin", data)).size, 2000)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 1)
+        XCTAssertEqual(fake.chunkPuts(sha(data)), 2)
+    }
+
+    /// A chunk whose next wait is longer than `longestChunkWait` ends the attempt (EAGAIN, nothing published, the
+    /// reservation released); the next attempt doesn't send its body while it is held, and the engine tries the file later.
+    func testBusyChunkPastTheLongestWaitEndsTheAttempt() throws {
+        let data = seededBytes(chunk + 500, seed: 43), parts = chunks(of: data)
+        fake.leaseChunk(sha(parts[1]), for: 60)
+        let b = try backend(pacing(floor: 0.1, longest: 0.5, budget: 1))
+        fake.clearLog()
+        let transaction = UUID().uuidString
+        expectDriveError(EAGAIN, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/stuck.bin", data, transaction: transaction)) }
+        XCTAssertEqual(fake.chunkPuts(sha(parts[1])), 4, "busy, then after 0.1, 0.2 and 0.4 s; the next wait (0.8 s) is too long")
+        XCTAssertEqual(fake.chunkPuts(sha(parts[0])), 1)
+        XCTAssertTrue(fake.isFenced(driveID: account.driveID, transactionID: transaction))
+        XCTAssertEqual(fake.reservedBytes(workspaceID: account.workspaceID), 0)
+        XCTAssertNil(fake.contents(driveID: account.driveID, path: "/stuck.bin"))
+        fake.clearLog()
+        expectDriveError(EAGAIN, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/stuck.bin", data)) }
+        XCTAssertEqual(fake.requests(putRoute).count, 0, "a held chunk's body isn't sent, and a stored one isn't either")
+        XCTAssertEqual(fake.requests(reserveRoute).count, 1)
+    }
+
+    /// Waits and rounds after the first refusal share one budget per attempt.
+    func testBusyChunkPastTheWaitBudgetEndsTheAttempt() throws {
+        let data = seededBytes(1500, seed: 48)
+        fake.busyChunk(sha(data), answers: 10)
+        let b = try backend(pacing(floor: 0.1, longest: 2, budget: 0.25))
+        expectDriveError(EAGAIN, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/budget.bin", data)) }
+        XCTAssertEqual(fake.chunkPuts(sha(data)), 2, "busy, busy after 0.1 s; 0.1 + 0.2 s is past the 0.25 s budget")
+    }
+
+    /// Throttling, the service's own errors and cut-offs are about the service, not the chunk: once one comes back, no
+    /// further chunks are sent into it this round (the old client stopped at the first error too). A busy chunk doesn't
+    /// stop the others (testBusyChunkWaitsWhileTheOthersUpload).
+    func testServiceRefusalStopsSendingOtherChunks() throws {
+        let data = seededBytes(2 * chunk + 700, seed: 49), parts = chunks(of: data)
+        var options = pacing(floor: 10); options.maxConcurrentChunkUploads = 1
+        let b = try backend(options)
+        fake.inject(route: putRoute, status: 503, code: "unavailable")
+        fake.clearLog()
+        expectDriveError(EIO, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/down.bin", data)) }
+        XCTAssertEqual(fake.requests(putRoute).count, 1, "the other chunks wait for the next attempt")
+        XCTAssertEqual(fake.storedChunkCount(workspaceID: account.workspaceID), 0)
+        // The next attempt sends the chunks that weren't refused; the refused one waits out its hold.
+        fake.clearLog()
+        expectDriveError(EIO, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/down.bin", data)) }
+        XCTAssertEqual(fake.chunkPuts(sha(parts[0])), 0)
+        XCTAssertEqual(fake.chunkPuts(sha(parts[1])), 1)
+        XCTAssertEqual(fake.chunkPuts(sha(parts[2])), 1)
+    }
+
+    /// Rounds that keep failing at once (a service cutting every PUT off) end the attempt: each round counts against the
+    /// budget and the number of rounds is capped, so the upload never holds its file and the upload queue forever.
+    func testRoundsThatStoreNothingEndTheAttempt() throws {
+        let data = seededBytes(1200, seed: 53)
+        fake.injectTransport(.timedOut, route: putRoute, times: 1000)
+        let b = try backend(pacing(longest: 1, budget: 60, cutOff: 0))
+        let started = Date()
+        expectDriveError(ETIMEDOUT, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/endless.bin", data)) }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10)
+        XCTAssertEqual(fake.chunkPuts(sha(data)), ParaAirCloudBackend.maxChunkRounds + 1)
+    }
+
+    /// A PUT that stopped without an answer may leave the chunk leased on the service (Workers' CPU limit cut-offs): it
+    /// isn't sent again until the lease could have run out, unless the service lists it as stored. The other chunks go on.
+    func testCutOffChunkWaitsForTheLease() throws {
+        let data = seededBytes(2 * chunk, seed: 44), parts = chunks(of: data)
+        var options = pacing(); options.maxConcurrentChunkUploads = 1
+        fake.cutOffLease = 60
+        fake.injectTransport(.timedOut, route: putRoute)
+        let b = try backend(options)
+        fake.clearLog()
+        expectDriveError(ETIMEDOUT, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/cut.bin", data)) }
+        XCTAssertEqual(fake.chunkPuts(sha(parts[0])), 1)
+        XCTAssertEqual(fake.chunkPuts(sha(parts[1])), 0, "a cut-off stops sending into the service this round")
+        fake.clearLog()
+        expectDriveError(ETIMEDOUT, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/cut.bin", data)) }
+        XCTAssertEqual(fake.chunkPuts(sha(parts[0])), 0, "held for the lease")
+        XCTAssertEqual(fake.chunkPuts(sha(parts[1])), 1, "the other chunk goes in the next attempt")
+        XCTAssertEqual(fake.storedChunkCount(workspaceID: account.workspaceID), 1)
+        fake.clearLog()
+        expectDriveError(ETIMEDOUT, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/cut.bin", data)) }
+        XCTAssertEqual(fake.requests(putRoute).count, 0)
+        // Once the lease could have run out, the chunk goes again.
+        fake.cutOffLease = 0.2
+        fake.injectTransport(.timedOut, route: putRoute)
+        let short = try backend(pacing(longest: 1, cutOff: 0.3))
+        let other = seededBytes(3000, seed: 45)
+        fake.clearLog()
+        XCTAssertEqual(try short.commit(create("/later.bin", other)).size, 3000)
+        XCTAssertEqual(fake.chunkPuts(sha(other)), 2)
+    }
+
+    /// Chunk PUTs wait longer than the service's 60 s idle cut-off for a body; other requests keep the 30 s default
+    /// (here the test configuration's 10 s).
+    func testChunkPutOutlastsTheServiceIdleTimeout() throws {
+        let b = try backend()
+        fake.clearLog()
+        _ = try b.commit(create("/timeouts.bin", Data("t".utf8)))
+        XCTAssertEqual(fake.requests(putRoute).first?.timeout, ParaAirCloudConfiguration.chunkUploadTimeout)
+        XCTAssertGreaterThan(ParaAirCloudConfiguration.chunkUploadTimeout, 60)
+        XCTAssertEqual(fake.requests(reserveRoute).first?.timeout, 10)
+        XCTAssertEqual(fake.requests(commitRoute).first?.timeout, 10)
+    }
+
+    /// Deleting a file whose upload is in flight stops the upload: nothing more is sent for it, its reservation is
+    /// released, and later attempts of the transaction are refused until the cancel is lifted.
+    func testCancelCommitStopsTheUploadInFlight() throws {
+        let b = try backend()
+        let data = seededBytes(1000, seed: 46), transaction = UUID().uuidString
+        fake.hang(route: putRoute)
+        let stopped = expectation(description: "upload stopped")
+        let outcome = NSMutableArray()
+        DispatchQueue.global().async {
+            do { _ = try b.commit(self.create("/doomed.bin", data, transaction: transaction)) } catch { outcome.add(error) }
+            stopped.fulfill()
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while fake.requests(putRoute).isEmpty, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        b.cancelCommit(transactionID: transaction, cancelled: true)
+        wait(for: [stopped], timeout: 2)
+        let error = try XCTUnwrap(outcome.firstObject as? DriveError)
+        XCTAssertEqual(error.code, ECANCELED); XCTAssertEqual(error.disposition, .attemptNotDispatched)
+        XCTAssertTrue(fake.isFenced(driveID: account.driveID, transactionID: transaction), "the stopped upload's reservation is released")
+        fake.clearLog()
+        expectDriveError(ECANCELED, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/doomed.bin", data, transaction: transaction)) }
+        XCTAssertTrue(fake.requests.isEmpty)
+        b.cancelCommit(transactionID: transaction, cancelled: false)
+        XCTAssertEqual(try b.commit(create("/kept.bin", data)).size, 1000)
+    }
+
+    /// Closing the drive (unmount) stops an upload in flight at once.
+    func testCloseStopsTheUploadInFlight() throws {
+        let b = try backend()
+        fake.hang(route: putRoute)
+        let stopped = expectation(description: "upload stopped")
+        let outcome = NSMutableArray()
+        DispatchQueue.global().async {
+            do { _ = try b.commit(self.create("/unmounted.bin", seededBytes(1000, seed: 47))) } catch { outcome.add(error) }
+            stopped.fulfill()
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while fake.requests(putRoute).isEmpty, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        try b.close()
+        wait(for: [stopped], timeout: 2)
+        XCTAssertEqual((outcome.firstObject as? DriveError)?.code, ECANCELED)
+        XCTAssertNil(fake.contents(driveID: account.driveID, path: "/unmounted.bin"))
+    }
+
+    func testChunkRefusalClassification() {
+        func call(_ code: ParaAirCloudErrorCode?, _ errno: Int32 = EIO, _ disposition: CommitDisposition = .ambiguous) -> ParaAirCloudCallError {
+            ParaAirCloudCallError(drive: DriveError(errno, "x", disposition: disposition), code: code)
+        }
+        XCTAssertEqual(ParaAirCloudBackend.chunkRefusal(call(.chunkBusy, EAGAIN, .attemptNotDispatched)), .busy)
+        XCTAssertEqual(ParaAirCloudBackend.chunkRefusal(call(.rateLimited, EAGAIN, .attemptNotDispatched)), .throttled)
+        XCTAssertEqual(ParaAirCloudBackend.chunkRefusal(call(.storageUnavailable)), .serviceError)
+        XCTAssertFalse(ParaAirCloudBackend.ChunkRefusal.busy.stopsOtherChunks)
+        XCTAssertTrue(ParaAirCloudBackend.ChunkRefusal.throttled.stopsOtherChunks)
+        XCTAssertTrue(ParaAirCloudBackend.ChunkRefusal.serviceError.stopsOtherChunks)
+        XCTAssertTrue(ParaAirCloudBackend.ChunkRefusal.cutOff.stopsOtherChunks)
+        XCTAssertEqual(ParaAirCloudBackend.chunkRefusal(call(nil, ETIMEDOUT)), .cutOff)
+        XCTAssertEqual(ParaAirCloudBackend.chunkRefusal(call(nil, EIO)), .cutOff, "a 5xx page the service didn't write")
+        XCTAssertNil(ParaAirCloudBackend.chunkRefusal(call(nil, ENETDOWN, .attemptNotDispatched)), "offline: nothing was sent")
+        XCTAssertNil(ParaAirCloudBackend.chunkRefusal(call(nil, ECANCELED)))
+        XCTAssertNil(ParaAirCloudBackend.chunkRefusal(call(nil, EBADF)))
+        XCTAssertNil(ParaAirCloudBackend.chunkRefusal(call(.quotaExceeded, EDQUOT, .attemptNotDispatched)))
+        XCTAssertNil(ParaAirCloudBackend.chunkRefusal(call(.uploadExpired, EPROTO, .attemptNotDispatched)))
     }
 
     func testTimeoutDuringCommitPostIsAmbiguous() throws {

@@ -101,19 +101,29 @@ public struct EngineTuning: Sendable, Equatable {
 /// Which pending files one flush may publish. `.background` uploads only files that
 /// are closed and idle, or every file once the journal is under pressure, and
 /// honours each file's retry backoff. `.immediate` publishes everything now.
+/// `.sync` publishes every file now except one whose last upload failed and whose retry isn't due.
 public struct UploadPolicy: Sendable, Equatable {
     public var closedIdleNanoseconds: Int64
     public var openIdleNanoseconds: Int64
     /// Journal use, as a fraction of its limit, at which recent and open files upload too.
     public var pressureFraction: Double
     public var respectsBackoff: Bool
-    public init(closedIdleNanoseconds: Int64, openIdleNanoseconds: Int64, pressureFraction: Double, respectsBackoff: Bool) {
+    /// While storage looks unreachable, upload nothing until a probe (at most every 15 s) reaches it. Defaults to
+    /// `respectsBackoff`.
+    public var waitsWhileOffline: Bool
+    public init(closedIdleNanoseconds: Int64, openIdleNanoseconds: Int64, pressureFraction: Double, respectsBackoff: Bool,
+                waitsWhileOffline: Bool? = nil) {
         self.closedIdleNanoseconds = closedIdleNanoseconds; self.openIdleNanoseconds = openIdleNanoseconds
         self.pressureFraction = pressureFraction; self.respectsBackoff = respectsBackoff
+        self.waitsWhileOffline = waitsWhileOffline ?? respectsBackoff
     }
     public static let immediate = UploadPolicy(closedIdleNanoseconds: 0, openIdleNanoseconds: 0, pressureFraction: 0, respectsBackoff: false)
     public static let background = UploadPolicy(closedIdleNanoseconds: 2_000_000_000, openIdleNanoseconds: 30_000_000_000,
                                                pressureFraction: 0.5, respectsBackoff: true)
+    /// For a volume sync (FSKit `synchronize`), which macOS also sends on its own every so often: a file whose uploads keep
+    /// failing waits for its retry instead of being sent again on every sync. Everything else is tried now, as before.
+    public static let sync = UploadPolicy(closedIdleNanoseconds: 0, openIdleNanoseconds: 0, pressureFraction: 0, respectsBackoff: true,
+                                          waitsWhileOffline: false)
 }
 
 /// When a drive whose index lives only on this Mac backs that index up into its own
@@ -402,6 +412,10 @@ public final class Engine {
     private var streamGenerations: UInt64 = 0
     /// Conflicts whose automatic copy failed: when to try again (uptime) and how many attempts failed. Guarded by `memory`.
     private var copyRetries: [String: (at: UInt64, failures: Int)] = [:]
+    /// Files whose never-published change a delete is dropping (discardNewFile): no upload of them starts. Guarded by `memory`.
+    private var removing = Set<String>()
+    /// Set by `close`: uploads stop, and an upload it stopped isn't counted as a failure. Guarded by `memory`.
+    private var closed = false
     /// A change that loses to another device's is saved beside the file as a conflict copy (saveConflictCopy) and
     /// uploads, instead of waiting for a decision. Off by default; a drive's profile turns it on.
     public let conflictCopies: Bool
@@ -436,6 +450,16 @@ public final class Engine {
         try lock.withLock { try reconcileBlockSize(); try recoverOrphans(); try trimCache(to: cacheLimit) }
     }
     deinit { prefetchQueue.cancelAllOperations() }
+
+    /// For a drive being unmounted: stops what is in flight in storage and refuses later storage calls. An upload stops
+    /// where it is and keeps its change here, uncounted as a failure; the state on disk stays as it is for the next mount.
+    public func close() {
+        memory.withLock { closed = true }
+        prefetchQueue.cancelAllOperations()
+        try? publisher.close()
+        if publisher !== backend { try? backend.close() }
+    }
+    private var isClosed: Bool { memory.withLock { closed } }
 
     /// Cached blocks and offline pin snapshots are cut at one block size. When a
     /// profile's size changes, release both and record the new size.
@@ -1021,7 +1045,7 @@ public final class Engine {
     /// `isOpenForWriting` is never called while the state lock is held.
     public func flushUploads(policy: UploadPolicy = .immediate, isOpenForWriting: (String) -> Bool = { _ in false }) throws -> [UploadRecord] {
         assert(!lock.isHeldByCurrentThread, "Uploads must not run under the drive state lock")
-        if policy.respectsBackoff, try !reachableForBackgroundUpload() { return try uploads() }
+        if policy.waitsWhileOffline, try !reachableForBackgroundUpload() { return try uploads() }
         let (pending, used): ([Journal], Int64) = try lock.withLock { (try db.all("journal"), try directoryAllocation(journal)) }
         let pressure = Double(used) >= policy.pressureFraction * Double(journalLimit)
         let clock = now(), uptime = DispatchTime.now().uptimeNanoseconds
@@ -1038,7 +1062,10 @@ public final class Engine {
         }
         if pressure { eligible.sort { $0.item.pendingLength > $1.item.pendingLength } }
         else { eligible.sort { $0.item.modified < $1.item.modified } }
-        for candidate in eligible { do { try syncOne(candidate.item.path, modifiedNoLaterThan: candidate.cutoff) } catch {} }
+        for candidate in eligible {
+            if isClosed { break }
+            do { try syncOne(candidate.item.path, modifiedNoLaterThan: candidate.cutoff) } catch {}
+        }
         if conflictCopies { saveConflictCopies(respectingBackoff: policy.respectsBackoff) }
         try? shareConflictRecords()
         let remaining = try uploads()
@@ -1090,6 +1117,8 @@ public final class Engine {
         try pathLock.withLock {
         // Whether an earlier attempt of this identity may already have published.
         var prior = true
+        // A delete is dropping this file's change instead (discardNewFile); a caller waiting for it to publish learns it didn't.
+        if memory.withLock({ removing.contains(path) }) { throw DriveError(ECANCELED, "The file is being deleted") }
         guard var pending: Journal = try lock.withLock({
             guard var item: Journal = try db.get("journal", path) else { return nil }
             if item.state == "conflict" { throw DriveError(ESTALE, Self.conflictMessage) }
@@ -1131,6 +1160,8 @@ public final class Engine {
             try lock.withLock {
             let failure = error as? DriveError
             let code = failure?.code ?? EIO
+            // An upload stopped on purpose (an unmount, or a delete dropping the change) didn't fail.
+            let (closing, stopped) = memory.withLock { (closed, closed || removing.contains(path)) }
             switch (code, disposition) {
             case (ESTALE, _), (EEXIST, _):
                 pending.state = "conflict"
@@ -1139,20 +1170,23 @@ public final class Engine {
                 pending.state = "conflict"
             case (_, .transactionAbsent):
                 rotate(&pending)
-            case (_, .attemptNotDispatched) where !prior:
+            case (_, .attemptNotDispatched) where !prior && !closing:
                 rotate(&pending)
             default:
-                // Ambiguous, or not dispatched after an attempt that may have
-                // applied: keep this identity so a replay hits its receipt.
+                // Ambiguous, or not dispatched after an attempt that may have applied: keep this identity so a replay
+                // hits its receipt. Stopped by an unmount: keep it too, so the next mount resumes the upload storage may
+                // still hold open (and its reservation) instead of opening another.
                 pending.mayHaveApplied = true
             }
-            let failures = (pending.failures ?? 0) + 1, clock = now()
-            pending.failures = failures
-            if pending.failingSince == nil { pending.failingSince = clock }
-            pending.nextAttemptAt = clock + min(900_000_000_000, Int64(2_000_000_000) << Int64(min(failures - 1, 9)))
-            pending.lastErrno = code
-            pending.lastError = "Remote commit failed (errno \(code)); local data is retained"
-            if isOfflineError(error) { offline = true }
+            if !stopped {
+                let failures = (pending.failures ?? 0) + 1, clock = now()
+                pending.failures = failures
+                if pending.failingSince == nil { pending.failingSince = clock }
+                pending.nextAttemptAt = clock + min(900_000_000_000, Int64(2_000_000_000) << Int64(min(failures - 1, 9)))
+                pending.lastErrno = code
+                pending.lastError = "Remote commit failed (errno \(code)); local data is retained"
+            }
+            if !stopped, isOfflineError(error) { offline = true }
             try? persistTraffic()
             // Write back only over the transaction this attempt sealed (before any rotation
             // above). Once it is gone, a writer may have started a new one, which must stay.
@@ -1263,6 +1297,8 @@ public final class Engine {
             }
             return
         }
+        // A file that never reached storage is gone once its change is: nothing to upload first, nothing to remove there.
+        if !directory, try discardNewFile(path) { return }
         try settleChanges(under: [path])
         try lock.withLock {
             let pending: [Journal] = try db.all("journal")
@@ -1330,6 +1366,47 @@ public final class Engine {
                 try db.put("conflictcopy", record.path, record)
             }
         }
+    }
+    /// Deleting a file that was never published (a new file whose upload hasn't landed) drops its change here, so an
+    /// upload that keeps failing never blocks the delete and nothing is sent for a file about to go. An upload of it in
+    /// flight is stopped first. A change an earlier attempt may have published asks storage's commit fence, which also
+    /// stops a late arrival: absent, it is dropped; published or unknown, it is kept and the delete goes on as for any
+    /// stored file (upload, then remove). True when the change was dropped.
+    private func discardNewFile(_ path: String) throws -> Bool {
+        // First, so no upload of it starts; one in flight keeps the transaction read below until it ends.
+        memory.withLock { _ = removing.insert(path) }
+        var cancelled: String?, dropped = false
+        defer {
+            memory.withLock { _ = removing.remove(path) }
+            if let cancelled, !dropped { publisher.cancelCommit(transactionID: cancelled, cancelled: false) }
+        }
+        guard let item: Journal = try lock.withLock({ try db.get("journal", path) }), item.base == nil, item.state != "conflict" else { return false }
+        publisher.cancelCommit(transactionID: item.transactionID, cancelled: true)
+        cancelled = item.transactionID
+        try legacyUploadLock.withShared {
+            let pathLock = try uploadLock(for: path)
+            try pathLock.withLock {
+                guard let item: Journal = try lock.withLock({ try db.get("journal", path) }), item.base == nil, item.state != "conflict" else { return }
+                if item.mayHaveApplied != false {
+                    guard (try? publisher.commitStatus(transactionID: item.transactionID, path: path, expectedVersion: nil)) == .absent else { return }
+                }
+                try lock.withLock {
+                    guard let current: Journal = try db.get("journal", path), current.transactionID == item.transactionID else { return }
+                    namespaceEpoch &+= 1
+                    try db.transaction {
+                        try db.delete("journal", path); try db.delete("metadata", path)
+                        // A conflict copy deleted before it uploaded takes its record along, as remove does.
+                        try db.delete("conflictcopy", path)
+                        try invalidateListings(); try invalidatePins(under: path)
+                    }
+                    dropped = true
+                    // Dropped: a failed cleanup is not a failed delete. Later passes reclaim the payloads.
+                    try? recoverOrphans()
+                }
+                if dropped { published(path, lock: pathLock, sealedAt: DispatchTime.now().uptimeNanoseconds) }
+            }
+        }
+        return dropped
     }
     private func settleChanges(under paths: [String]) throws {
         let pending: [Journal] = try lock.withLock { try db.all("journal") }

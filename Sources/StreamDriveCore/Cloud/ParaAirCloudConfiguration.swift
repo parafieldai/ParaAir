@@ -52,6 +52,15 @@ public enum ParaAirCloudConfiguration {
     public static let scopes = ["drive", "offline_access"]
     public static let chunkSize = 4_194_304
     static let developerOverrideFile = "paraair-cloud-service.json"
+    /// Idle timeout of a request unless it asks for another (`ParaAirCloudHTTP.Request.timeout`).
+    static let requestTimeout: TimeInterval = 30
+    /// Idle timeout of a chunk PUT. The service stops a PUT whose body hasn't moved for 60 s and then frees the chunk
+    /// (cloud `B2Store.putIdleTimeoutMs`), so the Mac waits longer than that: when it gives up, the service has too, and a
+    /// new PUT of the chunk isn't refused as busy. A slow or buffering uplink can hold a 4 MiB body well past 30 s.
+    static let chunkUploadTimeout: TimeInterval = 75
+    /// How long the service may keep a chunk for a PUT that stopped without an answer (cloud `LEASE_MS`): until then
+    /// another PUT of it is refused as `chunk_busy`.
+    static let chunkLease: TimeInterval = 120
 
     /// Sent as `X-ParaAir-Client: mac/<version>`. The service accepts `major[.minor[.patch]]` (up to 6 digits each) and
     /// refuses anything older than its `MIN_CLIENT_VERSION` (426 `client_too_old`), comparing the three numbers in order.

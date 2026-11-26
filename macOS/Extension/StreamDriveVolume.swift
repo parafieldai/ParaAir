@@ -488,15 +488,18 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     }
     func deactivate(options: FSDeactivateOptions, replyHandler: @escaping (Error?) -> Void) {
         queue.async {
-            let timer = self.locked { () -> DispatchSourceTimer? in
+            let (timer, opened) = self.locked { () -> (DispatchSourceTimer?, Engine?) in
                 defer {
                     self.uploader = nil; self.engine = nil
                     self.listings.removeAll(); self.nodes.removeAll(); self.openModes.removeAll()
                     self.reportsCapacity = false; self.capacity = nil; self.capacityUnknown = false
                 }
-                return self.uploader
+                return (self.uploader, self.engine)
             }
             timer?.cancel()
+            // An upload in flight holds the engine past this point; closing it stops the upload (its change stays in the
+            // journal for the next mount), so an unmounted drive's extension doesn't keep uploading.
+            opened?.close()
             self.setActive(false)
             replyHandler(nil)
         }
@@ -571,7 +574,8 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
             }
             self.uploadQueue.async {
                 do {
-                    let pending = try opened.flushUploads(policy: .immediate)
+                    // macOS sends these on its own every so often: a file whose uploads keep failing waits for its retry.
+                    let pending = try opened.flushUploads(policy: .sync)
                     self.logUploads(pending)
                     guard pending.isEmpty else { throw DriveError(EIO, "Pending uploads remain; inspect paraair uploads") }
                     replyHandler(nil)

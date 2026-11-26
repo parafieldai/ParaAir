@@ -20,8 +20,10 @@ final class ParaAirCloudEngineTests: XCTestCase {
                                              stateRoot: root, dependencies: fake.dependencies(vault: vault))
     }
 
-    private func open(_ options: ParaAirCloudSession.Options = .init()) throws -> Engine {
-        try Engine.open(profile: profile, stateRoot: root, dependencies: fake.dependencies(vault: vault, options: options))
+    private func open(_ options: ParaAirCloudSession.Options = .init(), backend: ParaAirCloudBackend.Options = .init()) throws -> Engine {
+        var dependencies = fake.dependencies(vault: vault, options: options)
+        dependencies.cloudBackendOptions = backend
+        return try Engine.open(profile: profile, stateRoot: root, dependencies: dependencies)
     }
     private func api() throws -> ParaAirCloudAPI {
         let session = try ParaAirCloudSession(root: root, accountID: record.id, vault: vault, configuration: fake.configuration,
@@ -151,19 +153,161 @@ final class ParaAirCloudEngineTests: XCTestCase {
     /// Interrupted uploads must not accumulate quota reservations: each failed attempt after
     /// reserve releases its upload, although the engine retries under a new transaction id.
     func testFailedUploadAttemptsDoNotAccumulateReservations() throws {
-        let engine = try open()
+        // A chunk whose PUT was cut off may go again after 50 ms, never within the attempt that lost it.
+        var pacing = ParaAirCloudBackend.Options(); pacing.cutOffChunkWait = 0.05; pacing.longestChunkWait = 0
+        let engine = try open(backend: pacing)
         _ = try engine.create("/video.mov", directory: false)
         _ = try engine.write("/video.mov", offset: 0, data: seededBytes(4 << 20, seed: 9))
         for _ in 1...3 {
             let before = try XCTUnwrap(try engine.uploads().first?.transactionID)
-            fake.injectTransport(.networkConnectionLost, route: "PUT /v1/drives/{d}/chunks/{sha}", times: 3)
+            fake.injectTransport(.networkConnectionLost, route: "PUT /v1/drives/{d}/chunks/{sha}")
+            Thread.sleep(forTimeInterval: 0.06)
             XCTAssertEqual(try engine.flushUploads().first?.lastErrno, ECONNRESET)
             XCTAssertNotEqual(try engine.uploads().first?.transactionID, before)
             XCTAssertEqual(fake.reservedBytes(workspaceID: account.workspaceID), 0)
         }
+        Thread.sleep(forTimeInterval: 0.06)
         XCTAssertTrue(try engine.flushUploads().isEmpty)
         XCTAssertEqual(fake.reservedBytes(workspaceID: account.workspaceID), 0)
         XCTAssertEqual(fake.usedBytes(workspaceID: account.workspaceID), 4 << 20)
+    }
+
+    // MARK: A slow or refusing service (docs/speed.md, Bottlenecks 2)
+
+    private let reserveRoute = "POST /v1/drives/{d}/uploads"
+    private let putRoute = "PUT /v1/drives/{d}/chunks/{sha}"
+
+    /// Waits until a chunk PUT reached the fake, which holds it (`hang`).
+    private func waitForPut() {
+        let deadline = Date().addingTimeInterval(5)
+        while fake.requests(putRoute).isEmpty, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+    }
+
+    /// Deleting a new file whose upload keeps failing drops its change: the delete doesn't wait for an upload that
+    /// can't land, and nothing is uploaded for a file that is going anyway.
+    func testDeletingNewFileWhoseUploadFailsDropsIt() throws {
+        let engine = try open()
+        _ = try engine.create("/draft.bin", directory: false)
+        _ = try engine.write("/draft.bin", offset: 0, data: seededBytes(1000, seed: 50))
+        fake.inject(route: reserveRoute, status: 503, code: "unavailable", times: 3)
+        XCTAssertEqual(try engine.flushUploads().first?.lastErrno, EIO)
+        fake.inject(route: reserveRoute, status: 503, code: "unavailable", times: 3)
+        fake.clearLog()
+        try engine.remove("/draft.bin", directory: false)
+        XCTAssertEqual(fake.requests(reserveRoute).count, 0)
+        XCTAssertEqual(fake.requests(putRoute).count, 0)
+        XCTAssertLessThanOrEqual(fake.requests("POST /v1/drives/{d}/transactions/{tx}/fence").count, 1,
+                                 "at most the commit fence, which proves the earlier attempt can't publish later")
+        XCTAssertTrue(try engine.uploads().isEmpty)
+        expectDriveError(ENOENT) { _ = try engine.stat("/draft.bin") }
+        XCTAssertNil(fake.contents(driveID: account.driveID, path: "/draft.bin"))
+        XCTAssertEqual(fake.reservedBytes(workspaceID: account.workspaceID), 0)
+    }
+
+    /// Deleting a new file stops its upload in flight instead of waiting for it.
+    func testDeletingNewFileStopsItsUploadInFlight() throws {
+        let engine = try open()
+        _ = try engine.create("/inflight.bin", directory: false)
+        _ = try engine.write("/inflight.bin", offset: 0, data: seededBytes(1000, seed: 51))
+        fake.hang(route: putRoute)
+        let flushed = expectation(description: "upload pass ended")
+        DispatchQueue.global().async { _ = try? engine.flushUploads(); flushed.fulfill() }
+        waitForPut()
+        let started = Date()
+        try engine.remove("/inflight.bin", directory: false)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        wait(for: [flushed], timeout: 2)
+        XCTAssertTrue(try engine.uploads().isEmpty)
+        XCTAssertNil(fake.contents(driveID: account.driveID, path: "/inflight.bin"))
+        XCTAssertEqual(fake.reservedBytes(workspaceID: account.workspaceID), 0)
+        // The drive goes on uploading other files.
+        _ = try engine.create("/next.bin", directory: false)
+        _ = try engine.write("/next.bin", offset: 0, data: Data("next".utf8))
+        XCTAssertTrue(try engine.flushUploads().isEmpty)
+    }
+
+    /// A file that was published keeps the usual delete: storage removes it.
+    func testDeletingPublishedFileStillRemovesItInStorage() throws {
+        let engine = try open()
+        _ = try engine.create("/kept.bin", directory: false)
+        _ = try engine.write("/kept.bin", offset: 0, data: Data("kept".utf8))
+        XCTAssertTrue(try engine.flushUploads().isEmpty)
+        _ = try engine.write("/kept.bin", offset: 4, data: Data(" more".utf8))
+        try engine.remove("/kept.bin", directory: false)
+        XCTAssertNil(fake.contents(driveID: account.driveID, path: "/kept.bin"))
+        XCTAssertTrue(try engine.uploads().isEmpty)
+    }
+
+    /// Closing the engine (unmount) stops an upload in flight; the change stays for the next mount and the stop isn't
+    /// counted as a failed upload.
+    func testCloseStopsTheUploadInFlightWithoutCountingAFailure() throws {
+        let engine = try open()
+        _ = try engine.create("/unmount.bin", directory: false)
+        _ = try engine.write("/unmount.bin", offset: 0, data: seededBytes(1000, seed: 52))
+        fake.hang(route: putRoute)
+        let flushed = expectation(description: "upload pass ended")
+        DispatchQueue.global().async { _ = try? engine.flushUploads(); flushed.fulfill() }
+        waitForPut()
+        engine.close()
+        wait(for: [flushed], timeout: 2)
+        let record = try XCTUnwrap(try engine.uploads().first)
+        XCTAssertEqual(record.path, "/unmount.bin")
+        XCTAssertEqual(record.failures, 0); XCTAssertNil(record.lastErrno)
+        let reopened = try open()
+        XCTAssertTrue(try reopened.flushUploads().isEmpty)
+        XCTAssertEqual(fake.contents(driveID: account.driveID, path: "/unmount.bin"), seededBytes(1000, seed: 52))
+        XCTAssertEqual(fake.reservedBytes(workspaceID: account.workspaceID), 0,
+                       "the next mount resumed the stopped upload instead of reserving the file again")
+    }
+
+    /// A delete of a file whose earlier upload may have landed asks the commit fence: landed, it is removed in storage.
+    func testDeletingNewFileWhoseUploadLandedRemovesItInStorage() throws {
+        let engine = try open()
+        _ = try engine.create("/landed.bin", directory: false)
+        _ = try engine.write("/landed.bin", offset: 0, data: Data("landed".utf8))
+        fake.injectTransport(.networkConnectionLost, route: "POST /v1/drives/{d}/uploads/{u}/commit", times: 3, afterProcessing: true)
+        XCTAssertEqual(try engine.flushUploads().first?.lastErrno, ECONNRESET)
+        XCTAssertEqual(fake.contents(driveID: account.driveID, path: "/landed.bin"), Data("landed".utf8))
+        fake.clearLog()
+        try engine.remove("/landed.bin", directory: false)
+        XCTAssertEqual(fake.requests("POST /v1/drives/{d}/transactions/{tx}/fence").count, 1)
+        XCTAssertNil(fake.contents(driveID: account.driveID, path: "/landed.bin"))
+        XCTAssertTrue(try engine.uploads().isEmpty)
+    }
+
+    /// When the fence can't answer, the change is kept and the delete goes the usual way; if that upload fails too, the
+    /// delete fails and the data stays. A later delete, once the fence answers, drops it.
+    func testDeletingNewFileKeepsItWhileItsOutcomeIsUnknown() throws {
+        let engine = try open()
+        _ = try engine.create("/unsure.bin", directory: false)
+        _ = try engine.write("/unsure.bin", offset: 0, data: Data("unsure".utf8))
+        fake.injectTransport(.timedOut, route: "POST /v1/drives/{d}/uploads/{u}/commit", times: 3)
+        XCTAssertEqual(try engine.flushUploads().first?.lastErrno, ETIMEDOUT)
+        fake.inject(route: "POST /v1/drives/{d}/transactions/{tx}/fence", status: 503, code: "unavailable", times: 3)
+        fake.inject(route: reserveRoute, status: 503, code: "unavailable", times: 3)
+        expectDriveError(EIO) { try engine.remove("/unsure.bin", directory: false) }
+        XCTAssertEqual(try engine.uploads().map(\.path), ["/unsure.bin"])
+        XCTAssertEqual(try engine.read("/unsure.bin", offset: 0, length: 6), Data("unsure".utf8))
+        try engine.remove("/unsure.bin", directory: false)
+        XCTAssertTrue(try engine.uploads().isEmpty)
+        XCTAssertNil(fake.contents(driveID: account.driveID, path: "/unsure.bin"))
+    }
+
+    /// A volume sync (which macOS also sends on its own) uploads new changes at once but leaves a file whose upload
+    /// just failed to its retry time, so syncs don't turn the retry backoff into a storm.
+    func testSyncPolicyWaitsForAFailingFilesRetry() throws {
+        let engine = try open()
+        _ = try engine.create("/failing.bin", directory: false)
+        _ = try engine.write("/failing.bin", offset: 0, data: Data("failing".utf8))
+        fake.inject(route: reserveRoute, status: 503, code: "unavailable", times: 3)
+        XCTAssertEqual(try engine.flushUploads(policy: .sync).first?.lastErrno, EIO)
+        _ = try engine.create("/fresh.bin", directory: false)
+        _ = try engine.write("/fresh.bin", offset: 0, data: Data("fresh".utf8))
+        fake.clearLog()
+        XCTAssertEqual(try engine.flushUploads(policy: .sync).map(\.path), ["/failing.bin"])
+        XCTAssertEqual(fake.requests(reserveRoute).count, 1, "only the new file was sent")
+        XCTAssertEqual(fake.contents(driveID: account.driveID, path: "/fresh.bin"), Data("fresh".utf8))
+        XCTAssertTrue(try engine.flushUploads(policy: .immediate).isEmpty, "an explicit retry still goes at once")
     }
 
     func testExpiredAccessTokenRefreshedThroughEngineOpen() throws {

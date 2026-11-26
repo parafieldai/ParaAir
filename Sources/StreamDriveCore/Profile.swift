@@ -323,6 +323,8 @@ public struct EngineOpenDependencies: @unchecked Sendable {
     public var cloudConfiguration: URLSessionConfiguration
     public var cloudPolicy: ParaAirCloudTransportPolicy
     public var cloudSessionOptions: ParaAirCloudSession.Options
+    /// Upload pacing of a ParaAir Cloud drive (how long refused chunks wait); tests shorten it.
+    public var cloudBackendOptions = ParaAirCloudBackend.Options()
     public init(cloudVault: any ConnectionVault, cloudConfiguration: URLSessionConfiguration,
                 cloudPolicy: ParaAirCloudTransportPolicy, cloudSessionOptions: ParaAirCloudSession.Options = .init()) {
         self.cloudVault = cloudVault; self.cloudConfiguration = cloudConfiguration
@@ -372,7 +374,7 @@ public extension Engine {
                 let session = try ParaAirCloudSession.shared(root: root, accountID: profile.cloudAccountID!, vault: dependencies.cloudVault,
                                                              configuration: dependencies.cloudConfiguration, policy: dependencies.cloudPolicy,
                                                              options: dependencies.cloudSessionOptions)
-                return try ParaAirCloudBackend(driveID: profile.cloudDriveID!, session: session, bindVolume: {
+                return try ParaAirCloudBackend(driveID: profile.cloudDriveID!, session: session, options: dependencies.cloudBackendOptions, bindVolume: {
                     try ProfileStateBinding.bindVolume($0, directory: directory)
                 })
             case .local:
@@ -457,6 +459,10 @@ private final class LazyProfileBackend: StorageBackend {
     // Forwarded explicitly; the protocol defaults would hide the backend's answers.
     func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus {
         try withBackend { try $0.commitStatus(transactionID: transactionID, path: path, expectedVersion: expectedVersion) }
+    }
+    /// Only to a connected backend: one not connected has no upload in flight, and stopping one never connects.
+    func cancelCommit(transactionID: String, cancelled: Bool) {
+        lock.withLock { connected }?.cancelCommit(transactionID: transactionID, cancelled: cancelled)
     }
     func capacity() throws -> VolumeCapacity? { try withBackend { try $0.capacity() } }
     func backupIndex(replacing previous: String?) throws -> String? { try withBackend { try $0.backupIndex(replacing: previous) } }

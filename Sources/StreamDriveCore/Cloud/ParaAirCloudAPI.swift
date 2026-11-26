@@ -21,6 +21,8 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
     /// Longest `Retry-After` the client waits for before giving up with EAGAIN.
     var maximumRetryAfter: TimeInterval = 5
     var sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    /// Stops every call of this instance when cancelled (the drive is closing); a call may name a narrower one.
+    var cancellation: ParaAirCloudCancellation?
     /// The service's clock minus this Mac's, from the latest reply's `Date` header (1 s resolution).
     /// Read-token expiry is service time (spec 2.7), so it is judged on the service's clock.
     var serviceClockOffset: TimeInterval? { clockLock.lock(); defer { clockLock.unlock() }; return clockOffset }
@@ -47,6 +49,11 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
         /// Attempts for transient failures (timeouts, 5xx); 1 means no retry.
         var attempts = 3
         var timeout: TimeInterval? = nil
+        /// Whether a `chunk_busy` or `rate_limited` answer with a short Retry-After is waited out here and sent again
+        /// (up to three times and once).
+        var waitsOutBusy = true
+        /// Instead of the instance's `cancellation`.
+        var cancellation: ParaAirCloudCancellation? = nil
     }
 
     // MARK: Endpoints
@@ -200,7 +207,8 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
     public func reserve(driveID: String, _ request: ParaAirCloudReserveRequest) throws -> ParaAirCloudReserveResult {
         try unwrap { try rawReserve(driveID: driveID, request) }
     }
-    func rawReserve(driveID: String, _ request: ParaAirCloudReserveRequest) throws -> ParaAirCloudReserveResult {
+    func rawReserve(driveID: String, _ request: ParaAirCloudReserveRequest,
+                    cancellation: ParaAirCloudCancellation? = nil) throws -> ParaAirCloudReserveResult {
         struct Body: Decodable {
             var state: String; var entry: WireEntry?; var uploadId: String?; var missing: [String]?
             var missingBytes: Int64?; var expiresAt: Date?; var chunkSize: Int?
@@ -208,8 +216,9 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
         guard UUID(uuidString: request.transactionId) != nil, request.transactionId == request.transactionId.lowercased() else {
             throw ParaAirCloudCallError(drive: DriveError(EINVAL, "Invalid upload transaction", disposition: .attemptNotDispatched), code: nil)
         }
-        let call = Call(method: "POST", path: "/v1/drives/\(try checkedDrive(driveID))/uploads", route: "POST /v1/drives/{d}/uploads",
+        var call = Call(method: "POST", path: "/v1/drives/\(try checkedDrive(driveID))/uploads", route: "POST /v1/drives/{d}/uploads",
                         body: try ParaAirCloudJSON.encoder().encode(request), phase: .reserveOrCommit, maxResponseBytes: 8 << 20)
+        call.cancellation = cancellation
         let body = try decode(Body.self, perform(call))
         switch body.state {
         case "committed":
@@ -229,27 +238,33 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
     public func putChunk(driveID: String, uploadID: String, sha256: String, body: Data) throws {
         try unwrap { try rawPutChunk(driveID: driveID, uploadID: uploadID, sha256: sha256, body: body) }
     }
-    func rawPutChunk(driveID: String, uploadID: String, sha256: String, body: Data) throws {
+    /// One attempt, which waits out nothing: every resend carries the whole body, and a PUT that failed may still hold the
+    /// chunk on the service, so a quick resend is refused as `chunk_busy` after its body went out. The backend decides
+    /// when to send a chunk again (`ParaAirCloudBackend.putChunks`). The idle timeout outlasts the service's own.
+    func rawPutChunk(driveID: String, uploadID: String, sha256: String, body: Data, cancellation: ParaAirCloudCancellation? = nil) throws {
         guard ParaAirCloudIDs.isUploadID(uploadID), ParaAirCloudErrorMap.isSHA256(sha256),
               body.count <= ParaAirCloudConfiguration.chunkSize else {
             throw ParaAirCloudCallError(drive: DriveError(EINVAL, "Invalid upload chunk", disposition: .attemptNotDispatched), code: nil)
         }
-        let call = Call(method: "PUT", path: "/v1/drives/\(try checkedDrive(driveID))/chunks/\(sha256)", route: "PUT /v1/drives/{d}/chunks/{sha}",
+        var call = Call(method: "PUT", path: "/v1/drives/\(try checkedDrive(driveID))/chunks/\(sha256)", route: "PUT /v1/drives/{d}/chunks/{sha}",
                         query: [URLQueryItem(name: "upload", value: uploadID)], body: body, contentType: "application/octet-stream",
                         maxResponseBytes: 64 << 10)
+        call.attempts = 1; call.waitsOutBusy = false; call.timeout = ParaAirCloudConfiguration.chunkUploadTimeout
+        call.cancellation = cancellation
         _ = try perform(call)
     }
 
     public func commitUpload(driveID: String, uploadID: String) throws -> ParaAirCloudCommitResult {
         try unwrap { try rawCommit(driveID: driveID, uploadID: uploadID, path: nil) }
     }
-    func rawCommit(driveID: String, uploadID: String, path: String?) throws -> ParaAirCloudCommitResult {
+    func rawCommit(driveID: String, uploadID: String, path: String?, cancellation: ParaAirCloudCancellation? = nil) throws -> ParaAirCloudCommitResult {
         struct Body: Decodable { var entry: WireEntry; var capacity: ParaAirCloudCapacity }
         guard ParaAirCloudIDs.isUploadID(uploadID) else {
             throw ParaAirCloudCallError(drive: DriveError(EINVAL, "Invalid upload", disposition: .attemptNotDispatched), code: nil)
         }
-        let call = Call(method: "POST", path: "/v1/drives/\(try checkedDrive(driveID))/uploads/\(uploadID)/commit",
+        var call = Call(method: "POST", path: "/v1/drives/\(try checkedDrive(driveID))/uploads/\(uploadID)/commit",
                         route: "POST /v1/drives/{d}/uploads/{u}/commit", body: Data("{}".utf8), phase: .reserveOrCommit)
+        call.cancellation = cancellation
         let body = try decode(Body.self, perform(call))
         return ParaAirCloudCommitResult(entry: try body.entry.fileEntry(expectingPath: path), capacity: body.capacity)
     }
@@ -384,16 +399,21 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
         var request = ParaAirCloudHTTP.Request(method: call.method, path: call.path, query: call.query, headers: call.headers,
                                                body: call.body, maxResponseBytes: call.maxResponseBytes, route: call.route)
         request.timeout = call.timeout
+        let cancellation = call.cancellation ?? self.cancellation
+        request.cancellation = cancellation
         if call.body != nil { request.headers["Content-Type"] = call.contentType ?? "application/json" }
         if let key = call.idempotencyKey { request.headers["Idempotency-Key"] = key.uuidString.lowercased() }
         var attempt = 0, refreshed = false, retryAfterWaits = 0
         // Once an attempt may have reached the service, a later attempt that never left
         // this Mac cannot prove the request was not applied.
-        var maybeApplied = false
+        var maybeApplied = false, again = false
         func unsent(_ error: DriveError) -> ParaAirCloudCallError {
             ParaAirCloudCallError(drive: maybeApplied && error.disposition == .attemptNotDispatched ? error.with(.ambiguous) : error, code: nil)
         }
         while true {
+            // A wait below may have outlasted the call's purpose.
+            if again, cancellation?.isCancelled == true { throw unsent(ParaAirCloudCancellation.stopped(disposition: .attemptNotDispatched)) }
+            again = true
             attempt += 1
             let bearer: String?
             switch call.authorization {
@@ -408,7 +428,8 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
             catch let error as DriveError {
                 if error.disposition == .ambiguous { maybeApplied = true }
                 // Connection-level failures put the client in offline backoff; retrying would only fail fast.
-                guard error.code != EBADF, error.code != EINVAL, !http.inOfflineBackoff, attempt < call.attempts else { throw unsent(error) }
+                guard error.code != EBADF, error.code != EINVAL, error.code != ECANCELED, !http.inOfflineBackoff,
+                      attempt < call.attempts else { throw unsent(error) }
                 pause(attempt); continue
             }
             if let header = response.headers["date"], let date = Self.httpDate.date(from: header) {
@@ -425,7 +446,7 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
             }
             switch failure.code {
             case .rateLimited?, .chunkBusy?:
-                let limit = failure.code == .chunkBusy ? 3 : 1
+                let limit = !call.waitsOutBusy ? 0 : failure.code == .chunkBusy ? 3 : 1
                 if let wait = failure.retryAfterSeconds, TimeInterval(wait) <= maximumRetryAfter, retryAfterWaits < limit {
                     retryAfterWaits += 1; attempt -= 1
                     sleep(TimeInterval(wait)); continue
