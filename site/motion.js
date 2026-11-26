@@ -71,10 +71,16 @@
       return best;
     };
 
-    const build = () => {
+    // The canvas takes its own box (100lvh), so a phone's toolbar showing or hiding never stretches the drawing.
+    const fit = () => {
       ratio = Math.min(window.devicePixelRatio || 1, 2);
-      W = window.innerWidth; H = window.innerHeight;
+      const box = sky.getBoundingClientRect();
+      W = box.width || window.innerWidth; H = box.height || window.innerHeight;
       sky.width = Math.round(W * ratio); sky.height = Math.round(H * ratio);
+    };
+
+    const build = () => {
+      fit();
       paint();
       const wide = W >= 1024, phone = W < 640;
       spaces = [...document.querySelectorAll('[data-flight]')].map((el, index) => {
@@ -103,13 +109,21 @@
           const isLead = lead && i === 0;
           const depth = isLead ? 1 : random() < 0.45 ? 0.75 : 0.4;
           const zone = isLead ? (all.find((z) => z.left > 0) || widest) : all[Math.floor(random() * all.length)];
-          const x0 = zone.left + (isLead ? 0.42 : 0.08 + 0.84 * random()) * (zone.right - zone.left);
+          let x0 = 0, y0 = 0;
+          // The flock keeps 60 px clear of the lead, so no plane sits on top of it.
+          for (let attempt = 0; attempt < 8; attempt++) {
+            x0 = zone.left + (isLead ? 0.42 : 0.08 + 0.84 * random()) * (zone.right - zone.left);
+            y0 = zone.top + (isLead ? 0.38 : 0.2 + 0.6 * random()) * (zone.bottom - zone.top);
+            const leader = planes[0];
+            if (isLead || !leader || !leader.lead || Math.hypot(x0 - leader.x0, y0 - leader.y) >= 60) break;
+          }
           planes.push({
+            x0,
             lead: isLead,
             depth,
             size: isLead ? 52 : depth > 0.6 ? 24 + 8 * random() : 17 + 4 * random(),
             alpha: isLead ? 1 : depth > 0.6 ? 0.65 + 0.15 * random() : 0.35 + 0.1 * random(),
-            y: zone.top + (isLead ? 0.38 : 0.2 + 0.6 * random()) * (zone.bottom - zone.top),
+            y: y0,
             heading: (random() - 0.62) * 0.9,
             sink: 20 + 40 * random(),
             wobble: 6 + 10 * random(),
@@ -178,12 +192,15 @@
       stamp(p.lead ? art.lead : p.depth > 0.6 ? art.mid : art.far, a.x, y, angle, bank, p.alpha * fade, p.size / (p.lead ? 52 : p.depth > 0.6 ? 28 : 18));
     };
 
-    const draw = (scroll, now) => {
+    // `flown` (the smoothed scroll) says how far each plane has flown; the real scroll places it on the screen, so a
+    // plane never lags the words around its airspace.
+    const draw = (flown, now) => {
+      const scroll = window.scrollY;
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       ctx.clearRect(0, 0, W, H);
       for (const space of spaces) {
         if (space.box.bottom < scroll - 40 || space.box.top > scroll + H + 40) continue;
-        const p = progress(space, scroll);
+        const p = progress(space, flown);
         for (const plane of space.planes) {
           if (plane.lead && entrance && space.kind === 'hero') continue;
           drawPlane(space, plane, plane.start + p * plane.pace, scroll);
@@ -208,7 +225,7 @@
       };
       const a = at(e), b = at(Math.min(1, e + 0.01));
       stamp(art.lead, a.x, a.y, Math.atan2(b.y - a.y, b.x - a.x), 1, clamp(t * 4));
-      if (t >= 1) entrance = null;
+      if (t >= 1) { entrance = null; under.style.removeProperty('--draw'); }
     };
 
     const tick = (now) => {
@@ -217,6 +234,12 @@
       const target = window.scrollY;
       shown += (target - shown) * (1 - Math.exp(-dt / 0.11));
       if (Math.abs(target - shown) < 0.5) shown = target;
+      // The underline draws as the lead plane passes. Only a frame that actually runs ever shortens it, so if frames
+      // never come it simply stays drawn.
+      if (entrance && under) {
+        const drawn = clamp((now - entrance.start - 200) / 1100);
+        under.style.setProperty('--draw', (1 - Math.pow(1 - drawn, 3)).toFixed(3));
+      }
       draw(shown, now);
       raf = shown !== target || entrance ? requestAnimationFrame(tick) : 0;
     };
@@ -228,8 +251,12 @@
     let width = -1;
     const relayout = () => { if (window.innerWidth === width) return; width = window.innerWidth; build(); shown = window.scrollY; draw(shown, performance.now()); };
     relayout();
-    window.addEventListener('resize', () => { if (window.innerWidth !== width) relayout(); else { H = window.innerHeight; } }, { passive: true });
-    window.addEventListener('load', () => { width = -1; relayout(); });
+    window.addEventListener('resize', () => { if (window.innerWidth !== width) relayout(); else { fit(); paint(); draw(shown, performance.now()); } }, { passive: true });
+    window.addEventListener('load', () => {
+      // A browser that restores a scroll position after loading skips the entrance: the hero isn't in view.
+      if (entrance && window.scrollY > 40) { entrance = null; under.style.removeProperty('--draw'); }
+      width = -1; relayout();
+    });
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { width = -1; relayout(); });
     window.addEventListener('scroll', wake, { passive: true });
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { paint(); draw(shown, performance.now()); });
@@ -237,10 +264,8 @@
     document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
 
     // Only when someone is looking: in a hidden tab the underline simply stays drawn.
-    if (under && hero && !reduce.matches && !document.hidden && window.scrollY < 40 && under.animate) {
+    if (under && hero && !reduce.matches && !document.hidden && window.scrollY < 40) {
       entrance = { start: performance.now() + 150 };
-      under.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }],
-                    { duration: 1100, delay: 350, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'backwards', pseudoElement: '::after' });
       wake();
     }
   }
