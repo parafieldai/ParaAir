@@ -14,19 +14,20 @@ enum Air {
     // Surfaces and ink. Light: cool paper #F7F8FA and ink #0E0F12. Dark: near-black #0C0D10 and #F6F7F9.
     static let paper = adaptive(dark: 0x0C0D10, light: 0xF7F8FA)
     static let ink = adaptive(dark: 0xF6F7F9, light: 0x0E0F12)
-    /// Supporting text: 5.2:1 on light paper, 4.8:1 on the muted fill; 7.0:1 on dark paper, 5.8:1 on dark cards.
+    /// Supporting text: 5.2:1 on light paper, 5.4:1 on the light sheet, 4.8:1 on the muted fill; 7.0:1, 6.6:1 and 6.2:1
+    /// on their dark counterparts.
     static let quiet = adaptive(dark: 0x969CA8, light: 0x646974)
     /// Tracks, hover fills and pressed controls.
     static let muted = adaptive(dark: 0x1A1C20, light: 0xEEF0F3)
     /// Hairlines between rows.
     static let rule = adaptive(dark: 0x24272C, light: 0xE6E8EC)
-    /// The empty part of a meter: visible on cards in both appearances.
+    /// The empty part of a meter: visible on the paper and on sheets in both appearances.
     static let track = adaptive(dark: (0xF6F7F9, 0.16), light: (0x0E0F12, 0.11))
     /// The edge of a control that must be found by its outline (a field, a checkbox, a switch that is off): 3:1 or
-    /// more against cards and paper.
+    /// more against the paper and sheets.
     static let controlEdge = adaptive(dark: (0xF6F7F9, 0.42), light: (0x0E0F12, 0.46))
 
-    /// A hairline that has to hold its own: the edge of a secondary button, the line under a chosen tab.
+    /// A hairline that has to hold its own: the edge of a secondary button.
     static let ruleStrong = adaptive(dark: 0x3A3E46, light: 0xC9CDD4)
 
     // Panels that hold a choice (a plan, the full terms, the drive icon): a flat sheet a shade lighter than the paper,
@@ -54,7 +55,7 @@ enum Air {
     /// The mark's green itself (BrandIconGeometry.palette[2]).
     static let markGreen = adaptive(dark: 0x9AC7B4, light: 0x9AC7B4)
 
-    // Status tones, each at least 4.5:1 on the paper and on cards.
+    // Status tones, each at least 4.5:1 on the paper and on sheets.
     static let good = adaptive(dark: 0x9AC7B4, light: 0x3F6B5A)
     static let attention = adaptive(dark: 0xE2B46B, light: 0x8A5A12)
     static let problem = adaptive(dark: 0xEE8F7E, light: 0xA63A2A)
@@ -68,7 +69,7 @@ enum Air {
         static let page: CGFloat = 28, section: CGFloat = 26
     }
     enum Radius {
-        static let card: CGFloat = 22, inset: CGFloat = 12, field: CGFloat = 9
+        static let sheet: CGFloat = 22, inset: CGFloat = 12, field: CGFloat = 9
     }
 
     // Type: San Francisco at two weights, display sizes tracked in by 3% as on the website.
@@ -187,7 +188,7 @@ extension View {
     func airDisplay(_ size: CGFloat, weight: Font.Weight = .medium) -> some View {
         font(.system(size: size, weight: weight)).tracking(-size * 0.03)
     }
-    /// A section's name above its card.
+    /// A section's name above its rows.
     func airHeading() -> some View {
         font(.system(size: Air.Size.heading, weight: .medium)).tracking(-0.2).foregroundStyle(Air.ink)
     }
@@ -215,7 +216,7 @@ struct AirPaper: View {
 /// A panel that holds a choice: a flat sheet a shade lighter than the paper, edged by a hairline. It casts no shadow;
 /// the website has none.
 struct AirSurface: View {
-    var radius: CGFloat = Air.Radius.card
+    var radius: CGFloat = Air.Radius.sheet
 
     var body: some View {
         RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -254,7 +255,8 @@ struct AirPage<Content: View>: View {
 }
 
 /// A group of rows set as type on the paper, its name above them and a note below, like a section of a settings form.
-/// Rows are the content's views, with a hairline above, between and below them; with no rows the section is left out.
+/// Rows are the content's views, with a hairline above, between and below them; with no rows only the name and note
+/// show.
 struct AirSection<Content: View, Header: View, Footer: View>: View {
     @ViewBuilder let content: Content
     @ViewBuilder let header: Header
@@ -753,18 +755,27 @@ struct AirMeter: View {
 // MARK: - Flight
 
 /// ParaAir's mark as a paper plane, as the website draws its planes: the two polygons turned so the nose points along
-/// +x, centred on the mark's middle, `size` points along its long side.
+/// +x, scaled by `size` (the mark's 454-unit width), and centred on the turned shape's own bounds, so it reaches
+/// 0.59 x size ahead and behind and 0.37 x size to either side.
 enum AirPlane {
     struct Shape { let body: Path, fold: Path }
 
+    /// How far a plane reaches from its centre, as a share of its size: along its heading and across it.
+    static let reach = CGSize(width: 0.59, height: 0.37)
+
     static func shape(size: CGFloat) -> Shape {
-        let middle = CGPoint(x: 479, y: 512), scale = size / 454, turn = CGFloat.pi / 4
+        let scale = size / 454, turn = CGFloat.pi / 4
+        func turned(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: (point.x * cos(turn) - point.y * sin(turn)) * scale, y: (point.x * sin(turn) + point.y * cos(turn)) * scale)
+        }
+        let all = BrandIconGeometry.mark.flatMap(\.points).map(turned)
+        let xs = all.map(\.x), ys = all.map(\.y)
+        let centre = CGPoint(x: (xs.min()! + xs.max()!) / 2, y: (ys.min()! + ys.max()!) / 2)
         func path(_ polygon: BrandIconGeometry.Polygon) -> Path {
             var path = Path()
-            for (index, point) in polygon.points.enumerated() {
-                let x = (point.x - middle.x) * scale, y = (point.y - middle.y) * scale
-                let turned = CGPoint(x: x * cos(turn) - y * sin(turn), y: x * sin(turn) + y * cos(turn))
-                if index == 0 { path.move(to: turned) } else { path.addLine(to: turned) }
+            for (index, point) in polygon.points.map(turned).enumerated() {
+                let placed = CGPoint(x: point.x - centre.x, y: point.y - centre.y)
+                if index == 0 { path.move(to: placed) } else { path.addLine(to: placed) }
             }
             path.closeSubpath()
             return path
@@ -823,8 +834,11 @@ struct AirFlightLayout {
         }
     }
 
-    /// How long the lead plane's entrance lasts.
-    static let duration: Double = 1.6
+    /// How long the lead plane's entrance lasts: the website's hero entrance, 1.5 s on an ease-out cubic.
+    static let duration: Double = 1.5
+    /// The lead plane's size while it runs under the words, as a share of its resting size: small enough to pass
+    /// between the name's descenders and the state line below.
+    static let underScale: CGFloat = 0.5
     /// How far above the flying view the planes may go, into the margin over a header.
     static let headroom: CGFloat = 24
 
@@ -854,7 +868,7 @@ struct AirFlightLayout {
             let home = CGPoint(x: min(max(zone.minX + min(zone.width * 0.3, 100), zone.minX + 30), zone.maxX - 30),
                                y: zone.minY + zone.height * 0.42)
             // Just under the line, clear of the descenders above and the state below, until past the words.
-            let start = CGPoint(x: line.minX + 6, y: line.midY + 5)
+            let start = CGPoint(x: line.minX + 6, y: line.midY + 4)
             let run = CGPoint(x: line.maxX + 10, y: start.y)
             let turn = CGPoint(x: run.x + max(20, (home.x - run.x) * 0.55), y: start.y)
             path = Flight(start: start, run: run, control: turn, home: home)
@@ -894,8 +908,13 @@ struct AirFlightLayout {
         let shape = AirPlane.shape(size: 1)
         for plane in flock {
             if plane.near {
-                let back = CGPoint(x: plane.at.x - cos(plane.angle) * 30, y: plane.at.y - sin(plane.angle) * 30)
-                Self.stroke(context, [(plane.at, 1), (back, 0)], color: Air.planeGrey, width: 1.2, opacity: 0.25)
+                // As on the website: a faint grey line that starts at the plane's tail and tapers away behind it.
+                let tail = plane.size * AirPlane.reach.width
+                let points = (0...5).map { step -> (point: CGPoint, weight: CGFloat) in
+                    let back = tail + CGFloat(step) * 9
+                    return (CGPoint(x: plane.at.x - cos(plane.angle) * back, y: plane.at.y - sin(plane.angle) * back), 1 - CGFloat(step) / 5)
+                }
+                Self.stroke(context, points, color: Air.planeGrey, width: 1.5, opacity: 0.25)
             }
             Self.stamp(context, shape, plane, body: Air.planeGrey, fold: Air.planeFold, scale: plane.size)
         }
@@ -909,21 +928,23 @@ struct AirFlightLayout {
             Self.stamp(context, shape, lead, body: Air.ink, fold: Air.markGreen, scale: lead.size)
             return
         }
-        // In flight: the plane rides the tip of the line it draws, then climbs into its place, growing as it nears.
+        // In flight: the plane rides the tip of the line it draws, small, then climbs into its place, growing as it nears.
         let along = Self.ease(progress)
         let at = path.point(along)
         let ahead = path.point(min(1, along + 0.01))
         if let underline { Self.drawUnderline(context, underline, drawn: min(1, max(0, (at.x - underline.minX) / underline.width))) }
         let shown = min(1, progress / 0.12)
         let angle = along >= 0.99 ? lead.angle : atan2(ahead.y - at.y, ahead.x - at.x)
+        let climbed = path.runShare < 1 ? max(0, (along - path.runShare) / (1 - path.runShare)) : 1
+        let size = lead.size * (Self.underScale + (1 - Self.underScale) * climbed)
         Self.stroke(context, Self.trail(path, from: along, reach: reach), color: Air.trail, width: lead.size * 0.075, opacity: 0.9 * shown)
-        Self.stamp(context, shape, Plane(at: at, angle: angle, size: lead.size * (0.55 + 0.45 * along), opacity: shown, near: true),
-                   body: Air.ink, fold: Air.markGreen, scale: lead.size * (0.55 + 0.45 * along))
+        Self.stamp(context, shape, Plane(at: at, angle: angle, size: size, opacity: shown, near: true),
+                   body: Air.ink, fold: Air.markGreen, scale: size)
     }
 
+    /// The website's entrance curve: an ease-out cubic.
     private static func ease(_ t: Double) -> CGFloat {
-        let t = CGFloat(min(1, max(0, t)))
-        return t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
+        1 - pow(1 - CGFloat(min(1, max(0, t))), 3)
     }
 
     /// The path behind a point on the flight, back `reach` points or to where its curve began, each point with its weight.
@@ -972,12 +993,15 @@ struct AirFlightLayout {
     }
 
     /// The sage line under the words: it fades in from the left, as the website's does, and is drawn from the left.
+    /// The fade is a third of the line at most and about one and a half letters long, so a short name still reads as
+    /// underlined from its first letter.
     private static func drawUnderline(_ context: GraphicsContext, _ line: CGRect, drawn: CGFloat) {
         guard drawn > 0 else { return }
         let shown = CGRect(x: line.minX, y: line.minY, width: max(line.height, line.width * drawn), height: line.height)
+        let fade = min(0.35, line.height * 16 / max(line.width, 1))
         context.fill(Path(roundedRect: shown, cornerRadius: line.height / 2, style: .circular),
                      with: .linearGradient(Gradient(stops: [.init(color: Air.trail.opacity(0), location: 0),
-                                                            .init(color: Air.trail, location: 0.35),
+                                                            .init(color: Air.trail, location: fade),
                                                             .init(color: Air.trail, location: 1)]),
                                            startPoint: CGPoint(x: line.minX, y: line.midY), endPoint: CGPoint(x: line.maxX, y: line.midY)))
     }
@@ -998,13 +1022,13 @@ struct AirFlightLayout {
             let opacity = near ? 0.72 + 0.15 * random() : 0.42 + 0.1 * random()
             let angle = lead.angle + (random() - 0.5) * 0.5
             let across = random(), down = random()
-            let margin = size * 0.6 + 8
+            let margin = size * AirPlane.reach.width + 8
             guard zone.width > margin * 2, zone.height > margin * 2 else { continue }
             let at = CGPoint(x: zone.minX + margin + across * (zone.width - margin * 2),
                              y: zone.minY + margin + down * (zone.height - margin * 2))
-            let clearOfLead = hypot(at.x - lead.at.x, at.y - lead.at.y) >= lead.size * 0.7 + size * 0.6 + 10
-            let clearOfTrail = trail.allSatisfy { hypot(at.x - $0.x, at.y - $0.y) >= size * 0.6 + 8 }
-            let clearOfFlock = planes.allSatisfy { hypot(at.x - $0.at.x, at.y - $0.at.y) >= (size + $0.size) * 0.6 + 8 }
+            let clearOfLead = hypot(at.x - lead.at.x, at.y - lead.at.y) >= (lead.size + size) * AirPlane.reach.width + 10
+            let clearOfTrail = trail.allSatisfy { hypot(at.x - $0.x, at.y - $0.y) >= size * AirPlane.reach.width + 8 }
+            let clearOfFlock = planes.allSatisfy { hypot(at.x - $0.at.x, at.y - $0.at.y) >= (size + $0.size) * AirPlane.reach.width + 8 }
             if clearOfLead, clearOfTrail, clearOfFlock {
                 planes.append(Plane(at: at, angle: angle, size: size, opacity: opacity, near: near))
             }
@@ -1142,6 +1166,8 @@ struct AirLink: View {
 struct ParaAirMark: View {
     var badge = true
     var template = false
+    /// The bare mark in the flock's greys, for a stand-in that shouldn't compete with the lead plane.
+    var quiet = false
 
     var body: some View {
         Canvas { context, size in
@@ -1166,7 +1192,7 @@ struct ParaAirMark: View {
                 } else if template {
                     fill = .primary
                 } else {
-                    fill = polygon.color == 1 ? Air.ink : Air.markGreen
+                    fill = quiet ? (polygon.color == 1 ? Air.planeGrey : Air.planeFold) : polygon.color == 1 ? Air.ink : Air.markGreen
                 }
                 context.fill(path, with: .color(fill))
             }

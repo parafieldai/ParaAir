@@ -435,10 +435,10 @@ private struct PlanCard<Footer: View>: View {
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(AirSurface())
-        .overlay(RoundedRectangle(cornerRadius: Air.Radius.card, style: .continuous)
+        .overlay(RoundedRectangle(cornerRadius: Air.Radius.sheet, style: .continuous)
             .strokeBorder(Air.ink, lineWidth: 1.5).opacity(chosen ? 1 : 0))
         .airAnimation(AirMotion.hover, value: chosen)
-        .contentShape(RoundedRectangle(cornerRadius: Air.Radius.card, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: Air.Radius.sheet, style: .continuous))
         .onTapGesture { if option.available { select() } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(offer.name), \(offer.size), \(offer.price)")

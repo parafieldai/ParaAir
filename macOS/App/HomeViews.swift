@@ -265,8 +265,9 @@ private struct DriveHeader: View {
                 if let icon {
                     Image(nsImage: icon).resizable().scaledToFit()
                 } else {
-                    // The bare mark, as in the website's masthead: no tile behind it.
-                    ParaAirMark(badge: false).padding(size.icon * 0.08)
+                    // With no drive icon, the bare mark stands in, quiet in the flock's greys, so the lead plane in ink and
+                    // sage is the one mark in the header.
+                    ParaAirMark(badge: false, quiet: true).padding(size.icon * 0.08)
                 }
             }
             .frame(width: size.icon, height: size.icon)

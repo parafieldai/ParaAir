@@ -42,7 +42,8 @@ rows; the type uses regular and medium only. Paths and versions use the monospac
 - No cards. A section is its name, then rows on the paper with a hairline above, between and below them, as the
   website lists the repository's folders. Rows have 12 pt above and below their content and no side inset, so they line
   up with the section's name. In the menu bar panel, the drive list's closing line is also the panel's rule.
-- Sheets (plan choices, the terms box, the icon well): 22 pt continuous corners, or 12 pt for inset boxes. Fields: 9 pt.
+- Sheets (plan choices, the terms box, the icon well): 22 pt continuous corners (`Radius.sheet`), or 12 pt for inset
+  boxes. Fields: 9 pt.
 - Buttons, segmented controls, pop-up menus and switches are capsules (circular ends: the default continuous capsule
   draws stray stubs at its ends in macOS 27).
 - A 4-point scale. The window margin is 28 pt; sections are 26 pt apart.
@@ -70,9 +71,12 @@ native toggle, segmented picker or pop-up button), and every button stays focusa
 
 The website's signature, drawn by `airFlight(_:)` over a header from the shared mark geometry (`AirPlane`). The words a
 plane flew under mark themselves with `airUnderlined()`, and the planes fly beside them, never over them; About marks its
-sky band with `airSky()`. Trails are single tapered shapes, full at the plane and nothing at the tail.
+sky band with `airSky()`. A plane is centred on its own bounds and reaches 0.59 of its size ahead and behind and 0.37
+to either side (`AirPlane.reach`); every clearance uses those figures. Trails are single tapered shapes, full at the
+plane and nothing at the tail: the lead's in sage, a near flock plane's a faint grey line of about 45 pt behind its tail.
 
-- **Home window** (`.window`): the drive's name has a sage line beneath it, fading in from the left. A lead plane in ink
+- **Home window** (`.window`): the drive's name has a sage line beneath it, fading in from the left over about one and
+  a half letters (a third of the line at most), so a short name reads as underlined from its first letter. A lead plane in ink
   and the mark's sage rests in the open paper to the right of the name, from the margin above the header to just below
   the name, so no plane meets the state line. Its sage trail curves back toward the end of the line, and a small grey
   flock flies around it, heading the same way, near planes larger with a faint grey trail. The sky depends on the name
@@ -81,15 +85,19 @@ sky band with `airSky()`. Trails are single tapered shapes, full at the plane an
   less, there is only the line. The flock's places are seeded by the drive's name, so each drive keeps its own sky.
 - **Menu bar panel** (`.panel`): one small plane just off the end of the line, its trail leaving the line's end. No
   flock.
+- With no drive icon, the bare mark stands in beside the name in the flock's greys, so the lead plane is the one mark in
+  ink and sage in each header.
 - **About** (`.about`): a larger lead plane and its flock in the sky band above "ParaAir", clear of the window's buttons.
 
 ## Motion
 
 Two curves. Things that arrive or move use `reveal` (cubic-bezier 0.22, 1, 0.36, 1; 0.7 s) or its 0.4 s form
-`settle`; hover and colour changes use `hover` (0.4, 0, 0.2, 1; 0.2 s), press `quick` (0.15 s).
+`settle`; hover and colour changes use `hover` (0.4, 0, 0.2, 1; 0.2 s), press `quick` (0.15 s). The lead plane's
+entrance is the one exception: it keeps the website's hero entrance, an ease-out cubic over 1.5 s.
 
-- When the home window opens, the lead plane flies in once (1.6 s, ease in and out): it runs straight under the name at
-  the tip of the sage line, drawing it, and only once past the last letter climbs into its place, growing as it nears.
+- When the home window opens, the lead plane flies in once: it runs straight under the name at the tip of the sage line,
+  drawing it, at half its size so it passes between the name's descenders and the state line, and only once past the
+  last letter climbs into its place, growing to full size as it nears.
   This is the website's hero entrance. Nothing else in the sky moves, and nothing moves while the window is open.
 - A changed state's words come out of a 4-point blur. Rows, notices and sections that come and go rise 6 pt from 96%
   scale as they fade in; the rest of the page settles around them.
@@ -97,7 +105,7 @@ Two curves. Things that arrive or move use `reveal` (cubic-bezier 0.22, 1, 0.36,
 - Work under way (connecting, verifying, loading buckets) sweeps a slow ink band across its quiet text.
 
 Content never waits on an animation: views are fully drawn at rest, and motion only moves what is already there; the
-line under the name and the lead plane wait only for the entrance, which lands by the clock after 1.65 s whether or not
+line under the name and the lead plane wait only for the entrance, which lands by the clock after 1.55 s whether or not
 its frames were drawn. Under Reduce Motion nothing
 slides, scales, blurs or flies: state changes are immediate, the planes and the line are where they rest from the start
 (turning it on mid-flight lands them at once), the shimmer stops, and only hover and press keep their colour fades.
