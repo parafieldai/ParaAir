@@ -7,6 +7,23 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>ParaAir updates</description>
     <language>en</language>
     <item>
+      <title>ParaAir 0.1.0 alpha 12</title>
+      <pubDate>Thu, 26 Nov 2026 14:12:01 GMT</pubDate>
+      <sparkle:version>84</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.12</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>Uploads wait out a busy ParaAir Cloud and retry each piece on its own, instead of sending everything again at once.</li>
+<li>Deleting a file that hasn't uploaded yet stops its upload. Ejecting the drive stops uploads in flight; they resume next time.</li>
+<li>Get Help and Copy Diagnostics in About ParaAir, Advanced and the menu bar's More menu. Diagnostics leave out file paths, tokens, keys and email addresses.</li>
+<li>Team plans say "Not available yet" where they can't be bought.</li>
+<li>On macOS 26 this update turns the switch off once more. ParaAir shows the step when it opens.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.12/ParaAir-0.1.0-alpha.12.zip" length="50226008" type="application/octet-stream" sparkle:edSignature="GE8NnakyMLO1qHoogLqPYx5GvddRvjfEEyb5NCHIlD8N3n89nG57Phz6qfhIcwC6/hLYG6U7U9FAOn+9+8WDAQ=="/>
+    </item>
+    <item>
       <title>ParaAir 0.1.0 alpha 11</title>
       <pubDate>Thu, 26 Nov 2026 06:39:47 GMT</pubDate>
       <sparkle:version>72</sparkle:version>
@@ -138,6 +155,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: wNAeS9gngRHdAjWRYA2uJqffwooYAn9aR73L5K9/sILnkxFA5k3y42g2dQUkCAK1tefxkCWEDHKaHHF0x2efCg==
-length: 10733
+edSignature: Oi4fMUDffie25auW5ealKm+WiW4buYVw2gXU1GYj4QQ+u4HISExILyMQm2zIZDRZ45MhPHwjijec19rXim6/Ag==
+length: 12117
 -->
