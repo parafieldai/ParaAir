@@ -903,7 +903,9 @@ html { scroll-padding-top: 80px; }
 /* ------------------------------------------------------------------------------------------------
  * Get started (site/get-started.html). Hallmark · macrostructure: custom (route ledger)
  * Five stops in the pricing page's ledger rows. Each stop's name carries five file pieces, lit as far
- * as that stop, so the last row is the whole file down on the Mac. Everything is scoped to .start.
+ * as that stop, so the last row is the whole file down on the Mac. The first time a stop comes into
+ * view, a plane crosses its pieces and drops that stop's own piece into its slot. Everything is scoped
+ * to .start.
  * --------------------------------------------------------------------------------------------- */
 .start .route {
   max-width: 1440px;
@@ -930,9 +932,16 @@ html { scroll-padding-top: 80px; }
   font: 500 var(--text-path)/1.1 var(--font-display);
   letter-spacing: -0.025em;
 }
-.start .stop-pieces { display: flex; gap: 5px; }
-.start .stop-pieces i { width: 12px; height: 12px; border-radius: 3px; background: var(--piece-off); }
+.start .stop-pieces { position: relative; display: flex; gap: 5px; }
+.start .stop-pieces i { --k: 0; position: relative; width: 12px; height: 12px; border-radius: 3px; background: var(--piece-off); }
 .start .stop-pieces i.on { background: var(--piece-on); }
+.start .stop-pieces i:nth-of-type(2) { --k: 1; }
+.start .stop-pieces i:nth-of-type(3) { --k: 2; }
+.start .stop-pieces i:nth-of-type(4) { --k: 3; }
+.start .stop-pieces i:nth-of-type(5) { --k: 4; }
+/* The plane flies in the stop's top padding, above the pieces and under the rule. It is only there while it flies:
+   at rest (no script, reduced motion, a stop not yet in view) every piece is simply where the stop leaves it. */
+.start .stop-glider { position: absolute; left: 0; top: -24px; width: 16px; height: 16px; opacity: 0; pointer-events: none; }
 .start .stop-desc { grid-area: desc; display: grid; gap: var(--space-md); align-content: start; }
 .start .stop-desc p { font-size: var(--text-lg); color: var(--ink-2); max-width: 44ch; text-wrap: pretty; }
 .start .stop-desc strong { color: var(--ink); font-weight: 600; }
@@ -950,4 +959,34 @@ html { scroll-padding-top: 80px; }
 @media (max-width: 900px) {
   .start .stop { grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "desc" "action"; }
   .start .stop-action { margin-top: var(--space-xs); }
+}
+/* A stop comes into view (motion.js adds .is-in once): the plane crosses its row at an even speed, 100 px a second;
+   over the stop's own piece (.now, column --k) it lets go of it, and the piece falls into its slot and lands. The
+   pieces from earlier stops are already down. Delays follow the plane: it is over column k at 0.36 s + k × 0.17 s. */
+@media (prefers-reduced-motion: no-preference) {
+  .start .stop-pieces.is-in .stop-glider { animation: stop-cross 1.2s linear 0.1s both; }
+  .start .stop-pieces.is-in .now { animation: stop-slot 0.36s cubic-bezier(0.2, 0.9, 0.3, 1) calc(0.78s + var(--k) * 0.17s) backwards; }
+  .start .stop-pieces.is-in .now::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--piece-on);
+    animation: stop-fall 0.42s cubic-bezier(0.55, 0, 0.75, 0.6) calc(0.36s + var(--k) * 0.17s) both;
+  }
+}
+@keyframes stop-cross {
+  0% { transform: translateX(-28px) rotate(45deg); opacity: 0; }
+  12%, 82% { opacity: 1; }
+  100% { transform: translateX(92px) rotate(45deg); opacity: 0; }
+}
+@keyframes stop-fall {
+  0% { transform: translateY(-22px) scale(0.7); opacity: 0; }
+  15%, 90% { opacity: 1; }
+  100% { transform: none; opacity: 0; }
+}
+@keyframes stop-slot {
+  0% { background-color: var(--piece-off); transform: none; }
+  1% { background-color: var(--piece-on); transform: scale(1.45); }
+  100% { background-color: var(--piece-on); transform: none; }
 }

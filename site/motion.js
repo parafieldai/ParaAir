@@ -712,4 +712,18 @@
   } else {
     scenes.forEach((scene) => scene.classList.add('is-in'));
   }
+
+  // Get started's stops: the first time a stop's pieces are a fifth of the window up from its foot, a plane crosses
+  // them and drops that stop's piece (styles.css), once. Without the observer the pieces simply stay where they are.
+  const landings = document.querySelectorAll('[data-land]');
+  if (landings.length && 'IntersectionObserver' in window) {
+    const once = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        entry.target.classList.add('is-in');
+        once.unobserve(entry.target);
+      }
+    }, { rootMargin: '0px 0px -20% 0px' });
+    landings.forEach((el) => once.observe(el));
+  }
 })();

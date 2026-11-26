@@ -288,7 +288,7 @@ def footer(current, root=""):
   </footer>"""
 
 
-def page(slug_, title, description, body, current, root="", extra_head=""):
+def page(slug_, title, description, body, current, root="", extra_head="", script="legal.js", body_class="legal-page"):
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -301,12 +301,12 @@ def page(slug_, title, description, body, current, root="", extra_head=""):
   <link rel="icon" href="{root}glide.svg" type="image/svg+xml">
   <link rel="stylesheet" href="{root}styles.css">
 </head>
-<body class="legal-page">
+<body{f' class="{body_class}"' if body_class else ''}>
   <a class="skip" href="#main">Skip to content</a>
 {masthead(root)}
 {body}
 {footer(current, root)}
-  <script src="{root}legal.js" defer></script>
+  <script src="{root}{script}" defer></script>
 </body>
 </html>
 """
@@ -356,14 +356,23 @@ def index_page(effective):
 
 
 def not_found_page():
-    body = """  <main id="main" class="legal legal-missing">
-    <div class="legal-head">
-      <h1>There\u2019s no page here.</h1>
-      <p class="doc-meta">The link may be old, or the address mistyped. Try the <a href="/">ParaAir home page</a>, <a href="/pricing">pricing</a> or <a href="/legal">legal documents</a>.</p>
-    </div>
+    """The landing page's hero (site/index.html), so motion.js flies it the same way: the headline at poster size with
+    the lead plane flying in under its last words, the grey flock in the open air, the way back at the foot."""
+    body = """  <canvas class="sky" data-sky aria-hidden="true"></canvas>
+  <main id="main">
+    <section class="hero" aria-labelledby="missing-title" data-flight="hero">
+      <h1 id="missing-title">There\u2019s no <span class="under" data-under>page&nbsp;here.</span></h1>
+      <div class="hero-foot">
+        <p class="lede">The link may be old, or the address&nbsp;mistyped.</p>
+        <div class="hero-action">
+          <a class="cta" href="/">Go to the home page</a>
+          <p class="requires">Or try <a href="/pricing">pricing</a> or the <a href="/legal">legal documents</a>.</p>
+        </div>
+      </div>
+    </section>
   </main>"""
     return page("404", "Page not found", "This page does not exist.", body, "", root="/",
-                extra_head='\n  <meta name="robots" content="noindex">')
+                extra_head='\n  <meta name="robots" content="noindex">', script="motion.js", body_class="")
 
 
 def main():

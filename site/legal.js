@@ -1,6 +1,14 @@
-// Legal pages: open the contents list on wide screens and mark the section being read. Everything is
-// visible without this script; it only toggles `open` and aria-current on elements already on screen.
+// Legal pages: the masthead's hairline once the page has scrolled, as on the rest of the site (motion.js), and on wide
+// screens the contents list open with the section being read marked. No planes here: long documents stay calm.
+// Everything is visible without this script; it only toggles a class, `open` and aria-current on what is already there.
 (() => {
+  const masthead = document.querySelector('.masthead');
+  if (masthead) {
+    const rule = () => masthead.classList.toggle('is-scrolled', window.scrollY > 8);
+    window.addEventListener('scroll', rule, { passive: true });
+    rule();
+  }
+
   const toc = document.querySelector('.toc');
   const details = toc && toc.querySelector('details');
   if (!details) return;

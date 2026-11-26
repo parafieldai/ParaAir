@@ -11,7 +11,7 @@
   <link rel="icon" href="/glide.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body class="legal-page">
+<body>
   <a class="skip" href="#main">Skip to content</a>
   <header class="masthead">
     <a class="brand" href="/" aria-label="ParaAir home">
@@ -32,16 +32,23 @@
       <a class="nav-cta" href="/#access">Download</a>
     </nav>
   </header>
-  <main id="main" class="legal legal-missing">
-    <div class="legal-head">
-      <h1>There’s no page here.</h1>
-      <p class="doc-meta">The link may be old, or the address mistyped. Try the <a href="/">ParaAir home page</a>, <a href="/pricing">pricing</a> or <a href="/legal">legal documents</a>.</p>
-    </div>
+  <canvas class="sky" data-sky aria-hidden="true"></canvas>
+  <main id="main">
+    <section class="hero" aria-labelledby="missing-title" data-flight="hero">
+      <h1 id="missing-title">There’s no <span class="under" data-under>page&nbsp;here.</span></h1>
+      <div class="hero-foot">
+        <p class="lede">The link may be old, or the address&nbsp;mistyped.</p>
+        <div class="hero-action">
+          <a class="cta" href="/">Go to the home page</a>
+          <p class="requires">Or try <a href="/pricing">pricing</a> or the <a href="/legal">legal documents</a>.</p>
+        </div>
+      </div>
+    </section>
   </main>
   <footer class="colophon">
     <nav class="colophon-legal" aria-label="Legal"><a href="/terms.html">Terms</a>&nbsp;· <a href="/privacy.html">Privacy</a>&nbsp;· <a href="/subscription-policy.html">Refunds</a>&nbsp;· <a href="/acceptable-use.html">Acceptable use</a>&nbsp;· <a href="/copyright.html">Copyright</a>&nbsp;· <a href="/legal.html">All legal</a></nav>
     <p>ParaAir by Parafield · <a href="https://github.com/parafieldai/ParaAir">Source code</a> (Apache-2.0) · Built on <a href="https://github.com/juicedata/juicefs">JuiceFS</a> · © 2026</p>
   </footer>
-  <script src="/legal.js" defer></script>
+  <script src="/motion.js" defer></script>
 </body>
 </html>
