@@ -1,7 +1,8 @@
-/* Hallmark · macrostructure: custom (airflow poster) · tone: calm-technical · anchor hue: ink, sage accent
- * theme: custom (Air, shared with the Mac app) · paper #F7F8FA / #0C0D10 · ink #0E0F12 / #F6F7F9 · accent sage #9AC7B4
+/* Hallmark · macrostructure: custom (flight) · tone: calm-technical · anchor hue: ink, sage accent
+ * theme: custom (Air paper and ink, shared with the Mac app) · paper #F7F8FA / #0C0D10 · ink #0E0F12 / #F6F7F9 · accent #9AC7B4
  * display system-ui 500 tracked -3.5% + body system-ui · axes: paper-band light+dark / display grotesk-sans / accent neutral
- * The signature is the airflow: two ribbons of fine dots the paper plane rides, lighting the pieces in its wake.
+ * The signature is the ParaAir planes: a lead plane in ink and sage and a grey flock that fly as you scroll, only ever
+ * in their own airspace, never over words.
  */
 
 :root {
@@ -28,10 +29,14 @@
   --field-off: var(--muted);
   --piece-on: #4F8A73;
   --piece-on-rgb: 79 138 115;
+  --on: #3F7A64;
+  --outline: #858B96;
+  --sage-line: #5E9C83;
+  --rule-strong: #C9CDD4;
+  --plane-grey: #A4A9B2;
+  --plane-fold: #D3D7DD;
   --piece-slow: color-mix(in oklab, var(--piece-on) 52%, var(--paper));
   --piece-stored: #B9BEC7;
-  --ribbon-a: 92 107 148;
-  --ribbon-b: 77 128 107;
   --accent: var(--ink);
   --accent-ink: var(--paper);
   --accent-text: var(--ink);
@@ -61,7 +66,7 @@
   --section: clamp(96px, 13vw, 184px);
   --radius-card: 24px;
   --radius-inset: 14px;
-  --nav-h: 44px;
+  --nav-h: 64px;
 
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-glide: cubic-bezier(0.22, 1, 0.36, 1);
@@ -92,9 +97,13 @@
     --piece-off: #23262B;
     --piece-on: var(--sage);
     --piece-on-rgb: 154 199 180;
+    --on: #9AC7B4;
+    --outline: #6F7581;
+    --sage-line: #9AC7B4;
+    --rule-strong: #3A3E46;
+    --plane-grey: #5E646F;
+    --plane-fold: #3A3F47;
     --piece-stored: #5A606B;
-    --ribbon-a: 178 192 228;
-    --ribbon-b: 160 212 190;
     --focus: #5B9BFF;
     --grain-opacity: 0.06;
     color-scheme: dark;
@@ -131,7 +140,9 @@ a:hover { color: var(--ink); }
 h1, h2 { font-style: normal; margin: 0; }
 p { margin: 0; }
 /* Anchored sections land below the floating navigation. */
-[id] { scroll-margin-top: calc(var(--nav-h) + 40px); }
+[id] { scroll-margin-top: 96px; }
+/* Keyboard focus is never hidden under the fixed bar. */
+html { scroll-padding-top: 80px; }
 
 .skip {
   position: absolute; left: var(--gutter); top: -100px; z-index: 30;
@@ -159,7 +170,6 @@ p { margin: 0; }
   letter-spacing: -0.01em;
   text-decoration: none;
   white-space: nowrap;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16), var(--ink-shadow);
   transition: opacity var(--dur) var(--ease-std);
 }
 .cta:hover { color: var(--paper); opacity: 0.86; }
@@ -169,206 +179,130 @@ p { margin: 0; }
 .requires a { color: var(--ink-2); text-decoration: underline; text-decoration-color: color-mix(in oklab, var(--ink-2) 50%, transparent); text-underline-offset: 3px; }
 .requires a:hover { color: var(--ink); text-decoration-color: currentColor; }
 
-/* Glass: a translucent sheet over whatever is behind it, edged by its own tone and lit along the top. */
-.glass, .masthead .brand, .nav-group {
-  background: var(--glass);
-  border: 1px solid var(--glass-edge);
-  box-shadow: inset 0 1px 0 var(--card-lip), 0 1px 2px rgb(15 23 42 / 0.05);
-  -webkit-backdrop-filter: blur(20px) saturate(1.5);
-  backdrop-filter: blur(20px) saturate(1.5);
-}
-.card {
-  border-radius: var(--radius-card);
-  background: linear-gradient(var(--card-top), var(--card-bottom));
-  border: 1px solid var(--card-edge);
-  box-shadow: inset 0 1px 0 var(--card-lip), var(--card-shadow);
-  -webkit-backdrop-filter: blur(28px) saturate(1.6);
-  backdrop-filter: blur(28px) saturate(1.6);
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
 }
 
-/* Masthead: the mark, the links and the download float as separate glass pieces over the page. */
+/* Masthead: one bar across the top, the paper showing through; a hairline once the page has scrolled. */
 .masthead {
   position: fixed;
-  inset: 14px 0 auto 0;
+  inset: 0 0 auto 0;
   z-index: 20;
+  height: 64px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-sm);
-  padding: 0 clamp(12px, 3vw, 28px);
-  pointer-events: none;
+  padding: 0 var(--gutter);
+  background: color-mix(in oklab, var(--paper) 88%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  backdrop-filter: blur(14px) saturate(1.3);
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--dur) var(--ease-std);
 }
-.masthead > * { pointer-events: auto; }
-.brand {
-  display: inline-flex; align-items: center; gap: 9px;
-  height: var(--nav-h); padding: 0 16px 0 13px; border-radius: 999px;
-  font: 600 1rem/1 var(--font-body); letter-spacing: -0.01em; text-decoration: none;
-  transition: background-color var(--dur) var(--ease-std), border-color var(--dur) var(--ease-std);
-}
-.brand:hover { background: var(--glass-hover); border-color: var(--glass-edge-hover); }
-.brand-mark { width: 20px; height: 20px; }
-.nav { display: flex; align-items: center; gap: var(--space-xs); }
-.nav-group { display: flex; align-items: center; height: var(--nav-h); padding: 0 6px; border-radius: 999px; }
+.masthead.is-scrolled { border-bottom-color: var(--rule); }
+.brand { display: inline-flex; align-items: center; gap: 10px; font: 600 1.0625rem/1 var(--font-body); letter-spacing: -0.01em; text-decoration: none; }
+.brand-mark { width: 22px; height: 22px; }
+.nav { display: flex; align-items: center; gap: var(--space-md); }
+.nav-group { display: flex; align-items: center; gap: var(--space-md); }
 .nav-link {
   display: inline-flex; align-items: center; gap: 7px;
-  height: 32px; padding: 0 12px; border-radius: 999px;
   font-size: var(--text-sm); font-weight: 500; text-decoration: none; color: var(--ink-2); white-space: nowrap;
-  transition: color var(--dur) var(--ease-std), background-color var(--dur) var(--ease-std);
 }
-.nav-link:hover { color: var(--ink); background: var(--muted); }
+.nav-link:hover { color: var(--ink); }
 .nav-icon { width: 17px; height: 17px; fill: currentColor; flex: none; }
 /* The current page reads as current through ink alone: no dot, no underline. */
 .nav-link[aria-current="page"] { color: var(--ink); }
 .nav-cta {
   display: inline-flex; align-items: center;
-  height: var(--nav-h); padding: 0 18px; border-radius: 999px;
+  height: 38px; padding: 0 16px; border-radius: 999px;
   background: var(--ink); color: var(--paper);
   font-size: var(--text-sm); font-weight: 500; text-decoration: none; white-space: nowrap;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16), var(--ink-shadow);
   transition: opacity var(--dur) var(--ease-std);
 }
 .nav-cta:hover { color: var(--paper); opacity: 0.86; }
 /* Narrow phones keep the mark; the link keeps its accessible name from aria-label. */
 @media (max-width: 440px) {
   .brand span, .nav-label { display: none; }
-  .brand { padding: 0 12px; }
 }
 
-/* Hero: the headline centred over clear paper, the airflow running beneath it. */
+/* The sky: one canvas behind everything, where the planes fly. They only ever appear inside an airspace (the
+   hero's open side, the bands between stories, the closing section's open side), never over words. */
+.sky { position: fixed; inset: 0; width: 100vw; height: 100lvh; z-index: 0; pointer-events: none; }
+main, .colophon { position: relative; z-index: 1; }
+
+/* Hero: the headline at poster size, the lede and download together at the bottom left, the right side open sky. */
 .hero {
   position: relative;
   min-height: 100svh;
+  max-width: 1240px;
+  margin: 0 auto;
   display: grid;
-  grid-template-rows: 1fr auto;
-  justify-items: center;
-  padding: calc(var(--nav-h) + clamp(48px, 10vh, 120px)) var(--gutter) 0;
-  text-align: center;
+  grid-template-rows: auto 1fr auto;
+  padding: calc(64px + clamp(56px, 12vh, 140px)) var(--gutter) clamp(36px, 7vh, 72px);
 }
-.hero-text { position: relative; z-index: 1; display: grid; justify-items: center; min-width: 0; max-width: 60rem; }
 h1 {
-  font: 500 var(--text-display)/1.02 var(--font-display);
+  font: 500 clamp(3rem, 0.9rem + 7.4vw, 8.4rem)/0.96 var(--font-display);
   letter-spacing: var(--track-display);
+  max-width: 11ch;
   overflow-wrap: anywhere;
   text-wrap: balance;
 }
-.tone { color: var(--ink-2); font-weight: 400; }
-/* A two-tone heading: the ink line, then the quiet line under it. */
-h1 .tone, h2 .tone { display: block; }
-.lede { margin-top: var(--space-md); font-size: var(--text-lg); line-height: 1.55; color: var(--ink-2); max-width: 30ch; text-wrap: balance; }
-.hero-action { margin-top: var(--space-lg); display: grid; gap: var(--space-xs); justify-items: center; }
-.hero-action .cta { margin-bottom: var(--space-xs); }
-.airflow {
-  position: relative;
-  z-index: 0;
-  justify-self: start;
-  width: 100vw;
-  margin-left: calc(50% - 50vw);
-  /* The ribbons come out of the paper and go back into it. */
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent);
-  mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent);
-  height: clamp(200px, 30vh, 340px);
-  margin-top: var(--space-md);
-  display: block;
-}
-
-/* Scenes */
-.scene, .choice, .access, .panel-shot {
-  max-width: 1240px;
-  margin: 0 auto;
-  padding: var(--section) var(--gutter) 0;
-}
-h2 { font: 500 var(--text-xl)/1.06 var(--font-display); letter-spacing: var(--track-title); text-wrap: balance; overflow-wrap: anywhere; }
-.scene-copy p, .choice-pair p, .panel-copy p { margin-top: var(--space-md); font-size: var(--text-lg); color: var(--ink-2); max-width: 34ch; }
-
-.scene {
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: var(--space-xl);
-  align-items: center;
-}
-.scene-saves { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
-.scene .card { padding: clamp(20px, 3vw, 36px); }
-
-/* Pieces: a file whose opened parts drop to the Mac */
-.lanes { display: grid; gap: var(--space-sm); }
-.lane-label { font-size: var(--text-sm); color: var(--ink-3); }
-.lane-label-bottom { justify-self: end; }
-.file-name { display: flex; justify-content: space-between; gap: var(--space-sm); font-size: var(--text-sm); }
-.file-name b { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
-.file-name span { color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.file-row {
-  --drop: 112px;
-  --s: 28px;
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(var(--count, 18), minmax(0, 1fr));
-  gap: 5px;
-  height: calc(var(--drop) + var(--s));
-  align-items: start;
-  isolation: isolate;
-  margin-block: calc(var(--s) * 0.35);
-}
-.file-row::before, .file-row::after {
+/* The lead plane's trail: the emphasis, under the words it flew beneath. */
+.under { position: relative; white-space: nowrap; }
+.under::after {
   content: "";
   position: absolute;
-  left: -10px;
-  right: -10px;
-  height: calc(var(--s) * 1.7);
-  border-radius: 12px;
-  background: var(--muted);
-  z-index: -1;
+  left: 0.02em;
+  right: 0.04em;
+  bottom: -0.02em;
+  height: 0.075em;
+  border-radius: 999px;
+  background: linear-gradient(to right, color-mix(in oklab, var(--sage-line) 0%, transparent), var(--sage-line) 35%);
+  transform-origin: left center;
 }
-.file-row::before { top: calc(var(--s) * -0.35); }
-.file-row::after { bottom: calc(var(--s) * -0.35); }
-.piece {
-  aspect-ratio: 1;
-  border-radius: 6px;
-  background: var(--piece-off);
-  transform: translateY(0);
-  transition: transform 900ms var(--ease-glide), background-color 400ms var(--ease-out);
-  transition-delay: calc(var(--k, 0) * 110ms);
-}
-.is-in .piece.pick {
-  transform: translateY(var(--drop));
-  background: var(--piece-on);
-}
+.hero-foot { grid-row: 3; display: grid; gap: var(--space-md); justify-items: start; max-width: 30rem; }
+.lede { font-size: clamp(1.2rem, 1rem + 0.6vw, 1.5rem); line-height: 1.35; color: var(--ink-2); max-width: 24ch; text-wrap: balance; }
+.hero-action { display: grid; gap: var(--space-xs); justify-items: start; }
+.hero-action .cta { margin-bottom: var(--space-xs); }
 
-/* Saves: changes leave the Mac and travel to storage */
-.loop {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-md);
+/* Sky between stories. */
+.airspace { height: clamp(150px, 30vh, 320px); }
+
+/* Stories: type on the paper, no boxes. */
+.story, .choice, .access {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 var(--gutter);
 }
-.loop-end { font-size: var(--text-sm); color: var(--ink-3); white-space: nowrap; }
-.loop-path {
-  container-type: inline-size;
-  position: relative;
-  height: 40px;
-  border-radius: 999px;
-  background: var(--muted);
-  overflow: hidden;
+h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--track-title); text-wrap: balance; overflow-wrap: anywhere; max-width: 18ch; }
+.say { margin-top: var(--space-md); font-size: var(--text-lg); color: var(--ink-2); max-width: 36ch; }
+
+/* The file is its own name: hollow letters are still in storage, solid ones came down to the Mac. */
+.file-demo { margin-top: clamp(32px, 5vh, 56px); }
+.file {
+  font: 600 calc((min(100vw, 1240px) - 2 * var(--gutter)) / 9.4)/1 var(--font-display);
+  letter-spacing: -0.045em;
+  white-space: nowrap;
+  color: transparent;
+  -webkit-text-stroke: max(1.5px, 0.011em) var(--outline);
 }
-.loop-path i {
-  position: absolute;
-  left: 8px;
-  top: 8px;
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  background: var(--piece-on);
-  opacity: 0;
-  animation: travel 3.6s var(--ease-glide) infinite;
-}
-.loop-path i:nth-child(2) { animation-delay: 1.2s; }
-.loop-path i:nth-child(3) { animation-delay: 2.4s; }
-@keyframes travel {
-  0% { transform: translateX(0) scale(0.4); opacity: 0; background: var(--ink); }
-  12% { transform: translateX(0) scale(1); opacity: 1; background: var(--ink); }
-  34% { background: var(--piece-on); }
-  82% { transform: translateX(calc(100cqw - 40px)) scale(1); opacity: 1; background: var(--piece-on); }
-  100% { transform: translateX(calc(100cqw - 40px)) scale(0.4); opacity: 0; background: var(--piece-on); }
-}
+.file span { transition: color 600ms var(--ease-out), -webkit-text-stroke-color 600ms var(--ease-out); }
+.file .down { color: var(--on); -webkit-text-stroke-color: var(--on); }
+.file-legend { margin-top: var(--space-md); display: flex; flex-wrap: wrap; gap: var(--space-lg); font: 600 clamp(1.125rem, 1rem + 0.4vw, 1.375rem)/1.2 var(--font-body); }
+.file-legend .solid { color: var(--on); }
+.file-legend .hollow { color: transparent; font-weight: 800; -webkit-text-stroke: 1px var(--outline); }
+
+/* A save, in two beats: it lands on the Mac, then flies to storage. */
+.arc { position: relative; margin-top: clamp(32px, 5vh, 56px); height: clamp(200px, 26vw, 300px); }
+.arc svg, .arc-canvas { position: absolute; left: 0; right: 0; top: 0; width: 100%; height: calc(100% - 64px); overflow: visible; }
+.arc path { fill: none; stroke: var(--rule-strong); stroke-width: 1.5; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.arc-end { position: absolute; bottom: 0; display: grid; gap: 2px; font-size: var(--text-base); }
+.arc-end b { font-weight: 600; color: var(--ink); }
+.arc-end span { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.arc-start { left: 0; }
+.arc-finish { right: 0; text-align: right; }
 
 /* The app: its menu bar panel, the real thing, standing on the paper. */
 .panel-shot {
@@ -377,7 +311,7 @@ h2 { font: 500 var(--text-xl)/1.06 var(--font-display); letter-spacing: var(--tr
   gap: var(--space-xl);
   align-items: center;
 }
-.panel-figure { margin: 0; justify-self: center; position: relative; }
+.panel-figure { margin: 0; justify-self: center; }
 .panel-figure img {
   display: block;
   width: min(340px, 100%);
@@ -387,32 +321,30 @@ h2 { font: 500 var(--text-xl)/1.06 var(--font-display); letter-spacing: var(--tr
   box-shadow: var(--card-shadow);
 }
 
-/* Choice */
+/* Choice: two answers side by side, set as type. */
+.choice { padding-top: var(--section); }
 .choice-pair {
   margin-top: var(--space-xl);
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-md);
+  gap: var(--space-xl);
 }
-.choice-pair .card { padding: clamp(24px, 3vw, 36px); display: grid; align-content: start; gap: var(--space-sm); }
-.choice-pair p { margin-top: 0; max-width: 32ch; }
-.choice-pair strong { color: var(--ink); display: block; font-weight: 600; font-size: clamp(1.25rem, 1.1rem + 0.6vw, 1.6rem); letter-spacing: -0.02em; line-height: 1.2; }
+.choice-pair p { font-size: var(--text-lg); color: var(--ink-2); max-width: 30ch; }
+.choice-pair strong { display: block; margin-bottom: var(--space-xs); color: var(--ink); font-weight: 600; font-size: clamp(1.4rem, 1.1rem + 1vw, 2rem); letter-spacing: -0.025em; line-height: 1.15; }
 
-/* Access */
+/* Closing: the download on the left, the flock's last pass on the open right. */
 .access {
   position: relative;
   display: grid;
-  justify-items: center;
-  text-align: center;
+  justify-items: start;
+  align-content: center;
   gap: var(--space-lg);
+  min-height: 70svh;
+  padding-top: var(--section);
   padding-bottom: var(--section);
 }
-.access-mark { width: 56px; height: 56px; transition: transform 1100ms var(--ease-glide); }
-/* The closing band: the same airflow, without the plane, the page's last word before the footer. */
-.access { padding-bottom: 0; }
-.airflow-close { height: clamp(160px, 24vh, 260px); margin-top: 0; }
-.access.is-armed .access-mark { transform: translate(-46px, 30px) rotate(-8deg); }
-.access.is-armed.is-in .access-mark { transform: translate(0, 0) rotate(0); }
+.access h2 { font-size: clamp(3rem, 1rem + 6vw, 7rem); letter-spacing: var(--track-display); max-width: none; }
+.access-notes { display: grid; gap: var(--space-xs); justify-items: start; }
 
 .colophon {
   max-width: 1240px;
@@ -421,44 +353,25 @@ h2 { font: 500 var(--text-xl)/1.06 var(--font-display); letter-spacing: var(--tr
   border-top: 1px solid var(--rule);
   display: grid;
   gap: var(--space-xs);
-  justify-items: center;
-  text-align: center;
   font-size: var(--text-sm);
   color: var(--ink-3);
 }
 .colophon a { color: var(--ink-2); text-decoration-color: color-mix(in oklab, var(--ink-2) 45%, transparent); }
 .colophon a:hover { color: var(--ink); }
 
-/* Sections settle into place as they scroll in: up out of a light blur. Content is never hidden: without scroll
-   timelines, or with reduced motion, it simply stands still. */
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    .settle { animation: settle linear both; animation-timeline: view(); animation-range: entry 0% entry 70%; }
-    @keyframes settle { from { translate: 0 28px; filter: blur(4px); opacity: 0.4; } to { translate: 0 0; filter: blur(0); opacity: 1; } }
-  }
-}
-
 /* Responsive */
 @media (max-width: 900px) {
-  .scene, .scene-saves, .panel-shot { grid-template-columns: minmax(0, 1fr); gap: var(--space-lg); }
-  .scene-saves .loop-card { order: 2; }
-  .panel-shot .panel-figure { order: 2; }
-  .choice-pair { grid-template-columns: minmax(0, 1fr); }
+  .panel-shot { grid-template-columns: minmax(0, 1fr); gap: var(--space-lg); }
+  .choice-pair { grid-template-columns: minmax(0, 1fr); gap: var(--space-lg); }
+  .arc-end { font-size: var(--text-sm); }
 }
 @media (max-width: 560px) {
-  .file-row { --drop: 88px; gap: 4px; }
   .cta { white-space: normal; text-align: center; padding: 14px 26px; }
+  .hero { padding-top: calc(64px + 40px); }
 }
-
 @media (prefers-reduced-motion: reduce) {
-  .piece, .access-mark { transition: none; }
-  .loop-path i { animation: none; opacity: 1; }
-  .loop-path i:nth-child(1) { transform: translateX(0); }
-  .loop-path i:nth-child(2) { transform: translateX(calc(50cqw - 20px)); }
-  .loop-path i:nth-child(3) { transform: translateX(calc(100cqw - 40px)); }
-  .access.is-armed .access-mark { transform: none; }
+  .file span { transition: none; }
 }
-.access-notes { display: grid; gap: var(--space-xs); justify-items: center; }
 
 /* ------------------------------------------------------------------------------------------------
  * Pricing page (site/pricing.html). Hallmark · macrostructure: custom (two-path ledger)
@@ -814,7 +727,9 @@ h2 { font: 500 var(--text-xl)/1.06 var(--font-display); letter-spacing: var(--tr
 .doc table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .doc th { text-align: left; font-weight: 600; color: var(--ink); padding: var(--space-xs) var(--space-md) var(--space-xs) 0; border-bottom: 1px solid var(--rule); }
 .doc td { padding: var(--space-sm) var(--space-md) var(--space-sm) 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
-.doc [id] { scroll-margin-top: calc(var(--nav-h) + 40px); }
+.doc [id] { scroll-margin-top: 96px; }
+/* Keyboard focus is never hidden under the fixed bar. */
+html { scroll-padding-top: 80px; }
 .doc .clause:target, .doc li:target, .doc h2:target, .doc h3:target {
   margin-inline: calc(var(--space-md) * -1);
   padding: var(--space-sm) var(--space-md);

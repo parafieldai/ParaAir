@@ -1,229 +1,328 @@
-// ParaAir landing motion. Everything is visible without this script; it only adds
-// motion to elements already on screen, pauses off-screen and respects reduced motion.
+// ParaAir site motion. Everything is visible without this script; it only moves what is already on screen, runs
+// while the page scrolls (and for the lead plane's one entrance), stops when the page is still, and respects
+// reduced motion.
 (() => {
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
-  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const root = document.documentElement;
+  const css = (name) => getComputedStyle(root).getPropertyValue(name).trim();
+  const clamp = (v, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, v));
+  const MARK = [[[0, 150], [454, 0], [316, 298], [244, 208]], [[244, 208], [316, 298], [156, 460], [168, 256]]];
+
+  // The mark drawn once into a small canvas, nose pointing along +x, so each frame only stamps it.
+  const sprite = (size, ink, sage, ratio) => {
+    const c = document.createElement('canvas');
+    const px = Math.ceil(size * 1.5 * ratio);
+    c.width = px; c.height = px;
+    const g = c.getContext('2d');
+    g.translate(px / 2, px / 2);
+    g.rotate(Math.PI / 4);
+    const s = (size * ratio) / 454;
+    g.scale(s, s);
+    g.translate(-227, -230);
+    MARK.forEach((poly, i) => {
+      g.beginPath();
+      poly.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y)));
+      g.closePath();
+      g.fillStyle = i === 0 ? ink : sage;
+      g.fill();
+    });
+    return c;
+  };
+
+  // The bar gains its hairline once the page has scrolled.
+  const masthead = document.querySelector('.masthead');
+  if (masthead) {
+    const mark = () => masthead.classList.toggle('is-scrolled', window.scrollY > 8);
+    window.addEventListener('scroll', mark, { passive: true });
+    mark();
+  }
 
   // ---------------------------------------------------------------------------
-  // The airflow: two twisted ribbons of fine dots, slate and sage, the same field the Mac app draws behind its
-  // headers. The ParaAir plane flies along the slate ribbon; the dots it passes are pieces arriving, and light up
-  // sage before they cool. The pointer lights them the same way. The ribbons are drawn once to a bitmap; each frame
-  // only repaints the lit pieces and the plane.
-  // Each [data-airflow] canvas gets its own field; data-plane="off" leaves the plane out (the pointer still lights pieces).
-  const airflow = (canvas) => {
-    const flies = canvas.dataset.plane !== 'off';
-    const ctx = canvas.getContext('2d');
-    const MARK = [[[0, 150], [454, 0], [316, 298], [244, 208]], [[244, 208], [316, 298], [156, 460], [168, 256]]];
-    const RIBBONS = [
-      { base: 0.5, amp: 0.2, phase: 0.35, width: 0.05, swell: 0.3, twist: 1.1, per: 20, tone: '--ribbon-a' },
-      { base: 0.56, amp: 0.16, phase: 2.2, width: 0.03, swell: 0.18, twist: 2.7, per: 11, tone: '--ribbon-b' },
-    ];
-    const CELL = 24;
-    let width = 0, height = 0, ratio = 1, count = 0;
-    let xs, ys, sizes, energy, buckets = new Map(), active = [];
-    let base = document.createElement('canvas');
-    let lit = '79 138 115';
-    let pointer = null, running = false, last = 0, t = 0, raf = 0, inView = false;
+  // The sky. Planes fly only inside airspaces: the hero's open side and the band under its headline, the empty bands
+  // between stories, and the closing section's open side. Where a plane is follows how far its airspace has
+  // scrolled; when the page stops, they settle within 0.4 s and nothing redraws.
+  const sky = document.querySelector('[data-sky]');
+  if (sky) {
+    const ctx = sky.getContext('2d');
+    let W = 0, H = 0, ratio = 1, spaces = [], art = null;
+    let shown = window.scrollY, last = 0, raf = 0, entrance = null;
 
-    const random = (seed) => () => {
-      seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-      let r = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-      r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
-      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    const seeded = (n) => { let s = n; return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; }; };
+    const rect = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top + window.scrollY, bottom: r.bottom + window.scrollY }; };
+
+    const paint = () => {
+      const ink = css('--ink'), sage = css('--sage'), grey = css('--plane-grey'), fold = css('--plane-fold');
+      // The flock is the mark in two greys, its fold lighter, so a small plane still reads as folded paper.
+      art = { lead: sprite(52, ink, sage, ratio), mid: sprite(28, grey, fold, ratio), far: sprite(18, grey, fold, ratio), trail: css('--sage-line'), grey };
     };
-    // Narrow screens flatten the curve, so one wave across a phone doesn't read as a knot.
-    const centre = (ribbon, x) =>
-      height * (ribbon.base + ribbon.amp * (width < 640 ? 0.6 : 1) * Math.sin((2 * Math.PI * x) / width + ribbon.phase));
+
+    // One plane on a straight glide across the whole width, tilted, sinking a little; `u` runs 0 to 1 across.
+    const flight = (p, u) => {
+      const x = -0.15 * W + u * 1.3 * W;
+      const d = u - p.start;
+      const y = p.y + d * 1.3 * W * Math.tan(p.heading) + p.sink * d * Math.abs(d) + p.wobble * (Math.sin(u * 6.28 * p.waves + p.phase) - Math.sin(p.start * 6.28 * p.waves + p.phase));
+      return { x, y };
+    };
+
+    // How visible a point is: fully inside an airspace, fading to nothing before any of its edges.
+    const room = (space, x, y, margin) => {
+      let best = 0;
+      for (const z of space.zones) best = Math.max(best, clamp((Math.min(x - z.left, z.right - x, y - z.top, z.bottom - y) - margin) / 36));
+      return best;
+    };
 
     const build = () => {
       ratio = Math.min(window.devicePixelRatio || 1, 2);
-      width = canvas.clientWidth; height = canvas.clientHeight;
-      canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
-      base.width = canvas.width; base.height = canvas.height;
-      const scale = width < 640 ? 0.55 : 1;
-      count = RIBBONS.reduce((sum, ribbon) => sum + Math.round(width * ribbon.per * scale), 0);
-      xs = new Float32Array(count); ys = new Float32Array(count); sizes = new Float32Array(count);
-      energy = new Float32Array(count); active = []; buckets = new Map();
-      const next = random(flies ? 9 : 23);
-      const bctx = base.getContext('2d');
-      bctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      bctx.clearRect(0, 0, width, height);
-      let index = 0;
-      for (const ribbon of RIBBONS) {
-        const tone = css(ribbon.tone);
-        const n = Math.round(width * ribbon.per * scale);
-        for (let k = 0; k < n; k++, index++) {
-          const x = next() * width;
-          const angle = (2 * Math.PI * x) / width;
-          const half = (height * (ribbon.width + ribbon.swell * Math.abs(Math.sin(angle + ribbon.twist)))) / 2;
-          const across = next() * 2 - 1;
-          const y = centre(ribbon, x) + across * half;
-          // Denser and brighter toward a ribbon's edges, as a turned surface catches light.
-          const alpha = (0.14 + 0.5 * next()) * (0.45 + 0.55 * across * across);
-          const size = 0.7 + 0.7 * next();
-          xs[index] = x; ys[index] = y; sizes[index] = size;
-          bctx.fillStyle = `rgb(${tone} / ${alpha.toFixed(3)})`;
-          bctx.fillRect(x - size / 2, y - size / 2, size, size);
-          const key = Math.floor(x / CELL) + ',' + Math.floor(y / CELL);
-          if (!buckets.has(key)) buckets.set(key, []);
-          buckets.get(key).push(index);
+      W = window.innerWidth; H = window.innerHeight;
+      sky.width = Math.round(W * ratio); sky.height = Math.round(H * ratio);
+      paint();
+      const wide = W >= 1024, phone = W < 640;
+      spaces = [...document.querySelectorAll('[data-flight]')].map((el, index) => {
+        const kind = el.dataset.flight, box = rect(el), random = seeded(17 + index * 31);
+        const zones = [];
+        if (kind === 'hero') {
+          const h1 = rect(el.querySelector('h1')), foot = rect(el.querySelector('.hero-foot'));
+          // The band between the headline and the foot, then (on wider screens) the open side beside both.
+          zones.push({ left: 0, right: W, top: h1.bottom + 28, bottom: foot.top - 28 });
+          if (!phone) zones.push({ left: Math.max(h1.right, foot.right) + 40, right: W, top: box.top + 88, bottom: box.bottom - 16 });
+        } else if (kind === 'close') {
+          let right = 0;
+          el.querySelectorAll('h2, .cta, .access-notes').forEach((child) => { right = Math.max(right, rect(child).right); });
+          if (!phone) zones.push({ left: right + 48, right: W, top: box.top + 32, bottom: box.bottom - 32 });
+        } else {
+          zones.push({ left: 0, right: W, top: box.top, bottom: box.bottom });
         }
-      }
-      lit = css('--piece-on-rgb') || lit;
-    };
-
-    const light = (x, y, radius, strength) => {
-      const c0 = Math.floor((x - radius) / CELL), c1 = Math.floor((x + radius) / CELL);
-      const r0 = Math.floor((y - radius) / CELL), r1 = Math.floor((y + radius) / CELL);
-      for (let r = r0; r <= r1; r++) {
-        for (let c = c0; c <= c1; c++) {
-          const list = buckets.get(c + ',' + r);
-          if (!list) continue;
-          for (const i of list) {
-            const d = Math.hypot(xs[i] - x, ys[i] - y);
-            if (d >= radius) continue;
-            const e = (1 - d / radius) * strength;
-            if (e > energy[i]) { if (energy[i] === 0) active.push(i); energy[i] = e; }
-          }
+        const usable = zones.filter((z) => z.bottom - z.top > 40 && z.right - z.left > 80);
+        const count = kind === 'gap' ? (phone ? 3 : wide ? 6 : 4) : (phone ? 4 : wide ? 9 : 6);
+        const planes = [];
+        const lead = kind !== 'gap';
+        const all = usable.length ? usable : [];
+        // The widest zone is where the lead flies; the rest of the flock spreads over every zone.
+        const widest = all.slice().sort((a, b) => (b.right - b.left) * (b.bottom - b.top) - (a.right - a.left) * (a.bottom - a.top))[0];
+        for (let i = 0; all.length && i < count + (lead ? 1 : 0); i++) {
+          const isLead = lead && i === 0;
+          const depth = isLead ? 1 : random() < 0.45 ? 0.75 : 0.4;
+          const zone = isLead ? (all.find((z) => z.left > 0) || widest) : all[Math.floor(random() * all.length)];
+          const x0 = zone.left + (isLead ? 0.42 : 0.08 + 0.84 * random()) * (zone.right - zone.left);
+          planes.push({
+            lead: isLead,
+            depth,
+            size: isLead ? 52 : depth > 0.6 ? 24 + 8 * random() : 17 + 4 * random(),
+            alpha: isLead ? 1 : depth > 0.6 ? 0.65 + 0.15 * random() : 0.35 + 0.1 * random(),
+            y: zone.top + (isLead ? 0.38 : 0.2 + 0.6 * random()) * (zone.bottom - zone.top),
+            heading: (random() - 0.62) * 0.9,
+            sink: 20 + 40 * random(),
+            wobble: 6 + 10 * random(),
+            waves: 0.5 + random(),
+            phase: random() * 6.28,
+            start: (x0 + 0.15 * W) / (1.3 * W),
+            // Near planes cross further for the same scroll, so the flock peels away front first. The hero's flock
+            // lingers through its first screen of scroll; the bands' cross as they pass.
+            pace: kind === 'gap' ? (depth > 0.6 ? 0.95 : 0.45) : isLead ? 0.6 : depth > 0.6 ? 0.45 : 0.18,
+          });
         }
-      }
-    };
-
-    // The plane rides the slate ribbon's centre line from just off the left edge to just off the right.
-    const flight = (time) => {
-      const x = -0.06 * width + time * width * 1.12;
-      return { x, y: centre(RIBBONS[0], x) };
-    };
-
-    const draw = (time) => {
-      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      ctx.clearRect(0, 0, width, height);
-      ctx.drawImage(base, 0, 0, width, height);
-      // Lit pieces, in six steps of brightness so each step is one fill.
-      const levels = [[], [], [], [], [], []];
-      for (const i of active) levels[Math.min(5, Math.floor(energy[i] * 6))].push(i);
-      levels.forEach((list, level) => {
-        if (!list.length) return;
-        ctx.fillStyle = `rgb(${lit} / ${(((level + 1) / 6) * 0.9).toFixed(2)})`;
-        for (const i of list) { const s = sizes[i] + 0.6; ctx.fillRect(xs[i] - s / 2, ys[i] - s / 2, s, s); }
+        return { el, kind, box, zones: all, planes };
       });
-      if (time === null || !flies) return;
-      const p = flight(time), q = flight(time + 0.003);
+    };
+
+    // How far an airspace has scrolled: the hero from the top of the page, the others as they cross the window.
+    const progress = (space, scroll) => {
+      if (reduce.matches) return 0.35;
+      if (space.kind === 'hero') return clamp(scroll / Math.max(1, space.box.bottom - space.box.top), 0, 1.2);
+      return clamp((scroll + H - space.box.top) / (H + space.box.bottom - space.box.top), 0, 1) - 0.5;
+    };
+
+    const stamp = (image, x, y, angle, bank, alpha, scale = 1) => {
       ctx.save();
-      ctx.translate(p.x, p.y);
-      // The mark's nose points up and to the right (-45 degrees) in its own drawing; turn it to fly nose first.
-      ctx.rotate(Math.atan2(q.y - p.y, q.x - p.x) + Math.PI / 4);
-      const s = width < 640 ? 0.06 : 0.078;
-      ctx.scale(s, s);
-      ctx.translate(-227, -230);
-      MARK.forEach((poly, index) => {
-        ctx.beginPath();
-        poly.forEach(([px, py], k) => (k ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
-        ctx.closePath();
-        ctx.fillStyle = index === 0 ? css('--ink') : css('--sage');
-        ctx.fill();
-      });
+      ctx.globalAlpha = alpha;
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.scale(scale, scale * bank);
+      ctx.drawImage(image, -image.width / ratio / 2, -image.height / ratio / 2, image.width / ratio, image.height / ratio);
       ctx.restore();
     };
 
-    const cool = (dt) => {
-      const kept = [];
-      for (const i of active) { energy[i] = Math.max(0, energy[i] - dt * 0.7); if (energy[i] > 0) kept.push(i); }
-      active = kept;
-    };
-
-    const step = (now) => {
-      if (!running) return;
-      if (!xs) { raf = requestAnimationFrame(step); return; }
-      const dt = Math.min(0.05, (now - last) / 1000);
-      last = now;
-      t += dt / 11;
-      if (t > 1.04) t = -0.04;
-      const p = flight(t);
-      if (flies) light(p.x, p.y, width < 640 ? 30 : 38, 1);
-      if (pointer) light(pointer.x, pointer.y, width < 640 ? 44 : 60, 0.85);
-      cool(dt);
-      draw(t);
-      // A band without the plane rests once its pieces have cooled and the pointer has left; the pointer wakes it.
-      if (!flies && !pointer && active.length === 0) { running = false; return; }
-      raf = requestAnimationFrame(step);
-    };
-
-    // One calm frame: the plane two thirds across, the pieces behind it lit and cooling with distance.
-    const still = () => {
-      if (!xs) return;
-      energy.fill(0); active = [];
-      if (flies) for (let k = 0; k <= 30; k++) { const p = flight(0.39 + k * 0.01); light(p.x, p.y, 36, 0.12 + k / 36); }
-      t = 0.69;
-      draw(t);
-    };
-
-    const start = () => {
-      if (running || reduce.matches) return;
-      running = true; last = performance.now(); raf = requestAnimationFrame(step);
-    };
-    const stop = () => { running = false; cancelAnimationFrame(raf); };
-    // Run only while the field is on screen, the tab is visible and motion is allowed.
-    const sync = () => (inView && !document.hidden && !reduce.matches ? start() : stop());
-
-    // Paint the still frame as soon as the canvas has a size, so the field is never blank even if animation never
-    // runs; rebuild whenever its size changes.
-    const rebuild = () => {
-      if (!canvas.clientWidth || !canvas.clientHeight) return;
-      if (canvas.clientWidth === width && canvas.clientHeight === height && xs) return;
-      build();
-      if (!running) still();
-    };
-    rebuild();
-    let resizeTimer = 0;
-    new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(rebuild, 60); }).observe(canvas);
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (width) { build(); if (!running) still(); } });
-    reduce.addEventListener('change', () => { if (reduce.matches) { stop(); still(); } else sync(); });
-    canvas.parentElement.addEventListener('pointermove', (event) => {
-      const rect = canvas.getBoundingClientRect();
-      pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-      sync();
-    });
-    canvas.parentElement.addEventListener('pointerleave', () => { pointer = null; });
-    new IntersectionObserver(([entry]) => { inView = entry.isIntersecting; sync(); }).observe(canvas);
-    document.addEventListener('visibilitychange', sync);
-  };
-  document.querySelectorAll('[data-airflow]').forEach(airflow);
-
-  // ---------------------------------------------------------------------------
-  // "Big files open in pieces": build the file, and drop the opened pieces each
-  // time the scene comes into view.
-  const row = document.querySelector('[data-file-row]');
-  if (row) {
-    const sizeRow = () => {
-      const count = window.innerWidth < 560 ? 12 : 18;
-      if (row.childElementCount !== count) {
-        row.replaceChildren();
-        const picks = count === 18 ? [4, 5, 6, 12, 13] : [3, 4, 8];
-        for (let i = 0; i < count; i++) {
-          const piece = document.createElement('span');
-          piece.className = 'piece' + (picks.includes(i) ? ' pick' : '');
-          if (picks.includes(i)) piece.style.setProperty('--k', String(picks.indexOf(i)));
-          row.append(piece);
-        }
-        row.style.setProperty('--count', String(count));
+    // A tapered line behind a plane, along its own path: sage for a lead, faint grey for the near flock.
+    const trail = (points, color, width, alpha) => {
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = color;
+      for (let k = 1; k < points.length; k++) {
+        const f = 1 - k / points.length;
+        ctx.globalAlpha = alpha * f * Math.min(points[k - 1].fade, points[k].fade);
+        ctx.lineWidth = width * f;
+        ctx.beginPath();
+        ctx.moveTo(points[k - 1].x, points[k - 1].y);
+        ctx.lineTo(points[k].x, points[k].y);
+        ctx.stroke();
       }
-      const first = row.firstElementChild;
-      if (first) row.style.setProperty('--s', first.getBoundingClientRect().width + 'px');
+      ctx.restore();
     };
-    sizeRow();
-    window.addEventListener('resize', sizeRow);
+
+    const drawPlane = (space, p, u, scroll) => {
+      const a = flight(p, u), b = flight(p, u + 0.004), c = flight(p, u + 0.008);
+      // At least 16 px of clear paper between any part of a plane and the edge of its airspace.
+      const fade = room(space, a.x, a.y, p.size * 0.6 + 16);
+      if (fade <= 0) return;
+      const angle = Math.atan2(b.y - a.y, b.x - a.x);
+      // Bank: a paper plane narrows as it turns.
+      const turn = Math.atan2(c.y - b.y, c.x - b.x) - angle;
+      const bank = 1 - Math.min(0.3, Math.abs(turn) * 40);
+      const y = a.y - scroll;
+      if (p.lead || p.depth > 0.6) {
+        const points = [];
+        const steps = p.lead ? 14 : 6, reach = p.lead ? 200 : 56;
+        for (let k = 0; k < steps; k++) { const q = flight(p, u - (k * reach) / (steps * 1.3 * W)); points.push({ x: q.x, y: q.y - scroll, fade: room(space, q.x, q.y, 4) }); }
+        trail(points, p.lead ? art.trail : art.grey, p.lead ? 3 : 1.5, p.lead ? 0.9 : 0.25);
+      }
+      stamp(p.lead ? art.lead : p.depth > 0.6 ? art.mid : art.far, a.x, y, angle, bank, p.alpha * fade, p.size / (p.lead ? 52 : p.depth > 0.6 ? 28 : 18));
+    };
+
+    const draw = (scroll, now) => {
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      for (const space of spaces) {
+        if (space.box.bottom < scroll - 40 || space.box.top > scroll + H + 40) continue;
+        const p = progress(space, scroll);
+        for (const plane of space.planes) {
+          if (plane.lead && entrance && space.kind === 'hero') continue;
+          drawPlane(space, plane, plane.start + p * plane.pace, scroll);
+        }
+      }
+      if (entrance) drawEntrance(scroll, now);
+    };
+
+    // The lead plane's one entrance: it flies in under "Mac drive.", leaving the underline, then climbs into its place.
+    const under = document.querySelector('[data-under]');
+    const hero = document.querySelector('.hero');
+    const drawEntrance = (scroll, now) => {
+      const t = clamp((now - entrance.start) / 1500);
+      const e = 1 - Math.pow(1 - t, 3);
+      const r = under.getBoundingClientRect();
+      const lead = spaces.find((s) => s.kind === 'hero')?.planes.find((p) => p.lead);
+      const home = lead ? flight(lead, lead.start) : { x: W * 0.8, y: H * 0.4 + scroll };
+      const p0 = { x: r.left - 90, y: r.bottom + 6 }, p1 = { x: r.right + 30, y: r.bottom + 6 }, p2 = { x: home.x, y: home.y - scroll };
+      const at = (k) => {
+        const m = 1 - k;
+        return { x: m * m * p0.x + 2 * m * k * p1.x + k * k * p2.x, y: m * m * p0.y + 2 * m * k * p1.y + k * k * p2.y };
+      };
+      const a = at(e), b = at(Math.min(1, e + 0.01));
+      stamp(art.lead, a.x, a.y, Math.atan2(b.y - a.y, b.x - a.x), 1, clamp(t * 4));
+      if (t >= 1) entrance = null;
+    };
+
+    const tick = (now) => {
+      const dt = Math.min(0.05, (now - last) / 1000 || 0.016);
+      last = now;
+      const target = window.scrollY;
+      shown += (target - shown) * (1 - Math.exp(-dt / 0.11));
+      if (Math.abs(target - shown) < 0.5) shown = target;
+      draw(shown, now);
+      raf = shown !== target || entrance ? requestAnimationFrame(tick) : 0;
+    };
+    const wake = () => {
+      if (reduce.matches) { shown = window.scrollY; draw(shown, performance.now()); return; }
+      if (!raf && !document.hidden) { last = performance.now(); raf = requestAnimationFrame(tick); }
+    };
+
+    let width = -1;
+    const relayout = () => { if (window.innerWidth === width) return; width = window.innerWidth; build(); shown = window.scrollY; draw(shown, performance.now()); };
+    relayout();
+    window.addEventListener('resize', () => { if (window.innerWidth !== width) relayout(); else { H = window.innerHeight; } }, { passive: true });
+    window.addEventListener('load', () => { width = -1; relayout(); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { width = -1; relayout(); });
+    window.addEventListener('scroll', wake, { passive: true });
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { paint(); draw(shown, performance.now()); });
+    reduce.addEventListener('change', () => { width = -1; relayout(); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
+
+    // Only when someone is looking: in a hidden tab the underline simply stays drawn.
+    if (under && hero && !reduce.matches && !document.hidden && window.scrollY < 40 && under.animate) {
+      entrance = { start: performance.now() + 150 };
+      under.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }],
+                    { duration: 1100, delay: 350, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'backwards', pseudoElement: '::after' });
+      wake();
+    }
   }
 
-  const scenes = document.querySelectorAll('[data-scene], .access');
-  const access = document.querySelector('.access');
-  if (access && !reduce.matches) access.classList.add('is-armed');
+  // ---------------------------------------------------------------------------
+  // "Big files open in pieces": the file's own name, its first letters and its last ones coming down as the story
+  // scrolls in, the way a player reads the start of a .mov and its index at the end.
+  const file = document.querySelector('[data-file]');
+  if (file) {
+    const text = file.textContent;
+    file.textContent = '';
+    const letters = [...text].map((ch) => { const s = document.createElement('span'); s.textContent = ch; file.append(s); return s; });
+    const reads = [[0, 2, 0.3], [17, 18, 0.45]];
+    let queued = false;
+    const show = () => {
+      queued = false;
+      const r = file.getBoundingClientRect();
+      const p = reduce.matches ? 1 : clamp((window.innerHeight - r.top) / (window.innerHeight * 0.8));
+      reads.forEach(([from, to, at]) => { for (let i = from; i <= to && i < letters.length; i++) letters[i].classList.toggle('down', p >= at); });
+    };
+    window.addEventListener('scroll', () => { if (!queued) { queued = true; requestAnimationFrame(show); } }, { passive: true });
+    show();
+  }
+
+  // ---------------------------------------------------------------------------
+  // "Saves land on your Mac first": the plane waits at the Mac ("Saved"), then flies the save to storage
+  // ("Uploading", "Uploaded"). The path is sampled once; drawing happens only while the arc is on screen.
+  const arc = document.querySelector('[data-arc]');
+  if (arc) {
+    const path = arc.querySelector('[data-arc-path]');
+    const canvas = arc.querySelector('[data-arc-canvas]');
+    const state = arc.querySelector('[data-arc-state]');
+    const ctx = canvas.getContext('2d');
+    const length = path.getTotalLength();
+    const points = Array.from({ length: 121 }, (_, k) => path.getPointAtLength((length * k) / 120));
+    let visible = false, queued = false, ratio = 1, plane = null, w = 0, h = 0;
+    const size = () => {
+      ratio = Math.min(window.devicePixelRatio || 1, 2);
+      const r = canvas.getBoundingClientRect();
+      w = r.width; h = r.height;
+      canvas.width = Math.round(w * ratio); canvas.height = Math.round(h * ratio);
+      plane = sprite(44, css('--ink'), css('--sage'), ratio);
+    };
+    const draw = () => {
+      queued = false;
+      if (!visible || !w) return;
+      const r = arc.getBoundingClientRect();
+      const p = reduce.matches ? 0.62 : clamp((window.innerHeight * 0.85 - r.top) / (r.height + window.innerHeight * 0.3));
+      const flown = clamp((p - 0.3) / 0.6);
+      const label = p < 0.3 ? 'Saved' : flown < 1 ? 'Uploading' : 'Uploaded';
+      if (state.textContent !== label) state.textContent = label;
+      const sx = w / 1000, sy = h / 220, end = Math.round(flown * 120);
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      if (end > 0) {
+        ctx.lineCap = 'round'; ctx.lineWidth = 2.5; ctx.strokeStyle = css('--sage-line');
+        ctx.beginPath();
+        for (let k = 0; k <= end; k++) { const q = points[k]; k ? ctx.lineTo(q.x * sx, q.y * sy) : ctx.moveTo(q.x * sx, q.y * sy); }
+        ctx.stroke();
+      }
+      const a = points[Math.min(119, end)], b = points[Math.min(120, end + 1)];
+      const angle = Math.atan2((b.y - a.y) * sy, (b.x - a.x) * sx);
+      ctx.save();
+      ctx.translate(a.x * sx, a.y * sy);
+      ctx.rotate(angle);
+      ctx.drawImage(plane, -plane.width / ratio / 2, -plane.height / ratio / 2, plane.width / ratio, plane.height / ratio);
+      ctx.restore();
+    };
+    const queue = () => { if (!queued) { queued = true; requestAnimationFrame(draw); } };
+    size();
+    new ResizeObserver(() => { size(); queue(); }).observe(canvas);
+    new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; queue(); }).observe(arc);
+    window.addEventListener('scroll', queue, { passive: true });
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { size(); queue(); });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pricing's allowance meter (and any [data-scene]) animates only while it is on screen.
+  const scenes = document.querySelectorAll('[data-scene]');
   if ('IntersectionObserver' in window) {
     const observer = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting) entry.target.classList.add('is-in');
-        else if (entry.target.dataset.scene !== undefined) entry.target.classList.remove('is-in');
-      }
+      for (const entry of entries) entry.target.classList.toggle('is-in', entry.isIntersecting);
     }, { threshold: 0.45 });
     scenes.forEach((scene) => observer.observe(scene));
   } else {

@@ -79,8 +79,9 @@ captures show the resting frame.
 Behind the home window's header and the About window: two twisted ribbons of fine dots,
 one slate and one in the mark's sage, drawn once per appearance (`Airflow`). Text that must stay legible marks itself
 with `airClearsField()`, and the ribbons start a little to its right; they fade out above and below the header band,
-and leave entirely when less than 180 pt is left. The menu bar panel is too narrow for them. The website draws the same
-ribbons, with the ParaAir plane flying along one of them.
+and leave entirely when less than 180 pt is left. The menu bar panel is too narrow for them. The website uses the app's
+paper, ink and sage but not the ribbons: its signature is the ParaAir planes themselves, flying in their own
+airspace as the page scrolls.
 
 ## Verifying
 

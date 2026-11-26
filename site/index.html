@@ -10,9 +10,9 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <!-- Hallmark · macrostructure: custom (airflow poster) · tone: calm-technical · anchor hue: ink, sage accent
-       theme: custom (Air, shared with the Mac app) · paper #F7F8FA / #0C0D10 · ink #0E0F12 / #F6F7F9 · accent #9AC7B4
-       display system-ui 500 tracked -3.5% + body system-ui -->
+  <!-- Hallmark · macrostructure: custom (flight) · tone: calm-technical · anchor hue: ink, sage accent
+       theme: custom (Air paper and ink) · paper #F7F8FA / #0C0D10 · ink #0E0F12 / #F6F7F9 · accent #9AC7B4
+       display system-ui 500 + body system-ui · signature: the ParaAir planes, flying only in their own airspace -->
   <a class="skip" href="#main">Skip to content</a>
 
   <header class="masthead">
@@ -35,10 +35,12 @@
     </nav>
   </header>
 
+  <canvas class="sky" data-sky aria-hidden="true"></canvas>
+
   <main id="main">
-    <section class="hero" id="top" aria-labelledby="hero-title">
-      <div class="hero-text">
-        <h1 id="hero-title">Cloud storage, <span class="tone">as a Mac drive.</span></h1>
+    <section class="hero" id="top" aria-labelledby="hero-title" data-flight="hero">
+      <h1 id="hero-title" data-headline>Cloud storage, as a <span class="under" data-under>Mac&nbsp;drive.</span></h1>
+      <div class="hero-foot">
         <p class="lede">Open big files without downloading them&nbsp;first.</p>
         <div class="hero-action">
           <a class="cta" data-release-download href="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.8/ParaAir-0.1.0-alpha.8.dmg">Download for Mac</a>
@@ -46,41 +48,41 @@
           <p class="requires">Apple&nbsp;Silicon · macOS&nbsp;26&nbsp;or&nbsp;later</p>
         </div>
       </div>
-      <canvas class="airflow" data-airflow aria-hidden="true"></canvas>
     </section>
 
-    <section class="scene scene-pieces" aria-labelledby="pieces-title" data-scene>
-      <div class="scene-copy settle">
-        <h2 id="pieces-title">Big files open <span class="tone">in pieces.</span></h2>
-        <p>Only the parts you open come down. A small cache keeps them close for next time.</p>
-      </div>
-      <div class="card lanes settle" aria-hidden="true">
-        <p class="file-name"><b>interview-a-cam.mov</b><span>in your storage</span></p>
-        <div class="file-row" data-file-row></div>
-        <span class="lane-label lane-label-bottom">On your Mac</span>
-      </div>
-    </section>
+    <div class="airspace" data-flight="gap" aria-hidden="true"></div>
 
-    <section class="scene scene-saves" aria-labelledby="saves-title" data-scene>
-      <div class="card loop-card settle" aria-hidden="true">
-        <div class="loop">
-          <span class="loop-end">Your Mac</span>
-          <span class="loop-path"><i></i><i></i><i></i></span>
-          <span class="loop-end">Your storage</span>
-        </div>
-      </div>
-      <div class="scene-copy settle">
-        <h2 id="saves-title">Saves land on your Mac first.</h2>
-        <p>Then they upload in the background.</p>
+    <section class="story pieces" aria-labelledby="pieces-title">
+      <h2 id="pieces-title">Big files open in pieces.</h2>
+      <p class="say">Only the parts you open come down. A small cache keeps them close for next time.</p>
+      <div class="file-demo">
+        <p class="visually-hidden">For example, interview-a-cam.mov: its first bytes and its last ones, the parts a player reads first, are on your Mac. The rest stays in your storage until something reads it.</p>
+        <p class="file" data-file aria-hidden="true">interview-a-cam.mov</p>
+        <p class="file-legend" aria-hidden="true"><span class="solid">On your Mac</span><span class="hollow">Still in your storage</span></p>
       </div>
     </section>
 
-    <section class="panel-shot" aria-labelledby="panel-title">
-      <div class="panel-copy settle">
-        <h2 id="panel-title">Your drive, <span class="tone">from the menu&nbsp;bar.</span></h2>
-        <p>See whether it’s connected, open it in Finder, and hear about an upload that needs&nbsp;you.</p>
+    <div class="airspace" data-flight="gap" aria-hidden="true"></div>
+
+    <section class="story saves" aria-labelledby="saves-title">
+      <h2 id="saves-title">Saves land on your Mac first.</h2>
+      <p class="say">Then they upload in the background.</p>
+      <div class="arc" data-arc aria-hidden="true">
+        <svg viewBox="0 0 1000 220" preserveAspectRatio="none"><path data-arc-path d="M 24 196 C 270 12, 730 12, 976 196"/></svg>
+        <canvas class="arc-canvas" data-arc-canvas></canvas>
+        <p class="arc-end arc-start"><b>Your Mac</b><span>edit-v3.prproj · <span data-arc-state>Saved</span></span></p>
+        <p class="arc-end arc-finish"><b>Your storage</b><span>studio-footage</span></p>
       </div>
-      <figure class="panel-figure settle">
+    </section>
+
+    <div class="airspace" data-flight="gap" aria-hidden="true"></div>
+
+    <section class="story panel-shot" aria-labelledby="panel-title">
+      <div class="panel-copy">
+        <h2 id="panel-title">Your drive, from the menu&nbsp;bar.</h2>
+        <p class="say">See whether it’s connected, open it in Finder, and know when an upload needs&nbsp;you.</p>
+      </div>
+      <figure class="panel-figure">
         <picture>
           <source srcset="app-panel-dark.png" media="(prefers-color-scheme: dark)">
           <img src="app-panel-light.png" width="320" height="251" alt="The ParaAir menu bar panel: Client Footage, connected, with Open in Finder, Show ParaAir and Storage Settings">
@@ -88,25 +90,15 @@
       </figure>
     </section>
 
-    <section class="choice" aria-labelledby="choice-title">
-      <h2 id="choice-title" class="settle">Your storage, or ours.</h2>
+    <section class="story choice" aria-labelledby="choice-title">
+      <h2 id="choice-title">Your storage, or ours.</h2>
       <div class="choice-pair">
-        <div class="card settle">
-          <strong>Bring a bucket.</strong>
-          <p>Free and open source. Cloudflare R2 works today.</p>
-        </div>
-        <div class="card settle">
-          <strong data-signup="invite">ParaAir Cloud is coming.</strong><strong data-signup="open" hidden>ParaAir Cloud.</strong>
-          <p>No buckets, no keys.</p>
-        </div>
+        <p><strong>Bring a bucket.</strong> Free and open source. Cloudflare R2 works today.</p>
+        <p><strong data-signup="invite">ParaAir Cloud is coming.</strong><strong data-signup="open" hidden>ParaAir Cloud.</strong> No buckets, no keys.</p>
       </div>
     </section>
 
-    <section class="access" id="access" aria-labelledby="access-title">
-      <svg class="access-mark" viewBox="0 0 454 460" aria-hidden="true">
-        <polygon class="mark-a" points="0,150 454,0 316,298 244,208"/>
-        <polygon class="mark-b" points="244,208 316,298 156,460 168,256"/>
-      </svg>
+    <section class="access" id="access" aria-labelledby="access-title" data-flight="close">
       <h2 id="access-title">Try the alpha.</h2>
       <a class="cta" data-release-download href="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.8/ParaAir-0.1.0-alpha.8.dmg">Download for Mac</a>
       <div class="access-notes">
@@ -114,7 +106,6 @@
         <p class="requires" data-signup="invite">ParaAir Cloud is invite-only for now. <a href="mailto:contact@parafield.ai?subject=ParaAir%20Cloud%20invite">Ask&nbsp;for&nbsp;an&nbsp;invite</a></p>
         <p class="requires" data-signup="open" hidden>ParaAir Cloud starts with a 7-day free trial. <a href="get-started.html">Get&nbsp;started</a></p>
       </div>
-      <canvas class="airflow airflow-close" data-airflow data-plane="off" aria-hidden="true"></canvas>
     </section>
   </main>
 
