@@ -45,7 +45,7 @@
   if (sky) {
     const ctx = sky.getContext('2d');
     let W = 0, H = 0, ratio = 1, spaces = [], art = null;
-    let shown = window.scrollY, last = 0, raf = 0, entrance = null;
+    let shown = window.scrollY, last = 0, raf = 0, entrance = null, painted = 0;
 
     const seeded = (n) => { let s = n; return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; }; };
     const rect = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top + window.scrollY, bottom: r.bottom + window.scrollY }; };
@@ -110,15 +110,16 @@
           const depth = isLead ? 1 : random() < 0.45 ? 0.75 : 0.4;
           const zone = isLead ? (all.find((z) => z.left > 0) || widest) : all[Math.floor(random() * all.length)];
           let x0 = 0, y0 = 0;
-          // The flock keeps 60 px clear of the lead, so no plane sits on top of it.
-          for (let attempt = 0; attempt < 8; attempt++) {
+          // The flock keeps 60 px clear of the lead and 36 px from each other, so no plane sits on top of another;
+          // planes of one depth glide at one speed, so they keep that spacing while they drift.
+          for (let attempt = 0; attempt < 12; attempt++) {
             x0 = zone.left + (isLead ? 0.42 : 0.08 + 0.84 * random()) * (zone.right - zone.left);
             y0 = zone.top + (isLead ? 0.38 : 0.2 + 0.6 * random()) * (zone.bottom - zone.top);
-            const leader = planes[0];
-            if (isLead || !leader || !leader.lead || Math.hypot(x0 - leader.x0, y0 - leader.y) >= 60) break;
+            if (isLead || planes.every((q) => Math.hypot(x0 - q.x0, y0 - q.y) >= (q.lead ? 60 : 36))) break;
           }
           planes.push({
             x0,
+            zone,
             lead: isLead,
             depth,
             size: isLead ? 52 : depth > 0.6 ? 24 + 8 * random() : 17 + 4 * random(),
@@ -162,6 +163,8 @@
       ctx.lineCap = 'round';
       ctx.strokeStyle = color;
       for (let k = 1; k < points.length; k++) {
+        // A plane that has just come round to the start of its airspace leaves no line across it.
+        if (Math.abs(points[k].x - points[k - 1].x) > 80) break;
         const f = 1 - k / points.length;
         ctx.globalAlpha = alpha * f * Math.min(points[k - 1].fade, points[k].fade);
         ctx.lineWidth = width * f;
@@ -173,8 +176,31 @@
       ctx.restore();
     };
 
-    const drawPlane = (space, p, u, scroll) => {
-      const a = flight(p, u), b = flight(p, u + 0.004), c = flight(p, u + 0.008);
+    // At rest the sky still flies: the flock glides on slowly through its airspace, near planes faster, coming round
+    // to its start past an edge where they have faded out, and every plane rises and falls a little on the air. The
+    // lead plane only hovers, easing in once its entrance is over. Nothing moves under reduced motion.
+    let leadSince = 0;
+    const idle = (p, now) => {
+      if (reduce.matches) return { dx: 0, dy: 0, tilt: 0 };
+      const s = now / 1000, period = 5 + 3 * ((p.phase * 7.3) % 1), w = (6.283 / period) * s + p.phase;
+      if (p.lead) {
+        const k = clamp((now - leadSince) / 1200);
+        return { dx: 3 * k * Math.sin(w * 0.6), dy: 4 * k * Math.sin(w), tilt: 0.04 * k * Math.cos(w) };
+      }
+      return { dx: s * (p.depth > 0.6 ? 9 : 4.5), dy: (p.depth > 0.6 ? 5 : 3) * Math.sin(w), tilt: 0.06 * Math.cos(w) };
+    };
+    const shift = (p, q, drift) => {
+      let x = q.x + drift.dx;
+      if (!p.lead && p.zone) {
+        const span = p.zone.right - p.zone.left;
+        x = p.zone.left + ((((x - p.zone.left) % span) + span) % span);
+      }
+      return { x, y: q.y + drift.dy };
+    };
+
+    const drawPlane = (space, p, u, scroll, now) => {
+      const drift = idle(p, now);
+      const a = shift(p, flight(p, u), drift), b = shift(p, flight(p, u + 0.004), drift), c = shift(p, flight(p, u + 0.008), drift);
       // At least 16 px of clear paper between any part of a plane and the edge of its airspace.
       const fade = room(space, a.x, a.y, p.size * 0.6 + 16);
       if (fade <= 0) return;
@@ -186,10 +212,10 @@
       if (p.lead || p.depth > 0.6) {
         const points = [];
         const steps = p.lead ? 14 : 6, reach = p.lead ? 200 : 56;
-        for (let k = 0; k < steps; k++) { const q = flight(p, u - (k * reach) / (steps * 1.3 * W)); points.push({ x: q.x, y: q.y - scroll, fade: room(space, q.x, q.y, 4) }); }
+        for (let k = 0; k < steps; k++) { const q = shift(p, flight(p, u - (k * reach) / (steps * 1.3 * W)), drift); points.push({ x: q.x, y: q.y - scroll, fade: room(space, q.x, q.y, 4) }); }
         trail(points, p.lead ? art.trail : art.grey, p.lead ? 3 : 1.5, p.lead ? 0.9 : 0.25);
       }
-      stamp(p.lead ? art.lead : p.depth > 0.6 ? art.mid : art.far, a.x, y, angle, bank, p.alpha * fade, p.size / (p.lead ? 52 : p.depth > 0.6 ? 28 : 18));
+      stamp(p.lead ? art.lead : p.depth > 0.6 ? art.mid : art.far, a.x, y, angle + drift.tilt, bank, p.alpha * fade, p.size / (p.lead ? 52 : p.depth > 0.6 ? 28 : 18));
     };
 
     // `flown` (the smoothed scroll) says how far each plane has flown; the real scroll places it on the screen, so a
@@ -203,7 +229,7 @@
         const p = progress(space, flown);
         for (const plane of space.planes) {
           if (plane.lead && entrance && space.kind === 'hero') continue;
-          drawPlane(space, plane, plane.start + p * plane.pace, scroll);
+          drawPlane(space, plane, plane.start + p * plane.pace, scroll, now);
         }
       }
       if (entrance) drawEntrance(scroll, now);
@@ -225,7 +251,7 @@
       };
       const a = at(e), b = at(Math.min(1, e + 0.01));
       stamp(art.lead, a.x, a.y, Math.atan2(b.y - a.y, b.x - a.x), 1, clamp(t * 4));
-      if (t >= 1) { entrance = null; under.style.removeProperty('--draw'); }
+      if (t >= 1) { entrance = null; leadSince = now; under.style.removeProperty('--draw'); }
     };
 
     const tick = (now) => {
@@ -240,9 +266,14 @@
         const drawn = clamp((now - entrance.start - 200) / 1100);
         under.style.setProperty('--draw', (1 - Math.pow(1 - drawn, 3)).toFixed(3));
       }
-      draw(shown, now);
-      raf = shown !== target || entrance ? requestAnimationFrame(tick) : 0;
+      // Scrolling and the entrance draw every frame; the idle drift needs only about 30 a second.
+      const busy = shown !== target || entrance;
+      if (busy || now - painted >= 32) { draw(shown, now); painted = now; }
+      raf = busy || flying() ? requestAnimationFrame(tick) : 0;
     };
+    // Frames run only while some airspace with planes is on screen in a visible tab.
+    const flying = () => !reduce.matches && !document.hidden
+      && spaces.some((s) => s.planes.length && s.box.bottom > window.scrollY - 40 && s.box.top < window.scrollY + H + 40);
     const wake = () => {
       if (reduce.matches) { shown = window.scrollY; draw(shown, performance.now()); return; }
       if (!raf && !document.hidden) { last = performance.now(); raf = requestAnimationFrame(tick); }
@@ -267,36 +298,188 @@
         if (under) under.style.removeProperty('--draw');
         cancelAnimationFrame(raf); raf = 0;
       }
-      width = -1; relayout();
+      width = -1; relayout(); wake();
     });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
 
     // Only when someone is looking: in a hidden tab the underline simply stays drawn.
     if (under && hero && !reduce.matches && !document.hidden && window.scrollY < 40) {
       entrance = { start: performance.now() + 150 };
-      wake();
     }
+    wake();
   }
 
   // ---------------------------------------------------------------------------
-  // "Big files open in pieces": the file's own name, its first letters and its last ones coming down as the story
-  // scrolls in, the way a player reads the start of a .mov and its index at the end.
+  // "Big files open in pieces": when the name comes into view, a plane reads it the way a player opens a .mov: it
+  // skims the first letters, hops over the middle to the index at the end, and drops those pieces as it passes. They
+  // rain into their letters, which fill from the bottom as the pieces land. The letters are solid in the page; only a
+  // frame that runs ever empties one, and anything that stops a run (a hidden tab, reduced motion) fills them at once.
   const file = document.querySelector('[data-file]');
-  if (file) {
-    const text = file.textContent;
-    file.textContent = '';
-    const letters = [...text].map((ch) => { const s = document.createElement('span'); s.textContent = ch; file.append(s); return s; });
-    const reads = [[0, 2, 0.3], [17, 18, 0.45]];
-    let queued = false;
-    const show = () => {
-      queued = false;
-      const r = file.getBoundingClientRect();
-      const p = reduce.matches ? 1 : clamp((window.innerHeight - r.top) / (window.innerHeight * 0.8));
-      reads.forEach(([from, to, at]) => { for (let i = from; i <= to && i < letters.length; i++) letters[i].classList.toggle('down', p >= at); });
+  const fileCanvas = document.querySelector('[data-file-canvas]');
+  if (file && fileCanvas) {
+    const fctx = fileCanvas.getContext('2d');
+    const demo = file.parentElement;
+    const letters = [...file.querySelectorAll('.down')];
+    let run = null, armed = true, fraf = 0, fratio = 1, fplane = null, geo = null;
+
+    // Everything in the canvas's own coordinates, measured once per run. The canvas spans the whole window across,
+    // and from just under the words above (the demo's top margin is the air) to the foot of the name.
+    const measure = () => {
+      fratio = Math.min(window.devicePixelRatio || 1, 2);
+      const em = parseFloat(getComputedStyle(file).fontSize) || 48;
+      const across = document.documentElement.clientWidth;
+      const d = demo.getBoundingClientRect(), f = file.getBoundingClientRect();
+      const say = demo.parentElement.querySelector('.say');
+      const ceiling = say ? say.getBoundingClientRect().bottom + 14 : f.top - em;
+      const above = Math.max(em * 0.6, f.top - ceiling);
+      fileCanvas.style.left = `${-d.left}px`;
+      fileCanvas.style.top = `${f.top - d.top - above}px`;
+      fileCanvas.style.width = `${across}px`;
+      fileCanvas.style.height = `${f.height + above}px`;
+      fileCanvas.width = Math.round(across * fratio);
+      fileCanvas.height = Math.round((f.height + above) * fratio);
+      const size = Math.max(22, Math.min(56, em * 0.42));
+      fplane = sprite(size, css('--ink'), css('--sage'), fratio);
+      const cells = letters.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { el, left: r.left, right: r.right, top: r.top - (f.top - above), h: r.height };
+      });
+      // Runs of neighbouring letters: the start of the file, then its end.
+      const groups = [];
+      cells.forEach((c, i) => { if (i && letters[i - 1].nextSibling === letters[i]) groups[groups.length - 1].push(c); else groups.push([c]); });
+      // The plane cruises well above the letters, so the pieces have air to fall through, and climbs to the top of
+      // the air between runs of letters; its wings stay clear of the words above.
+      const high = size * 0.55 + 2;
+      const cruise = Math.max(high, above - Math.max(size * 0.6, Math.min(above * 0.5, em * 0.7)));
+      geo = { em, size, cells, groups, w: across, h: f.height + above, high, cruise };
     };
-    window.addEventListener('scroll', () => { if (!queued) { queued = true; requestAnimationFrame(show); } }, { passive: true });
-    reduce.addEventListener('change', show);
-    show();
+
+    // The plane's flight: in from the window's left edge, down to cruise over each run of letters, up over the gaps
+    // between them, and out past the right edge.
+    const waypoints = () => {
+      const { size, groups, w, high, cruise } = geo;
+      const pts = [];
+      let t = 0;
+      pts.push({ t, x: -size, y: high + (cruise - high) * 0.3 });
+      groups.forEach((g, i) => {
+        const left = g[0].left, right = g[g.length - 1].right;
+        if (i) { const prev = groups[i - 1]; t += 0.65; pts.push({ t, x: (prev[prev.length - 1].right + left) / 2, y: high }); }
+        t += i ? 0.65 : Math.max(0.5, Math.min(0.9, left / 600)); pts.push({ t, x: left, y: cruise });
+        t += 0.2 * g.length; pts.push({ t, x: right, y: cruise });
+      });
+      t += Math.max(0.6, Math.min(1.1, (w - pts[pts.length - 1].x) / 700)); pts.push({ t, x: w + size, y: high });
+      return pts;
+    };
+
+    // A Catmull-Rom curve through the waypoints, by time.
+    const along = (pts, t) => {
+      let i = 0;
+      while (i < pts.length - 2 && t > pts[i + 1].t) i++;
+      const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+      const s = clamp((t - p1.t) / (p2.t - p1.t)), s2 = s * s, s3 = s2 * s;
+      const c = (a, b, c2, d2) => 0.5 * (2 * b + (-a + c2) * s + (2 * a - 5 * b + 4 * c2 - d2) * s2 + (-a + 3 * b - 3 * c2 + d2) * s3);
+      return { x: c(p0.x, p1.x, p2.x, p3.x), y: c(p0.y, p1.y, p2.y, p3.y) };
+    };
+
+    // A letter starts to fill when its first piece lands, and is full 0.75 s later.
+    const fillOf = (cell, t) => (cell.at === undefined ? 0 : 1 - Math.pow(1 - clamp((t - cell.at - cell.lag) / 0.75), 3));
+    // The top of a letter's fill in the canvas, matching the clip in styles.css.
+    const level = (cell, f) => cell.top + ((1 - f) * 1.4 - 0.2) * cell.h;
+
+    const finish = () => {
+      run = null;
+      cancelAnimationFrame(fraf); fraf = 0;
+      letters.forEach((el) => el.style.removeProperty('--fill'));
+      if (geo) { fctx.setTransform(1, 0, 0, 1, 0, 0); fctx.clearRect(0, 0, fileCanvas.width, fileCanvas.height); }
+    };
+
+    const frame = (now) => {
+      if (!run) return;
+      if (!run.start) {
+        run.start = now;
+        // The first frame that runs empties the letters; nothing else ever does.
+        geo.cells.forEach((c) => { c.at = undefined; c.el.style.setProperty('--fill', '0'); });
+      }
+      const t = (now - run.start) / 1000;
+      const { em, size, cells } = geo;
+      const g = 24 * em, piece = Math.max(5, em * 0.07);
+      const at = along(run.pts, t), ahead = along(run.pts, t + 0.02);
+      fctx.setTransform(fratio, 0, 0, fratio, 0, 0);
+      fctx.clearRect(0, 0, geo.w, geo.h);
+
+      // Each letter's pieces leave the plane as it passes over it.
+      for (const c of cells) {
+        if (c.at === undefined && at.x >= (c.left + c.right) / 2 && t < run.end) {
+          c.at = t;
+          c.lag = Math.sqrt((2 * Math.max(0, c.top + 0.6 * c.h - at.y)) / g);
+          for (let k = 0; k < 9; k++) run.pieces.push({ c, x: c.left + (0.15 + 0.7 * Math.random()) * (c.right - c.left), y: at.y + size * 0.15, born: t + k * 0.045, spin: Math.random() * 6.28 });
+        }
+        c.el.style.setProperty('--fill', fillOf(c, t).toFixed(3));
+      }
+
+      // Falling pieces, with a short streak above each; a piece is absorbed where the fill has risen to.
+      fctx.fillStyle = css('--on');
+      fctx.strokeStyle = css('--sage-line');
+      run.pieces = run.pieces.filter((p) => {
+        const age = t - p.born;
+        if (age < 0) return true;
+        const y = p.y + 0.5 * g * age * age, v = g * age;
+        const floor = Math.min(level(p.c, fillOf(p.c, t)), p.c.top + 0.86 * p.c.h);
+        if (y >= floor) return false;
+        fctx.globalAlpha = Math.min(1, age * 12);
+        fctx.lineWidth = piece * 0.35; fctx.lineCap = 'round';
+        fctx.beginPath(); fctx.moveTo(p.x, y - Math.min(v * 0.06, em * 0.25)); fctx.lineTo(p.x, y - piece); fctx.stroke();
+        fctx.save(); fctx.translate(p.x, y); fctx.rotate(p.spin + age * 5); fctx.fillRect(-piece / 2, -piece / 2, piece, piece); fctx.restore();
+        return true;
+      });
+      fctx.globalAlpha = 1;
+
+      // The plane, with its sage trail along the way it came.
+      if (t < run.end) {
+        const alpha = Math.min(clamp(t / 0.15), clamp((run.end - t) / 0.2));
+        fctx.lineCap = 'round';
+        for (let k = 1; k < 16; k++) {
+          const a = along(run.pts, Math.max(0, t - (k - 1) * 0.03)), b = along(run.pts, Math.max(0, t - k * 0.03));
+          const fade = 1 - k / 16;
+          fctx.globalAlpha = alpha * 0.85 * fade; fctx.lineWidth = Math.max(0.5, size * 0.09 * fade);
+          fctx.beginPath(); fctx.moveTo(a.x, a.y); fctx.lineTo(b.x, b.y); fctx.stroke();
+        }
+        fctx.globalAlpha = alpha;
+        fctx.save();
+        fctx.translate(at.x, at.y);
+        fctx.rotate(Math.atan2(ahead.y - at.y, ahead.x - at.x));
+        fctx.drawImage(fplane, -fplane.width / fratio / 2, -fplane.height / fratio / 2, fplane.width / fratio, fplane.height / fratio);
+        fctx.restore();
+        fctx.globalAlpha = 1;
+      }
+
+      const settled = cells.every((c) => c.at !== undefined && t - c.at > c.lag + 0.8) && !run.pieces.length;
+      if (t >= run.end && settled) { finish(); return; }
+      // A plane that can't finish (it lost its letters, say) doesn't keep the name empty.
+      if (t > run.end + 2) { finish(); return; }
+      fraf = requestAnimationFrame(frame);
+    };
+
+    const fly = () => {
+      if (run || reduce.matches || document.hidden) return;
+      measure();
+      if (!geo.groups.length) return;
+      const pts = waypoints();
+      run = { pts, end: pts[pts.length - 1].t, pieces: [], start: 0 };
+      armed = false;
+      fraf = requestAnimationFrame(frame);
+    };
+
+    // It flies when most of the name is on screen, and again only after the name has been scrolled away.
+    new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) { armed = true; return; }
+      if (armed && entry.intersectionRatio >= 0.6) fly();
+    }, { threshold: [0, 0.6, 1] }).observe(demo);
+    document.addEventListener('visibilitychange', () => { if (document.hidden && run) finish(); });
+    reduce.addEventListener('change', () => { if (reduce.matches && run) finish(); });
+    // A new width moves the letters; a phone's toolbar showing or hiding (a height change) doesn't.
+    let across = window.innerWidth;
+    window.addEventListener('resize', () => { if (window.innerWidth !== across) { across = window.innerWidth; if (run) finish(); } }, { passive: true });
   }
 
   // ---------------------------------------------------------------------------

@@ -282,23 +282,40 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--tr
 .story h2, .access h2 { max-width: 18ch; }
 .say { margin-top: var(--space-md); font-size: var(--text-lg); color: var(--ink-2); max-width: 36ch; }
 
-/* The file is its own name: hollow letters are still in storage, solid ones came down to the Mac. */
-.file-demo { margin-top: clamp(32px, 5vh, 56px); }
+/* The file is its own name: hollow letters are still in storage, solid ones came down to the Mac. A down letter's
+   solid copy is clipped from the top by --fill (1 unless an animation frame is filling it), so it fills from the bottom. */
+.file-demo { position: relative; margin-top: clamp(96px, 17vh, 200px); }
 .file {
+  position: relative;
   font: 600 calc((min(100vw, 1240px) - 2 * var(--gutter)) / 9.4)/1 var(--font-display);
   letter-spacing: -0.045em;
   white-space: nowrap;
   color: transparent;
   -webkit-text-stroke: max(1.5px, 0.011em) var(--outline);
 }
-.file span { transition: color 600ms var(--ease-out), -webkit-text-stroke-color 600ms var(--ease-out); }
-.file .down { color: var(--on); -webkit-text-stroke-color: var(--on); }
-.file-legend { margin-top: var(--space-md); display: flex; flex-wrap: wrap; gap: var(--space-lg); font-size: var(--text-base); color: var(--ink-2); }
-.file-legend span { display: inline-flex; align-items: baseline; gap: 10px; }
-/* A sample of each kind of letter, then plain words: hollow strokes are too thin to read at body size. */
-.file-legend i { font: 600 1.6em/1 var(--font-display); font-style: normal; letter-spacing: -0.03em; }
-.file-legend .solid i { color: var(--on); }
-.file-legend .hollow i { color: transparent; -webkit-text-stroke: 1.25px var(--outline); }
+.file .down {
+  position: relative;
+  display: inline-block;
+  -webkit-text-stroke-color: color-mix(in oklab, var(--on) calc(var(--fill, 1) * 100%), var(--outline));
+}
+.file .down::before {
+  content: attr(data-ch);
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--on);
+  -webkit-text-stroke-color: var(--on);
+  clip-path: polygon(-20% calc((1 - var(--fill, 1)) * 140% - 20%), 120% calc((1 - var(--fill, 1)) * 140% - 20%), 120% 120%, -20% 120%);
+}
+/* The plane and the pieces it drops, across the whole window over the name and the air above it (the demo's top
+   margin); motion.js places it. */
+.file-canvas { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
+.file-legend { margin-top: var(--space-md); display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-lg); font-size: var(--text-base); color: var(--ink-2); }
+.file-legend span { display: inline-flex; align-items: center; gap: 10px; }
+/* One piece of each kind, as the pieces that fall into the name: solid sage, or an empty outline. */
+.file-legend i { width: 0.7em; height: 0.7em; border-radius: 2px; flex: none; }
+.file-legend .solid i { background: var(--on); }
+.file-legend .hollow i { box-shadow: inset 0 0 0 1.5px var(--outline); }
 
 /* A save, in two beats: it lands on the Mac, then flies to storage. */
 .arc { position: relative; margin-top: clamp(32px, 5vh, 56px); height: clamp(200px, 26vw, 300px); }
@@ -395,9 +412,6 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--tr
   .repo div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .cta { white-space: normal; text-align: center; padding: 14px 26px; }
   .hero { padding-top: calc(64px + 40px); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .file span { transition: none; }
 }
 
 /* The pricing page's allowance meter: its explanation beside the meter, as before the homepage changed. */
