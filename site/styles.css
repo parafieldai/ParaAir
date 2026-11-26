@@ -295,7 +295,7 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--tr
   -webkit-text-stroke: max(1.5px, 0.011em) var(--outline);
 }
 .file .down {
-  --base: 0.92;
+  --base: 0.95;
   --cap: 0.26;
   position: relative;
   display: inline-block;

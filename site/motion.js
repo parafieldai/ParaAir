@@ -349,7 +349,7 @@
       const cells = letters.map((el) => {
         const r = el.getBoundingClientRect(), style = getComputedStyle(el);
         // Where the letter's ink starts and ends in its box, as the clip in styles.css uses them.
-        const base = parseFloat(style.getPropertyValue('--base')) || 0.92, cap = parseFloat(style.getPropertyValue('--cap')) || 0.26;
+        const base = parseFloat(style.getPropertyValue('--base')) || 0.95, cap = parseFloat(style.getPropertyValue('--cap')) || 0.26;
         return { el, left: r.left, right: r.right, top: r.top - (f.top - above), h: r.height, base, cap };
       });
       const colours = { ink: css('--ink'), sage: css('--sage'), on: css('--on'), line: css('--sage-line') };
@@ -374,19 +374,21 @@
     };
 
     // The plane's flight: in from the window's left edge, down to cruise over each run of letters, up over the gaps
-    // between them, and out past the right edge.
+    // between them, and out past the right edge. Each waypoint's time follows the distance flown at one speed, so the
+    // plane never surges or stalls between them.
     const waypoints = () => {
-      const { size, groups, w, high, cruise } = geo;
-      const pts = [];
-      let t = 0;
-      pts.push({ t, x: -size, y: high + (cruise - high) * 0.3 });
+      const { em, size, groups, w, high, cruise } = geo;
+      const pts = [{ x: -size, y: high + (cruise - high) * 0.3 }];
       groups.forEach((g, i) => {
         const left = g[0].left, right = g[g.length - 1].right;
-        if (i) { const prev = groups[i - 1]; t += 0.65; pts.push({ t, x: (prev[prev.length - 1].right + left) / 2, y: high }); }
-        t += i ? 0.65 : Math.max(0.5, Math.min(0.9, left / 600)); pts.push({ t, x: left, y: cruise });
-        t += 0.2 * g.length; pts.push({ t, x: right, y: cruise });
+        // The climb between runs is no steeper than the gap is wide, so a short hop on a phone stays smooth.
+        if (i) { const end = groups[i - 1][groups[i - 1].length - 1].right; pts.push({ x: (end + left) / 2, y: Math.max(high, cruise - (left - end) * 0.4) }); }
+        pts.push({ x: left, y: cruise }, { x: right, y: cruise });
       });
-      t += Math.max(0.6, Math.min(1.1, (w - pts[pts.length - 1].x) / 700)); pts.push({ t, x: w + size, y: high });
+      pts.push({ x: w + size, y: high });
+      const speed = Math.max(em * 5, w / 2.4);
+      let t = 0;
+      pts.forEach((p, i) => { if (i) t += Math.hypot(p.x - pts[i - 1].x, p.y - pts[i - 1].y) / speed; p.t = t; });
       return pts;
     };
 
@@ -492,40 +494,44 @@
       fraf = requestAnimationFrame(frame);
     };
 
+    // Puts emptied letters back, if no plane is filling them.
+    const refill = () => { if (run) return; primed = false; clearTimeout(waiting); waiting = 0; letters.forEach((el) => el.style.removeProperty('--fill')); };
+    const shown = () => { const r = demo.getBoundingClientRect(); return r.bottom > 0 && r.top < window.innerHeight; };
+
+    // Flies only from emptied letters, so the plane always brings back what was taken.
     const fly = () => {
-      armed = false;
-      if (run || reduce.matches || document.hidden) return;
+      if (run) return;
+      if (!primed || reduce.matches || document.hidden) { refill(); return; }
       measure();
       if (!geo.groups.length) { finish(); return; }
+      armed = false; clearTimeout(waiting); waiting = 0;
       const pts = waypoints();
       run = { pts, end: pts[pts.length - 1].t, pieces: [], start: 0 };
       fraf = requestAnimationFrame(frame);
     };
 
     // The letters empty while the name is still a third of a window away, out of sight, so nobody sees the pieces
-    // leave; the plane flies once most of the name is on screen. A name that was emptied but never flown (someone
-    // stopped scrolling short of it) flies anyway after a moment if any of it shows, or fills again if none does.
-    // It flies again only after the name has been scrolled well away.
+    // leave; if it is already on screen by then, they stay solid and nothing flies this time. The plane flies once
+    // most of the name shows, or after a moment once any of it does (someone stopped scrolling at its edge). Out of
+    // sight again, the letters wait emptied; scrolled well away, they fill again. It flies again only after that.
     const prime = () => requestAnimationFrame(() => {
-      if (run || primed || !armed || reduce.matches || document.hidden) return;
+      if (run || primed || !armed || reduce.matches || document.hidden || shown()) return;
       primed = true;
       letters.forEach((el) => el.style.setProperty('--fill', '0'));
-      clearTimeout(waiting);
-      waiting = setTimeout(() => {
-        if (!primed || run) return;
-        const r = demo.getBoundingClientRect();
-        if (r.bottom > 0 && r.top < window.innerHeight) fly(); else finish();
-      }, 2500);
     });
     new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) prime();
-      else { armed = true; if (!run) finish(); }
+      else { armed = true; refill(); }
     }, { rootMargin: '35% 0px 35% 0px' }).observe(demo);
     new IntersectionObserver(([entry]) => {
-      if (entry.intersectionRatio >= 0.6 && armed) fly();
-    }, { threshold: [0.6] }).observe(demo);
-    document.addEventListener('visibilitychange', () => { if (document.hidden && run) finish(); });
-    reduce.addEventListener('change', () => { if (reduce.matches && run) finish(); });
+      if (!primed || run) return;
+      if (entry.intersectionRatio >= 0.6) { fly(); return; }
+      if (entry.isIntersecting) { if (!waiting) waiting = setTimeout(() => { waiting = 0; if (primed && !run && shown()) fly(); }, 2500); }
+      else { clearTimeout(waiting); waiting = 0; }
+    }, { threshold: [0, 0.6] }).observe(demo);
+    // A hidden tab or reduced motion ends a run at once and never leaves the letters empty.
+    document.addEventListener('visibilitychange', () => { if (document.hidden) { if (run) finish(); else refill(); } });
+    reduce.addEventListener('change', () => { if (reduce.matches) { if (run) finish(); else refill(); } });
     // A new width moves the letters; a phone's toolbar showing or hiding (a height change) doesn't.
     let across = window.innerWidth;
     window.addEventListener('resize', () => { if (window.innerWidth !== across) { across = window.innerWidth; if (run) finish(); } }, { passive: true });
