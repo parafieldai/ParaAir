@@ -374,6 +374,7 @@ final class MenuModel: ObservableObject {
     private func observeCloudAccount() {
         cloudObservation = cloudAccount.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         cloudAccount.refreshPendingUploads = { [weak self] in await self?.activity.refreshNow() }
+        cloudAccount.knownStateRoots = { [weak self] in self?.knownStateRoots() ?? [] }
         cloudAccount.signedInFolder = { [weak self] root in self?.rememberStateRoot(root) }
     }
 

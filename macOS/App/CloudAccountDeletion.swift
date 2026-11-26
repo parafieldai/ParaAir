@@ -69,19 +69,44 @@ enum CloudAccountDeletionText {
         }
     }
 
-    /// Files this drive hasn't uploaded yet can't upload once the account is gone: say how many, and how to keep them.
-    /// Nil when none are waiting; without a count, the general warning. The count is the selected drive's only (the
-    /// app follows one drive's uploads), so it says "this drive", not "this Mac".
+    /// Files this Mac hasn't uploaded yet to the account's drives can't upload once the account is gone: say how many,
+    /// and how to keep them. Nil when none are waiting; without a count (still counting, or a drive couldn't be read),
+    /// the general warning.
     static func waitingUploads(_ count: Int?) -> String? {
         let keep = "wait for them to upload, or copy them out of the drive in Finder, before you confirm."
-        guard let count else { return "Files on this drive that haven’t uploaded yet can’t upload once the account is deleted: " + keep }
+        guard let count else { return "Files on this Mac that haven’t uploaded yet can’t upload once the account is deleted: " + keep }
         guard count > 0 else { return nil }
-        return (count == 1 ? "1 file on this drive hasn’t uploaded yet." : "\(count) files on this drive haven’t uploaded yet.")
-            + " \(count == 1 ? "It" : "They") can’t upload once the account is deleted: " + keep
+        return UploadNotices.notUploaded(count) + " \(count == 1 ? "It" : "They") can’t upload once the account is deleted: " + keep
     }
 
     static func confirms(_ typed: String, email: String) -> Bool {
         typed.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(email) == .orderedSame
+    }
+}
+
+/// Files not uploaded yet in every drive of one ParaAir Cloud account that this Mac knows, for the deletion warning: the
+/// app follows only the selected drive's uploads, and an account can have drives in other state folders (review
+/// 2026-11-26).
+enum CloudAccountUploads {
+    /// The sum over the ParaAir Cloud drives saved with `accountID` in `roots`; nil when a folder or one of those drives
+    /// couldn't be read, so the sheet shows its general warning instead of a count that leaves files out.
+    static func pending(accountID: String, roots: [URL],
+                                    profiles: (URL) throws -> [DriveProfile] = { try ProfileStore(root: $0).list() },
+                                    count: (DriveProfile, URL) throws -> Int = live) -> Int? {
+        var seen = Set<String>(), total = 0
+        for root in roots.map(\.standardizedFileURL) where seen.insert(root.path).inserted {
+            guard let list = try? profiles(root) else { return nil }
+            for profile in list where profile.backend == .paraairCloud && profile.cloudAccountID == accountID {
+                guard let files = try? count(profile, root) else { return nil }
+                total += files
+            }
+        }
+        return total
+    }
+
+    /// Everything a drive's journal holds that hasn't uploaded, as the activity monitor counts it.
+    static func live(_ profile: DriveProfile, _ root: URL) throws -> Int {
+        UploadActivity(try Engine.open(profile: profile, stateRoot: root).uploads(), cloud: true).total
     }
 }
 
@@ -270,7 +295,7 @@ struct CloudAccountDeletionBanner: View {
 /// What closing the account does, what must change first, and the typed confirmation.
 struct CloudAccountDeletionSheet: View {
     @ObservedObject var model: CloudAccountDeletionModel
-    /// Files waiting to upload on this Mac, when known.
+    /// Files waiting to upload to the account's drives on this Mac, when known.
     var pendingUploads: Int?
 
     var body: some View {

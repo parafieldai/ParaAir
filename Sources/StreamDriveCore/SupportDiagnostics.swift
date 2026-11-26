@@ -47,8 +47,11 @@ public enum SupportDiagnostics {
     public static func text(_ input: Input) -> String {
         var emails = Set(input.accountEmails.map { $0.lowercased() })
         var mounts = input.mountPoints
+        // Every drive's mount point is known only from setup-status, which lists the drives of every state folder.
+        var mountsKnown = false
         if case .json(let data) = input.setupStatus {
-            emails.formUnion(accountEmails(inSetupStatus: data)); mounts += mountPoints(in: data)
+            emails.formUnion(accountEmails(inSetupStatus: data))
+            if let points = profileMountPoints(inSetupStatus: data) { mounts += points; mountsKnown = true }
         }
         if case .json(let data)? = input.drive?.status { mounts += mountPoints(in: data) }
         let scrubber = Scrubber(allowedEmails: emails, home: input.home, mountPoints: mounts)
@@ -61,7 +64,13 @@ public enum SupportDiagnostics {
         } else {
             lines += ["", "## paraair status --json", "The selected state folder has no drive."]
         }
-        lines += ["", "## Recent log lines (dev.streamdrive, this app, last 30 minutes)", section(input.logs, .value, scrubber)]
+        // A log line is free text: a path inside a drive mounted outside /Volumes can be removed only when its mount point
+        // is known, so without setup-status the lines are left out.
+        let logs: String
+        if mountsKnown { logs = section(input.logs, .value, scrubber) }
+        else if case .unavailable = input.logs { logs = section(input.logs, .value, scrubber) }
+        else { logs = logsWithheld }
+        lines += ["", "## Recent log lines (dev.streamdrive, this app, last 30 minutes)", logs]
         return lines.joined(separator: "\n") + "\n"
     }
 
@@ -81,12 +90,22 @@ public enum SupportDiagnostics {
         return Set(accounts.compactMap { ($0["email"] as? String)?.lowercased() })
     }
 
-    /// `profiles[].mountPoint` of `setup-status --json` and `mountPoint` of `status --json`.
+    /// `mountPoint` of `status --json`.
     static func mountPoints(in data: Data) -> [String] {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-        let profiles = (object["profiles"] as? [[String: Any]]) ?? []
-        return ([object["mountPoint"]] + profiles.map { $0["mountPoint"] }).compactMap { $0 as? String }
+        return [object["mountPoint"]].compactMap { $0 as? String }
     }
+
+    /// `profiles[].mountPoint` of `setup-status --json`: every drive's mount point. Nil when it lists no profiles (it
+    /// failed), so the mount points aren't known.
+    static func profileMountPoints(inSetupStatus data: Data) -> [String]? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let profiles = object["profiles"] as? [Any] else { return nil }
+        return profiles.compactMap { ($0 as? [String: Any])?["mountPoint"] as? String }
+    }
+
+    public static let logsWithheld = "Left out: setup-status didn’t report where the drives are mounted, so file names in these lines "
+        + "couldn’t be removed. To read them yourself: log show --last 30m --info --predicate 'subsystem BEGINSWITH \"dev.streamdrive\"'"
 
     // MARK: Redaction
 

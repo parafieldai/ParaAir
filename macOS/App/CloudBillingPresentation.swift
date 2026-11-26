@@ -271,6 +271,14 @@ struct CloudPlanChoice: Equatable {
         guard let workspace, let members, members.workspace.id == workspace.id else { return 1 }
         return min(ParaAirCloudBillingCatalog.maxSeats, max(1, members.workspace.seatsUsed))
     }
+
+    /// The seats the sheet moves to when the team or its members list changes: the default for that team, unless the
+    /// person set the seats or the count is already that. Nil: leave them.
+    static func adoptedSeats(_ seats: Int, chosen: Bool, team: ParaAirCloudMe.Workspace?, members: ParaAirCloudMemberList?) -> Int? {
+        guard !chosen else { return nil }
+        let next = defaultSeats(team, members: members)
+        return next == seats ? nil : next
+    }
 }
 
 /// Plan card figures from the service's offer. The plan size leads, the total price supports it, the per-seat price

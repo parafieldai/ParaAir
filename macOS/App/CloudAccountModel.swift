@@ -98,6 +98,14 @@ final class CloudAccountModel: ObservableObject {
     private var deletionObservation: AnyCancellable?
     /// Set by the app so the sign-out confirmation counts uploads that are current.
     var refreshPendingUploads: (@MainActor () async -> UploadActivity?)?
+    /// Files not uploaded yet across the signed-in account's drives on this Mac, for the deletion sheet; nil while it is
+    /// counted or when a drive couldn't be read (the sheet then shows its general warning).
+    @Published private(set) var accountPendingUploads: Int?
+    /// Set by the app: every state folder it knows. Without it only this folder is counted.
+    var knownStateRoots: (@MainActor () -> [URL])?
+    /// Counts an account's files not uploaded yet in the given folders (CloudAccountUploads); tests replace it.
+    var accountUploadCounter: @Sendable (String, [URL]) -> Int? = { CloudAccountUploads.pending(accountID: $0, roots: $1) }
+    private var accountUploadCount = UUID()
     /// Told the state folder of every finished sign-in, at once, so other apps (the paraair CLI) can find the account
     /// while a drive is still being chosen.
     var signedInFolder: ((URL) -> Void)?
@@ -426,6 +434,24 @@ final class CloudAccountModel: ObservableObject {
                 self.log.error("cloud summary failed errno=\(Self.code(error))")
                 self.summaryState = .failed
             }
+        }
+    }
+
+    // MARK: Account deletion
+
+    /// Opens the deletion sheet and counts what hasn't uploaded in every drive of the account this Mac knows, not only
+    /// the selected one.
+    func presentDeletion() {
+        deletion.presentSheet()
+        guard deletion.sheetPresented, let account = signedInAccount else { return }
+        let id = UUID(), counter = accountUploadCounter, accountID = account.id
+        let roots = [stateRoot] + (knownStateRoots?() ?? [])
+        accountUploadCount = id
+        accountPendingUploads = nil
+        Task {
+            let value = try? await ParaAirCloudBlocking.run { counter(accountID, roots) }
+            guard accountUploadCount == id else { return }
+            accountPendingUploads = value ?? nil
         }
     }
 

@@ -94,6 +94,9 @@ final class SupportDiagnosticsTests: XCTestCase {
         XCTAssertEqual(other.scrub("open failed /Volumes/Work/Q3 Board Deck.pdf"), "open failed /Volumes/Work/[path]")
         XCTAssertEqual(other.scrub("open failed /Volumes/Work/Lena's Notes/plan.txt"), "open failed /Volumes/Work/[path]")
         XCTAssertEqual(other.scrub("first line /Volumes/Work/a b.pdf\nsecond line"), "first line /Volumes/Work/[path]\nsecond line")
+        // The review's examples.
+        XCTAssertEqual(other.scrub("/Volumes/Client Footage/Acme/contract.pdf"), "/Volumes/Client Footage/[path]")
+        XCTAssertEqual(other.scrub("/Volumes/ParaAir/Client Files/contract.pdf"), "/Volumes/ParaAir/[path]")
 
         // In the commands' JSON: setup-status names the mount points, including one outside /Volumes.
         let setup = Data("""
@@ -110,6 +113,31 @@ final class SupportDiagnosticsTests: XCTestCase {
         for kept in ["\"/Volumes/ParaAir Cloud/[path]\"", "\"mountPoint\" : \"~/Drives/Team Space\"", "open failed ~/Drives/Team Space/[path]"] {
             XCTAssertTrue(text.contains(kept), "shows \(kept)\n\(text)")
         }
+    }
+
+    /// A drive can be mounted outside /Volumes. Without setup-status nothing says where, so a log line naming a file in
+    /// it can't be cleaned: the log lines are left out then, and kept once setup-status reports the mount points.
+    func testDiagnosticsLeaveOutLogLinesWhenMountPointsAreUnknown() {
+        let line = "mount error: open failed /Users/thomas/Drives/Team Space/Q3 Board Deck.pdf"
+        func text(_ setup: SupportDiagnostics.Part, logs: SupportDiagnostics.Part = .lines([line])) -> String {
+            SupportDiagnostics.text(.init(appVersion: "0.1.0 alpha 11 (72)", clientHeader: "mac/0.1.72", system: "Version 27.3",
+                                          createdAt: Date(timeIntervalSince1970: 0), setupStatus: setup, drive: nil, logs: logs,
+                                          accountEmails: [], home: home, mountPoints: ["/Volumes/ParaAir Cloud"]))
+        }
+        let failed = Data(#"{"error":"Couldn’t read the app’s folders","exitCode":1,"code":"failed"}"#.utf8)
+        for setup in [SupportDiagnostics.Part.unavailable("This build has no paraair helper, so setup-status couldn’t run."), .json(failed),
+                      .json(Data("not json".utf8))] {
+            let copied = text(setup)
+            XCTAssertFalse(copied.contains("Board Deck") || copied.contains("mount error"), "leaves the lines out\n\(copied)")
+            XCTAssertTrue(copied.contains(SupportDiagnostics.logsWithheld), "says why\n\(copied)")
+        }
+        XCTAssertTrue(text(.unavailable("No helper."), logs: .unavailable("This app’s log couldn’t be read.")).contains("This app’s log couldn’t be read."),
+                      "a reason the log couldn't be read is still shown")
+        let listed = Data(#"{"contractVersion":1,"profiles":[{"profile":"Team","mountPoint":"/Users/thomas/Drives/Team Space","mounted":true}]}"#.utf8)
+        let kept = text(.json(listed))
+        XCTAssertTrue(kept.contains("mount error: open failed ~/Drives/Team Space/[path]") && !kept.contains("Board Deck"), kept)
+        let none = text(.json(Data(#"{"contractVersion":1,"profiles":[]}"#.utf8)), logs: .lines(["open failed /Volumes/Work/Q3 Board Deck.pdf"]))
+        XCTAssertTrue(none.contains("open failed /Volumes/Work/[path]"), "no drives listed: the lines stay, cleaned\n\(none)")
     }
 
     /// Of the commands' JSON only what the CLI contract documents is copied: a failing command's code and exit status

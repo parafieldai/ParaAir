@@ -43,6 +43,8 @@ struct CloudPlanSheet: View {
     enum Step: Equatable { case choose, review }
 
     @ObservedObject var model: CloudAccountModel
+    /// The drive's team members, whose list can arrive after the sheet opened (or after the terms loaded).
+    @ObservedObject private var members: CloudMembersModel
     @State private var step: Step
     @State private var plan: ParaAirCloudBilling.Plan
     @State private var interval: ParaAirCloudBilling.Interval
@@ -60,6 +62,7 @@ struct CloudPlanSheet: View {
     init(model: CloudAccountModel, step: Step = .choose, plan: ParaAirCloudBilling.Plan? = nil, interval: ParaAirCloudBilling.Interval = .month,
          seats: Int? = nil, agreed: Bool = false, fullTerms: Bool = false) {
         self.model = model
+        _members = ObservedObject(wrappedValue: model.members)
         let choice = model.planChoice
         _step = State(initialValue: step)
         // A team drive starts on Team for its team, when Team can be bought for it.
@@ -105,6 +108,7 @@ struct CloudPlanSheet: View {
         .onChange(of: model.quote) { _, _ in agrees = false }
         .onChange(of: model.offer) { _, _ in adoptOffer() }
         .onChange(of: teamWorkspaceID) { _, _ in adoptSeats() }
+        .onChange(of: members.members) { _, _ in adoptSeats() }
         .confirmationDialog("Start over with a new payment page?", isPresented: $confirmingStartOver, titleVisibility: .visible) {
             Button("Start Over") { step = .choose; model.startOver() }
             Button("Cancel", role: .cancel) {}
@@ -126,10 +130,18 @@ struct CloudPlanSheet: View {
         adoptSeats()
     }
 
-    /// Seats start at what the chosen team's members use, until the person sets them.
+    /// Seats start at what the chosen team's members use, until the person sets them, also when the members list
+    /// arrives later. Terms already on screen were for the old count, so they are asked for again and the box unticked
+    /// (review 2026-11-26): the service refuses fewer seats than members.
     private func adoptSeats() {
-        guard !seatsChosen else { return }
-        seats = CloudPlanChoice.defaultSeats(choice.team.workspaces.first { $0.id == teamWorkspaceID }, members: model.members.members)
+        guard let next = CloudPlanChoice.adoptedSeats(seats, chosen: seatsChosen,
+                                                      team: choice.team.workspaces.first { $0.id == teamWorkspaceID },
+                                                      members: members.members) else { return }
+        seats = next
+        if step == .review, plan == .team {
+            agrees = false
+            model.loadQuote(selection, force: true)
+        }
     }
 
     private func header(_ title: String, _ detail: String?) -> some View {

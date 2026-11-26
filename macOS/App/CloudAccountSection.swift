@@ -34,7 +34,7 @@ struct CloudAccountSection: View {
             Text("ParaAir Cloud")
         }
         .sheet(isPresented: Binding(get: { model.deletion.sheetPresented }, set: { if !$0 { model.deletion.closeSheet() } })) {
-            CloudAccountDeletionSheet(model: model.deletion, pendingUploads: model.pendingUploads?.total)
+            CloudAccountDeletionSheet(model: model.deletion, pendingUploads: model.accountPendingUploads)
         }
     }
 
@@ -191,7 +191,7 @@ struct CloudAccountSection: View {
             CloudBillingButtons(controls: billing.controls, allowsProminence: model.hasDrive,
                                 disabled: model.isBusy || model.billingBusy, perform: model.perform)
             if model.deletion.canRequest {
-                Button("Delete Account…", action: model.deletion.presentSheet)
+                Button("Delete Account…", action: model.presentDeletion)
                     .disabled(model.isBusy || model.deletion.busy)
             }
             Button("Sign Out…", action: model.requestSignOut)
@@ -233,11 +233,11 @@ struct CloudAccountSection: View {
 }
 
 /// The Sign Out confirmation's words. Signing out keeps the drive and its waiting files on this Mac; signing in again
-/// with the same account reuses its record, and the drive uploads them then. Only files that are just waiting, need the
-/// sign-in or are being retried upload then: a conflict waits for a decision, and a full plan, another Mac or a role
-/// still refuses the rest (review 2026-11-26).
+/// with the same account reuses its record, and the drive resumes their uploads then. That holds only for files that are
+/// waiting, need the sign-in or are being retried: a conflict waits for a decision, and a full plan, another Mac or a
+/// role still refuses the rest, so those are said to need review (review 2026-11-26).
 enum CloudSignOutText {
-    /// Files that upload by themselves once this account is signed in again.
+    /// Files whose uploads resume by themselves once this account is signed in again.
     static func resumable(_ activity: UploadActivity) -> Int {
         activity.waiting + activity.blockedAuth + activity.failedOther + activity.failing
     }
@@ -247,12 +247,17 @@ enum CloudSignOutText {
         guard let activity, pending > 0 else {
             return "This Mac stops reaching ParaAir Cloud until you sign in again. Files already on this Mac stay here."
         }
-        let resumable = resumable(activity)
-        let stay = UploadNotices.notUploaded(pending) + " If you sign out anyway, \(pending == 1 ? "it stays" : "they stay") on this Mac"
-        if resumable == 0 { return stay + "." }
-        let after = " after you sign in again with this account."
-        if resumable == pending { return stay + " and \(pending == 1 ? "uploads" : "upload")" + after }
-        return stay + ", and \(resumable) of them \(resumable == 1 ? "uploads" : "upload")" + after
+        let resumable = resumable(activity), held = pending - resumable
+        let lead = UploadNotices.notUploaded(pending) + " If you sign out anyway, \(pending == 1 ? "it stays" : "they stay") on this Mac"
+        let again = " after you sign in again with this account"
+        if held == 0 { return lead + " and \(pending == 1 ? "resumes" : "resume") uploading" + again + "." }
+        if resumable == 0 {
+            return lead + ". " + (pending == 1 ? "It’s blocked or conflicts with another change, so it still needs"
+                                               : "They’re blocked or conflict with other changes, so they still need") + " your review" + again + "."
+        }
+        return lead + ". \(resumable) of them \(resumable == 1 ? "resumes" : "resume") uploading" + again + "; "
+            + (held == 1 ? "the other one is blocked or conflicts with another change and still needs your review."
+                         : "the other \(held) are blocked or conflict with other changes and still need your review.")
     }
 }
 

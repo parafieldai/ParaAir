@@ -131,27 +131,34 @@ struct UISnapshots {
         expect(SupportButtons.line(.copied)?.hasPrefix("Diagnostics copied") == true && SupportButtons.line(.idle) == nil, "copying says it worked")
 
         // Sign Out Anyway: the waiting files stay on this Mac, and only those that are waiting, need the sign-in or are being
-        // retried upload after signing in again. Conflicts, a full plan, another Mac or a role still hold the rest.
+        // retried resume uploading after signing in again. Conflicts, a full plan, another Mac or a role still need review.
         expect(CloudSignOutText.message(UploadActivity(waiting: 3)) == "3 files on this Mac haven’t uploaded yet. If you sign out anyway, they stay on this Mac "
-               + "and upload after you sign in again with this account.", "sign-out says waiting files stay and upload later")
-        expect(CloudSignOutText.message(UploadActivity(blockedAuth: 1)).contains("it stays on this Mac and uploads after"), "one file is singular")
+               + "and resume uploading after you sign in again with this account.", "sign-out says waiting files stay and resume later")
+        expect(CloudSignOutText.message(UploadActivity(blockedAuth: 1)) == "1 file on this Mac hasn’t uploaded yet. If you sign out anyway, it stays on this Mac "
+               + "and resumes uploading after you sign in again with this account.", "one file is singular")
         expect(CloudSignOutText.message(UploadActivity(waiting: 1, blockedQuota: 1, blockedAuth: 1, blockedElsewhere: 1, conflicts: 2))
-               == "6 files on this Mac haven’t uploaded yet. If you sign out anyway, they stay on this Mac, and 2 of them upload after you sign in again "
-               + "with this account.", "only the files that can upload are promised to")
+               == "6 files on this Mac haven’t uploaded yet. If you sign out anyway, they stay on this Mac. 2 of them resume uploading after you sign in "
+               + "again with this account; the other 4 are blocked or conflict with other changes and still need your review.",
+               "only the files that can upload are promised to; the rest need review")
+        expect(CloudSignOutText.message(UploadActivity(waiting: 1, conflicts: 1)).hasSuffix("1 of them resumes uploading after you sign in again with this account; "
+               + "the other one is blocked or conflicts with another change and still needs your review."), "one of each is singular")
         expect(CloudSignOutText.message(UploadActivity(blockedQuota: 1, conflicts: 2))
-               == "3 files on this Mac haven’t uploaded yet. If you sign out anyway, they stay on this Mac.", "conflicts and a full plan aren't promised to upload")
+               == "3 files on this Mac haven’t uploaded yet. If you sign out anyway, they stay on this Mac. They’re blocked or conflict with other changes, "
+               + "so they still need your review after you sign in again with this account.", "conflicts and a full plan aren't promised to upload")
+        expect(CloudSignOutText.message(UploadActivity(conflicts: 1)).hasSuffix("It’s blocked or conflicts with another change, so it still needs your review "
+               + "after you sign in again with this account."), "one blocked file is singular")
         let failingUploads = UploadActivity(failedOther: 1, failure: UploadFailureSummary(count: 2, errno: EIO, oldestChangeNanoseconds: 1))
-        expect(CloudSignOutText.resumable(failingUploads) == 3 && CloudSignOutText.message(failingUploads).hasSuffix("and upload after you sign in again with this account."),
-               "uploads being retried do upload after signing in again")
+        expect(CloudSignOutText.resumable(failingUploads) == 3 && CloudSignOutText.message(failingUploads).hasSuffix("and resume uploading after you sign in again with this account."),
+               "uploads being retried resume after signing in again")
         expect(CloudSignOutText.message(UploadActivity()).hasPrefix("This Mac stops reaching ParaAir Cloud")
                && CloudSignOutText.message(nil).hasPrefix("This Mac stops reaching ParaAir Cloud"), "nothing waiting keeps the plain message")
 
-        // Account deletion: files still waiting to upload on this drive (the app follows the selected drive's uploads only).
-        expect(CloudAccountDeletionText.waitingUploads(2) == "2 files on this drive haven’t uploaded yet. They can’t upload once the account is deleted: "
+        // Account deletion: files still waiting to upload to any of the account's drives on this Mac.
+        expect(CloudAccountDeletionText.waitingUploads(2) == "2 files on this Mac haven’t uploaded yet. They can’t upload once the account is deleted: "
                + "wait for them to upload, or copy them out of the drive in Finder, before you confirm.", "deletion names the waiting files")
-        expect(CloudAccountDeletionText.waitingUploads(1)?.hasPrefix("1 file on this drive hasn’t uploaded yet. It can’t") == true, "one file is singular")
+        expect(CloudAccountDeletionText.waitingUploads(1)?.hasPrefix("1 file on this Mac hasn’t uploaded yet. It can’t") == true, "one file is singular")
         expect(CloudAccountDeletionText.waitingUploads(0) == nil, "nothing waiting, no line")
-        expect(CloudAccountDeletionText.waitingUploads(nil)?.hasPrefix("Files on this drive that haven’t uploaded yet") == true, "an unknown count still warns")
+        expect(CloudAccountDeletionText.waitingUploads(nil)?.hasPrefix("Files on this Mac that haven’t uploaded yet") == true, "an unknown count still warns")
 
         // Team where the service doesn't sell it (Stripe Managed Payments): no Team price in either period.
         let teamID = "ws_01J9ZX5Q4WJ3M8K2V7N6R1T0YD"
@@ -999,6 +1006,48 @@ struct UISnapshots {
                    size: CGSize(width: 620, height: 680), appearance: .aqua,
                    to: output.appendingPathComponent("home-33-account-deletion-light.png"))
 
+        // What hasn't uploaded is counted in every drive of the account this Mac knows, not only the selected folder's
+        // (review 2026-11-26): none here and 3 in another state folder still warns.
+        let counted = try model("counted", DeletionBox(fixtureDeletion()))
+        let accountID = counted.signedInAccount?.id ?? ""
+        func cloudDrive(_ name: String, account: String) -> DriveProfile {
+            DriveProfile(name: name, backend: .paraairCloud, blockSize: 4_194_304, displayName: name, cloudIssuer: fixtureIssuer.absoluteString,
+                         cloudAccountID: account, cloudDriveID: fixtureDrives[0].id, cloudWorkspaceID: fixtureWorkspaceID)
+        }
+        let elsewhere = base.appendingPathComponent("counted-elsewhere", isDirectory: true)
+        let foreign = base.appendingPathComponent("counted-foreign", isDirectory: true)
+        let unreadable = base.appendingPathComponent("counted-unreadable", isDirectory: true)
+        try ProfileStore(root: elsewhere).save(cloudDrive("Team-Footage", account: accountID))
+        try ProfileStore(root: foreign).save(cloudDrive("Other-Account", account: UUID().uuidString.lowercased()))
+        try ProfileStore(root: unreadable).save(cloudDrive("Unreadable", account: accountID))
+        let files: [String: Int] = [counted.stateRoot.path: 0, elsewhere.standardizedFileURL.path: 3, foreign.standardizedFileURL.path: 5]
+        let fixtureCount: (DriveProfile, URL) throws -> Int = { _, root in
+            guard let count = files[root.standardizedFileURL.path] else { throw DriveError(EIO, "journal unreadable") }
+            return count
+        }
+        expect(CloudAccountUploads.pending(accountID: accountID, roots: [counted.stateRoot], count: fixtureCount) == 0,
+               "nothing waiting in the account's only drive")
+        expect(CloudAccountUploads.pending(accountID: accountID, roots: [counted.stateRoot, elsewhere, foreign, elsewhere], count: fixtureCount) == 3,
+               "the account's drive in another folder counts, once; another account's doesn't")
+        expect(CloudAccountUploads.pending(accountID: accountID, roots: [counted.stateRoot, elsewhere, unreadable], count: fixtureCount) == nil,
+               "a drive of the account that can't be read makes the count unknown")
+        counted.knownStateRoots = { [elsewhere, foreign] }
+        counted.accountUploadCounter = { CloudAccountUploads.pending(accountID: $0, roots: $1, count: fixtureCount) }
+        counted.presentDeletion()
+        settle { counted.accountPendingUploads != nil }
+        expect(counted.deletion.sheetPresented && counted.accountPendingUploads == 3
+               && CloudAccountDeletionText.waitingUploads(counted.accountPendingUploads)?.hasPrefix("3 files on this Mac haven’t uploaded yet.") == true,
+               "0 waiting here and 3 in another folder of the account: the sheet warns about 3")
+        try render(CloudAccountDeletionSheet(model: counted.deletion, pendingUploads: counted.accountPendingUploads), size: nil, appearance: .aqua,
+                   to: output.appendingPathComponent("deletion-sheet-other-drive-light.png"))
+        counted.deletion.closeSheet()
+        counted.knownStateRoots = { [elsewhere, unreadable] }
+        counted.presentDeletion()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        expect(counted.accountPendingUploads == nil && CloudAccountDeletionText.waitingUploads(counted.accountPendingUploads)?
+               .hasPrefix("Files on this Mac that haven’t uploaded yet") == true, "an unreadable drive of the account: the general warning")
+        counted.deletion.closeSheet()
+
         // Cancel: once, and the banner goes.
         cloud.deletion.cancel()
         busyDone(cloud.deletion)
@@ -1095,7 +1144,8 @@ struct UISnapshots {
 
         func model(_ name: String, _ summary: SummaryBox, recorder: BillingRecorder, checkout: [URL] = [stripeCheckout],
                    portal: URL = stripePortal, delay: TimeInterval = 0, workspaceID: String? = fixtureWorkspaceID,
-                   offer: OfferBox = OfferBox(), profileWorkspaceID: String? = nil) throws -> CloudAccountModel {
+                   offer: OfferBox = OfferBox(), profileWorkspaceID: String? = nil,
+                   members: MembersBox = MembersBox(fixtureMembers())) throws -> CloudAccountModel {
             let root = try seedSignedIn(base.appendingPathComponent(name, isDirectory: true), vault: vault, drive: true,
                                         workspaceID: profileWorkspaceID)
             let cloud = CloudAccountModel(
@@ -1110,7 +1160,7 @@ struct UISnapshots {
                 },
                 portalStarter: { _, _, _ in portal },
                 offerLoader: { _, _, selection in try offer.offer(selection) },
-                membersService: MembersBox(fixtureMembers()).service, deletionService: DeletionBox(nil).service,
+                membersService: members.service, deletionService: DeletionBox(nil).service,
                 openURL: { recorder.open($0); return true })
             cloud.billingWatchDelays = [0.2, 0.2, 0.2, 0.2]
             cloud.reloadSummary()
@@ -1223,6 +1273,34 @@ struct UISnapshots {
                && fromTeam.billing.notice?.text == CloudBillingPresentation.teamUnavailable, "a team drive doesn't offer the Personal-only sheet")
         try render(ConnectionsView(stateRoot: fromTeam.stateRoot, vault: MemoryVault(), cloudAccount: fromTeam),
                    size: CGSize(width: 680, height: 800), appearance: .aqua, to: output.appendingPathComponent("storage-billing-team-not-sold-light.png"))
+
+        // Team seats follow the members list when it arrives after the terms loaded: the sheet asks for the terms again
+        // for those seats (the box unticks), and leaves seats the person set alone (review 2026-11-26).
+        let teamOpen = ParaAirCloudBilling(provider: .paddle, status: .none, checkoutAvailable: true)
+        func lateMembers(_ name: String, seats: Int?) throws -> (CloudAccountModel, OfferBox, NSWindow) {
+            let offerBox = OfferBox(provider: .paddle)
+            let cloud = try model(name, SummaryBox(fixtureMe(stored: 0, retained: 0, transfer: 0, billing: teamOpen, kind: "team", unpaid: true)),
+                                  recorder: BillingRecorder(), offer: offerBox)
+            cloud.perform(.choosePlan)
+            settle { offerLoaded(cloud) }
+            cloud.loadQuote(ParaAirCloudOfferRequest(plan: .team, interval: .month, seats: seats ?? 1, workspaceID: fixtureWorkspaceID))
+            settle { if case .loaded = cloud.quote { return true } else { return false } }
+            let window = host(CloudPlanSheet(model: cloud, step: .review, plan: .team, seats: seats, agreed: true))
+            if let workspace = cloud.workspace, let account = cloud.signedInAccount { cloud.members.show(workspace: workspace, account: account) }
+            settle { cloud.members.members != nil }
+            return (cloud, offerBox, window)
+        }
+        func quotedSeats(_ cloud: CloudAccountModel) -> Int? { if case .loaded(let quote) = cloud.quote { return quote.selection.seats } else { return nil } }
+        let (late, lateOffer, lateWindow) = try lateMembers("team-seats-late", seats: nil)
+        settle { quotedSeats(late) == 4 }
+        expect(late.members.members?.workspace.seatsUsed == 4 && lateOffer.requests.last??.seats == 4 && quotedSeats(late) == 4,
+               "the members list arriving after the terms moves Team to the 4 seats its members use, with new terms")
+        lateWindow.close()
+        let (chosen, chosenOffer, chosenWindow) = try lateMembers("team-seats-chosen", seats: 2)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        expect(chosen.members.members != nil && !chosenOffer.requests.contains { $0?.seats == 4 } && quotedSeats(chosen) == 2,
+               "seats the person set stay as they are")
+        chosenWindow.close()
 
         // A new account's free trial with Stripe Managed Payments (operator decisions 2026-10-27): the sheet says so and names
         // Link as the seller, the quote is asked for the workspace, and checkout sends the trial the quote showed.
@@ -2326,6 +2404,19 @@ struct UISnapshots {
     }
 
     // MARK: Rendering
+
+    /// Keeps `view` live in an offscreen window, so it follows its models; close the window when done.
+    @MainActor
+    static func host<V: View>(_ view: V) -> NSWindow {
+        let host = NSHostingView(rootView: view.environment(\.controlActiveState, .key).environment(\.airAmbientMotion, false))
+        host.frame = NSRect(origin: .zero, size: host.fittingSize)
+        let window = KeyLookingWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        return window
+    }
 
     static func suffix(_ appearance: NSAppearance.Name) -> String { appearance == .darkAqua ? "dark" : "light" }
 
