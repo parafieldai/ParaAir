@@ -17,6 +17,7 @@ on:
       - "site/**"
       - "site.wrangler.jsonc"
       - "scripts/check-site.py"
+      - "scripts/check-signup.mjs"
       - ".github/deploy-tools/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
@@ -43,6 +44,8 @@ jobs:
           persist-credentials: false
       - name: Static checks of site/
         run: python3 -I scripts/check-site.py site
+      - name: signup.js follows /signup/status (sign-up and billing switches)
+        run: node scripts/check-signup.mjs
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"

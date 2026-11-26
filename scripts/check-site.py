@@ -24,6 +24,10 @@
   and its own address as Canonical. favicon.ico is an ICO file.
 - Nothing the _headers Content-Security-Policy would block: inline <script>,
   <style> elements, style= attributes or on*= event handlers.
+- Copy that says ParaAir Cloud charges nobody ("nobody is charged", "billing isn't switched on", "planned prices", ...)
+  sits inside an element marked data-billing="off" and written hidden: signup.js shows it only while the service says
+  its billing is off, so the page can't say nobody is charged once plans are sold. Never in a meta tag, which no
+  script can change.
 
 Usage: python3 scripts/check-site.py [SITE_DIR]
 """
@@ -46,6 +50,10 @@ VISIBLE_ATTRIBUTES = {"alt", "title", "aria-label", "aria-description", "placeho
 # Link-preview tags every indexed page carries (og:url and og:image are checked further below).
 PREVIEW = ["og:title", "og:description", "og:url", "og:image", "twitter:card", "twitter:title", "twitter:description",
            "twitter:image"]
+# Copy that says nobody is charged; true only while ParaAir Cloud's billing is off (see signup.js).
+BILLING_OFF = re.compile(r"nobody is charged|isn[\u2019']t switched on|billing opens|planned prices|prices are\s+planned", re.IGNORECASE)
+# Elements without an end tag, which open nothing.
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 # Meta tags whose content is an address on the site, checked like an href.
 ADDRESS_META = {"og:url", "og:image", "twitter:image"}
 
@@ -58,11 +66,15 @@ class Page(HTMLParser):
         self.skip = 0
         self.legal = False
         self.meta, self.canonical, self.noindex = {}, None, False
+        # Open elements, each with whether it is written hidden and marked data-billing="off".
+        self.stack = []
 
     def where(self):
         return "%s:%d" % (self.name, self.getpos()[0])
 
     def check_copy(self, text, what):
+        if BILLING_OFF.search(text) and (what != "visible text" or not any(off for _, off in self.stack)):
+            self.problems.append(self.where() + ': says nobody is charged in %s outside an element marked data-billing="off" hidden' % what)
         if EM_DASH in text:
             self.problems.append(self.where() + ": em dash in " + what)
         if BANNED_WORDS.search(text) and not self.legal:
@@ -70,6 +82,8 @@ class Page(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
+        if tag not in VOID:
+            self.stack.append((tag, values.get("data-billing") == "off" and "hidden" in values))
         if tag == "body" and "legal-page" in (values.get("class") or "").split():
             self.legal = True
         if tag in ("script", "style"):
@@ -103,12 +117,19 @@ class Page(HTMLParser):
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
+        if tag not in VOID:
+            self.stack.pop()
         if tag in ("script", "style"):
             self.skip -= 1
 
     def handle_endtag(self, tag):
         if tag in ("script", "style") and self.skip:
             self.skip -= 1
+        # Close up to the matching element (HTML lets some end tags be left out).
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                del self.stack[index:]
+                break
 
     def handle_data(self, data):
         if not self.skip:
