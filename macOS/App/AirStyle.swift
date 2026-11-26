@@ -420,8 +420,8 @@ struct AirButtonMetrics: Equatable {
 }
 
 /// The one ink action per view: an ink capsule with the paper as its label, lit along its top edge, with a tight
-/// shadow beneath it. Hover lifts the ink off by 14% opacity, press by 26%, over 0.2 s; it never moves. A destructive
-/// role takes the problem tone.
+/// shadow beneath it. Hover lifts the ink off by 14% opacity, press by 26%, over 0.2 s; it never moves (the label stays
+/// 9:1 or more). A destructive role takes the problem tone and shades it instead, so its label keeps 4.5:1.
 struct AirProminentButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { AirProminentButton(configuration: configuration) }
 }
@@ -473,7 +473,13 @@ private struct AirProminentButton: View {
                     }
                 }
             }
-            .opacity(isEnabled ? (configuration.isPressed ? 0.74 : hovering ? 0.86 : 1) : 1)
+            .overlay {
+                if destructive && isEnabled {
+                    Capsule(style: .circular).fill(Color.black.opacity(configuration.isPressed ? 0.2 : hovering ? 0.1 : 0))
+                        .allowsHitTesting(false)
+                }
+            }
+            .opacity(isEnabled && !destructive ? (configuration.isPressed ? 0.74 : hovering ? 0.86 : 1) : 1)
             .contentShape(Capsule(style: .circular))
             .onHover { inside in withAnimation(AirMotion.hover) { hovering = inside } }
             .animation(AirMotion.quick, value: configuration.isPressed)
@@ -531,48 +537,58 @@ private struct AirTextButton: View {
 
 // MARK: - Switches and checkboxes
 
-/// A toggle as a row: the label leading, a capsule switch trailing. The knob slides on the long ease-out; the track
-/// turns sage. VoiceOver and keyboard users get a standard switch.
+/// A toggle as a row: the label leading, a capsule switch trailing. Clicking anywhere on the row flips it, as a
+/// checkbox's label does. The knob slides on the long ease-out; the track turns sage. VoiceOver and keyboard users get
+/// a standard switch.
 struct AirSwitchToggleStyle: ToggleStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .center, spacing: Air.Space.md) {
-            configuration.label.frame(maxWidth: .infinity, alignment: .leading)
-            AirSwitch(isOn: configuration.$isOn)
+    func makeBody(configuration: Configuration) -> some View { AirSwitchRow(configuration: configuration) }
+}
+
+private struct AirSwitchRow: View {
+    let configuration: ToggleStyleConfiguration
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button {
+            withAnimation(reduceMotion ? nil : AirMotion.settle) { configuration.isOn.toggle() }
+        } label: {
+            HStack(alignment: .center, spacing: Air.Space.md) {
+                configuration.label.frame(maxWidth: .infinity, alignment: .leading)
+                AirSwitch(isOn: configuration.isOn)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label } }
     }
 }
 
 extension ToggleStyle where Self == AirSwitchToggleStyle { static var airSwitch: AirSwitchToggleStyle { .init() } }
 
+/// The switch's drawing; the row around it is the control.
 private struct AirSwitch: View {
-    @Binding var isOn: Bool
+    let isOn: Bool
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.controlSize) private var controlSize
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let height: CGFloat = controlSize == .small || controlSize == .mini ? 18 : 22
-        let width = height * 1.7
-        Button {
-            withAnimation(reduceMotion ? nil : AirMotion.settle) { isOn.toggle() }
-        } label: {
-            ZStack(alignment: isOn ? .trailing : .leading) {
-                // A disabled switch dims its track; the knob keeps its outline so the control is still there.
-                Group {
-                    Capsule(style: .circular).fill(isOn ? Air.accent : Air.muted)
-                    Capsule(style: .circular).strokeBorder(isOn ? Color.clear : Air.controlEdge, lineWidth: 1)
-                }
-                .opacity(isEnabled ? 1 : 0.4)
-                Circle().fill(Color.white)
-                    .overlay(Circle().strokeBorder(Air.controlEdge.opacity(isOn ? 0 : 0.6), lineWidth: 0.5))
-                    .shadow(color: Air.controlShadow, radius: 1.5, y: 1)
-                    .padding(2)
+        let knob = height - 4
+        ZStack(alignment: isOn ? .trailing : .leading) {
+            // A disabled switch dims its track; the knob keeps its outline so the control is still there.
+            Group {
+                Capsule(style: .circular).fill(isOn ? Air.accent : Air.muted)
+                Capsule(style: .circular).strokeBorder(isOn ? Color.clear : Air.controlEdge, lineWidth: 1)
             }
-            .frame(width: width, height: height)
-            .contentShape(Capsule(style: .circular))
+            .opacity(isEnabled ? 1 : 0.4)
+            Circle().fill(Color.white)
+                .overlay(Circle().strokeBorder(Air.controlEdge.opacity(isOn ? 0 : 0.6), lineWidth: 0.5))
+                .shadow(color: Air.controlShadow, radius: 1.5, y: 1)
+                .frame(width: knob, height: knob)
+                .padding(2)
         }
-        .buttonStyle(.plain)
+        .frame(width: height * 1.7, height: height)
+        .accessibilityHidden(true)
     }
 }
 
@@ -777,8 +793,12 @@ struct AirMeter: View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule(style: .circular).fill(Air.track)
-                Capsule(style: .circular).fill(tone)
-                    .frame(width: max(6, proxy.size.width * min(max(fraction, 0), 1)))
+                // Nothing at zero; any other amount is at least a dot, so a little use still shows.
+                let share = min(max(fraction, 0), 1)
+                if share > 0 {
+                    Capsule(style: .circular).fill(tone)
+                        .frame(width: max(6, proxy.size.width * share))
+                }
             }
         }
         .frame(height: 6)
