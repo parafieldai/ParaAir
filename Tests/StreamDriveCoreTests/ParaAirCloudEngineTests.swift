@@ -392,4 +392,36 @@ final class ParaAirCloudEngineTests: XCTestCase {
         XCTAssertEqual(try engine.read("/a.txt", offset: 0, length: data.count), data)
         XCTAssertTrue(try api.trash(driveID: account.driveID, cursor: nil, limit: 100).items.isEmpty)
     }
+
+    // 2026-11-26 production review: a commit that applied but whose reply was lost, followed by a throttled retry and a
+    // throttled fence, was reported as never sent. The engine started the file's upload over, so the user's own file
+    // came back as a conflict; deleting it instead left the published copy in storage.
+    func testAppliedCommitWhoseRetryIsThrottledSettlesAsPublished() throws {
+        let commit = "POST /v1/drives/{d}/uploads/{u}/commit", fence = "POST /v1/drives/{d}/transactions/{tx}/fence"
+        let engine = try open()
+        let data = seededBytes(1000, seed: 901)
+        _ = try engine.create("/applied.bin", directory: false)
+        _ = try engine.write("/applied.bin", offset: 0, data: data)
+        fake.injectTransport(.timedOut, route: commit, afterProcessing: true)
+        fake.inject(route: commit, status: 429, code: "rate_limited", retryAfter: 60)
+        fake.inject(route: fence, status: 429, code: "rate_limited", retryAfter: 60)
+        _ = try engine.flushUploads()
+        XCTAssertEqual(fake.contents(driveID: account.driveID, path: "/applied.bin"), data)
+        let second = try engine.flushUploads()
+        XCTAssertTrue(second.isEmpty, "our own applied upload must settle, not become a pending conflict: \(second.map { "\($0.path) \($0.state)" })")
+    }
+
+    func testDeletingAFileWhoseCommitMayHaveAppliedRemovesItFromStorage() throws {
+        let commit = "POST /v1/drives/{d}/uploads/{u}/commit", fence = "POST /v1/drives/{d}/transactions/{tx}/fence"
+        let engine = try open()
+        let data = seededBytes(1000, seed: 904)
+        _ = try engine.create("/zombie.bin", directory: false)
+        _ = try engine.write("/zombie.bin", offset: 0, data: data)
+        fake.injectTransport(.timedOut, route: commit, afterProcessing: true)
+        fake.inject(route: commit, status: 429, code: "rate_limited", retryAfter: 10)
+        fake.inject(route: fence, status: 429, code: "rate_limited", retryAfter: 10)
+        _ = try engine.flushUploads()
+        try engine.remove("/zombie.bin", directory: false)
+        XCTAssertNil(fake.contents(driveID: account.driveID, path: "/zombie.bin"), "a file the user deleted must not stay in storage")
+    }
 }

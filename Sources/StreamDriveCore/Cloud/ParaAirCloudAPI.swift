@@ -460,7 +460,12 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
                 }
             default: break
             }
-            throw ParaAirCloudCallError(drive: mapped, code: failure.code, missing: failure.missing,
+            // A refusal of a retry says nothing about an earlier attempt that may have reached the service (its reply
+            // lost): the call's outcome is then unknown, as for a retry that never left this Mac (unsent above).
+            // Reported as not sent, a commit that applied made the engine start the file's upload over, so the user's own
+            // file came back as a conflict, and deleting it left the published copy in storage.
+            let outcome = maybeApplied && mapped.disposition == .attemptNotDispatched ? mapped.with(.ambiguous) : mapped
+            throw ParaAirCloudCallError(drive: outcome, code: failure.code, missing: failure.missing,
                                         retryAfterSeconds: failure.retryAfterSeconds, requestID: response.requestID)
         }
     }
