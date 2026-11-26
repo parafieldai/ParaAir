@@ -29,3 +29,12 @@ final class StateRootAccessTests: XCTestCase {
         XCTAssertFalse(StateRootAccess.canCreateFiles(in: folder.appendingPathComponent("missing")))
     }
 }
+
+/// macOS 26 has no FSKit call for the File System Extensions list, and an update there can turn ParaAir's switch off:
+/// the list's own link comes first, so the person gets to the switch in one click.
+final class ExtensionSettingsLinkTests: XCTestCase {
+    func testTheListsOwnLinkComesFirstAndLoginItemsIsTheFallback() {
+        XCTAssertEqual(ExtensionSetupGuidance.settingsLinks, [ExtensionSetupGuidance.settingsURL, ExtensionSetupGuidance.loginItemsURL])
+        XCTAssertTrue(ExtensionSetupGuidance.settingsURL.contains("extensionPointIdentifier=com.apple.fskit.fsmodule"))
+    }
+}

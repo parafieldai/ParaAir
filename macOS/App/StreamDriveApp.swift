@@ -1240,18 +1240,16 @@ final class MenuModel: ObservableObject {
             extensionSettingsOpenedAt = Date()
             watchExtensionUntilEnabled()
         }
-        // macOS 27: FSKit's own call, then the File System Extensions link; macOS 26: Login Items & Extensions.
-        var link = ExtensionSetupGuidance.loginItemsURL
+        // macOS 27: FSKit's own call. Then (and on macOS 26) the File System Extensions list's own link, which opens it
+        // with ParaAir's switch in one click; Login Items & Extensions only if that link doesn't open.
         if #available(macOS 27.0, *) {
             if FSClient.shared.openFileSystemExtensionsSettings() { return }
-            link = ExtensionSetupGuidance.settingsURL
         }
-        if let url = URL(string: link) {
-            if !NSWorkspace.shared.open(url) {
-                showMountMessage("Couldn’t open System Settings. Open General → Login Items & Extensions → By Category → File System Extensions, "
-                    + "switch on ParaAir, then return and choose Check again.", about: nil)
-            }
+        for link in ExtensionSetupGuidance.settingsLinks {
+            if let url = URL(string: link), NSWorkspace.shared.open(url) { return }
         }
+        showMountMessage("Couldn’t open System Settings. Open General → Login Items & Extensions → By Category → File System Extensions, "
+            + "switch on ParaAir, then return and choose Check again.", about: nil)
     }
     func quit() {
         // With an update waiting, quitting ejects the drives (shouldTerminate), so the

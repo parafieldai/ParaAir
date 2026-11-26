@@ -35,10 +35,14 @@ public enum ExtensionSetupGuidance {
     public static let sheetWarning = "The switch under ParaAir Extensions (FSKit Modules) doesn’t stay on."
     /// The one-line instruction for a disabled extension.
     public static let turnOn = "Turn on \(switchName) in \(location). \(sheetWarning)"
-    /// Where System Settings shows the File System Extensions list when FSClient can't open it (macOS 27 and later).
+    /// The File System Extensions list, with ParaAir's switch, straight from a link: on macOS 27 when FSClient can't open
+    /// it, and on macOS 26, where FSClient has no call for it (tested on 26.6.2, with System Settings closed or open).
     public static let settingsURL = "x-apple.systempreferences:com.apple.ExtensionsPreferences?extensionPointIdentifier=com.apple.fskit.fsmodule"
-    /// macOS 26: Login Items & Extensions, where the person chooses By Category.
+    /// Login Items & Extensions, where the person chooses By Category: only if the list's link doesn't open.
     public static let loginItemsURL = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+    /// The links to try, in order, after FSKit's own call (macOS 27). On macOS 26 an update can turn ParaAir's switch
+    /// off (Sparkle's swap; FSKit drops the module), so getting there in one click matters there most.
+    public static let settingsLinks = [settingsURL, loginItemsURL]
 }
 
 /// The other copies of the app that LaunchServices knows about. A record whose app is gone is stale and can be
