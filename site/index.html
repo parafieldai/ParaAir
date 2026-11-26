@@ -68,11 +68,18 @@
     <section class="story saves" aria-labelledby="saves-title">
       <h2 id="saves-title">Saves land on your Mac first.</h2>
       <p class="say">Then they upload in the background.</p>
-      <div class="arc" data-arc aria-hidden="true">
-        <svg viewBox="0 0 1000 220" preserveAspectRatio="none"><path data-arc-path d="M 24 196 C 270 12, 730 12, 976 196"/></svg>
-        <canvas class="arc-canvas" data-arc-canvas></canvas>
-        <p class="arc-end arc-start"><b>Your Mac</b><span>edit-v3.prproj · <span data-arc-state>Saved</span></span></p>
-        <p class="arc-end arc-finish"><b>Your storage</b><span>studio-footage</span></p>
+      <div class="arc" data-arc>
+        <p class="visually-hidden">For example, saving edit-v3.prproj finishes on your Mac at once. Its pieces then upload to studio-footage in the background.</p>
+        <svg viewBox="0 0 1000 220" preserveAspectRatio="none" aria-hidden="true"><path data-arc-path d="M 66 196 C 290 12, 710 12, 934 196"/></svg>
+        <canvas class="arc-canvas" data-arc-canvas aria-hidden="true"></canvas>
+        <div class="arc-end arc-start" aria-hidden="true">
+          <span class="arc-row" data-arc-mac><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <b>Your Mac</b><span>edit-v3.prproj · <span data-arc-state>Saved</span></span>
+        </div>
+        <div class="arc-end arc-finish" aria-hidden="true">
+          <span class="arc-row" data-arc-cloud><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <b>Your storage</b><span>studio-footage · <span data-arc-count>Uploaded</span></span>
+        </div>
       </div>
     </section>
 

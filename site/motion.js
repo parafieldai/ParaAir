@@ -540,56 +540,157 @@
   }
 
   // ---------------------------------------------------------------------------
-  // "Saves land on your Mac first": the plane waits at the Mac ("Saved"), then flies the save to storage
-  // ("Uploading", "Uploaded"). The path is sampled once; drawing happens only while the arc is on screen.
+  // "Saves land on your Mac first": once most of the section shows, the save lands on the Mac as a row of pieces
+  // ("Saving…", then "Saved" at once), then the plane takes off and the pieces stream after it along the arc into
+  // storage, each filling its slot as it lands ("7 of 12 pieces", then "Uploaded"). The page itself shows the finished
+  // scene: both rows full, the trail flown and the plane landed. A run empties it only while it is out of sight, like
+  // the file name above, and anything that stops a run (a hidden tab, Reduce Motion, a new width) puts it back.
   const arc = document.querySelector('[data-arc]');
   if (arc) {
     const path = arc.querySelector('[data-arc-path]');
+    const svg = path.ownerSVGElement;
     const canvas = arc.querySelector('[data-arc-canvas]');
     const state = arc.querySelector('[data-arc-state]');
+    const count = arc.querySelector('[data-arc-count]');
+    const mac = Array.from(arc.querySelectorAll('[data-arc-mac] i'));
+    const cloud = Array.from(arc.querySelectorAll('[data-arc-cloud] i'));
+    const N = cloud.length;
+    const done = { state: state.textContent, count: count.textContent };
+    mac.forEach((el, k) => el.style.setProperty('--k', k));
     const ctx = canvas.getContext('2d');
-    const length = path.getTotalLength();
-    const points = Array.from({ length: 121 }, (_, k) => path.getPointAtLength((length * k) / 120));
-    let visible = false, queued = false, ratio = 1, plane = null, w = 0, h = 0;
-    const size = () => {
+    let points = [];
+    // The timeline, in seconds: the save lands, the plane flies, and piece k leaves the Mac at LEAVE + k * GAP. Pieces
+    // cross the arc more slowly than the plane (0.68 of TRAVEL, at an even pace), so they always follow it.
+    const SAVED = 0.55, TAKEOFF = 0.8, FLIGHT = 1.5, LEAVE = 0.9, GAP = 0.09, TRAVEL = 2.3;
+    const END = LEAVE + (N - 1) * GAP + TRAVEL + 0.35;
+    let run = null, raf = 0, primed = false, armed = true, waiting = 0, ratio = 1, plane = null, geo = null;
+    const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+    const lerp = (a, b, u) => a + (b - a) * u;
+
+    const measure = () => {
       ratio = Math.min(window.devicePixelRatio || 1, 2);
-      const r = canvas.getBoundingClientRect();
-      w = r.width; h = r.height;
-      canvas.width = Math.round(w * ratio); canvas.height = Math.round(h * ratio);
-      plane = sprite(44, css('--ink'), css('--sage'), ratio);
-    };
-    const draw = () => {
-      queued = false;
-      if (!visible || !w) return;
-      const r = arc.getBoundingClientRect();
-      const p = reduce.matches ? 0.62 : clamp((window.innerHeight * 0.85 - r.top) / (r.height + window.innerHeight * 0.3));
-      const flown = clamp((p - 0.3) / 0.6);
-      const label = p < 0.3 ? 'Saved' : flown < 1 ? 'Uploading' : 'Uploaded';
-      if (state.textContent !== label) state.textContent = label;
-      const sx = w / 1000, sy = h / 220, end = Math.round(flown * 120);
-      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      if (end > 0) {
-        ctx.lineCap = 'round'; ctx.lineWidth = 2.5; ctx.strokeStyle = css('--sage-line');
-        ctx.beginPath();
-        for (let k = 0; k <= end; k++) { const q = points[k]; k ? ctx.lineTo(q.x * sx, q.y * sy) : ctx.moveTo(q.x * sx, q.y * sy); }
-        ctx.stroke();
+      const box = arc.getBoundingClientRect(), s = svg.getBoundingClientRect();
+      canvas.width = Math.round(box.width * ratio); canvas.height = Math.round(box.height * ratio);
+      plane = sprite(40, css('--ink'), css('--sage'), ratio);
+      const centre = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2 - box.left, y: r.top + r.height / 2 - box.top, size: r.width }; };
+      geo = { w: box.width, h: box.height, sx: s.width / 1000, sy: s.height / 220, ox: s.left - box.left, oy: s.top - box.top,
+        mac: mac.map(centre), cloud: cloud.map(centre), on: css('--piece-on'), trail: css('--sage-line') };
+      // The path leaves from above the middle of the Mac's row and lands above the middle of storage's, so pieces rise
+      // straight up into it and settle left to right, in file order, at the other end.
+      if (geo.sx > 0 && mac.length && cloud.length) {
+        const mid = (row) => (row[0].x + row[row.length - 1].x) / 2;
+        const a = (mid(geo.mac) - geo.ox) / geo.sx, b = (mid(geo.cloud) - geo.ox) / geo.sx, pull = (b - a) * 0.258;
+        path.setAttribute('d', `M ${a.toFixed(1)} 196 C ${(a + pull).toFixed(1)} 12, ${(b - pull).toFixed(1)} 12, ${b.toFixed(1)} 196`);
       }
-      const a = points[Math.min(119, end)], b = points[Math.min(120, end + 1)];
-      const angle = Math.atan2((b.y - a.y) * sy, (b.x - a.x) * sx);
-      ctx.save();
-      ctx.translate(a.x * sx, a.y * sy);
-      ctx.rotate(angle);
+      const length = path.getTotalLength();
+      points = Array.from({ length: 121 }, (_, k) => path.getPointAtLength((length * k) / 120));
+    };
+    // A point on the flight path, u from 0 (the Mac) to 1 (storage), in the canvas's coordinates.
+    const onArc = (u) => {
+      const f = clamp(u) * 120, i = Math.min(119, Math.floor(f)), r = f - i, a = points[i], b = points[i + 1];
+      return { x: geo.ox + lerp(a.x, b.x, r) * geo.sx, y: geo.oy + lerp(a.y, b.y, r) * geo.sy };
+    };
+    const heading = (u) => { const a = onArc(Math.max(0, u - 0.01)), b = onArc(Math.min(1, u + 0.01)); return Math.atan2(b.y - a.y, b.x - a.x); };
+    // Piece k on its way: up from its slot on the Mac to the path, along it, and down into its slot in storage.
+    const piece = (k, u) => {
+      const from = geo.mac[k], to = geo.cloud[k], start = onArc(0), finish = onArc(1);
+      if (u < 0.16) { const e = ease(u / 0.16); return { x: lerp(from.x, start.x, e), y: lerp(from.y, start.y, e) - Math.sin(Math.PI * e) * 8, s: lerp(from.size, 8, e) }; }
+      if (u > 0.84) { const e = ease((u - 0.84) / 0.16); return { x: lerp(finish.x, to.x, e), y: lerp(finish.y, to.y, e) - Math.sin(Math.PI * e) * 8, s: lerp(8, to.size, e) }; }
+      const q = onArc((u - 0.16) / 0.68); return { x: q.x, y: q.y, s: 8 };
+    };
+    const trail = (upto) => {
+      if (upto <= 0) return;
+      ctx.lineCap = 'round'; ctx.lineWidth = 2.5; ctx.strokeStyle = geo.trail;
+      ctx.beginPath();
+      const steps = Math.max(2, Math.round(upto * 120));
+      for (let k = 0; k <= steps; k++) { const q = onArc((upto * k) / steps); k ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); }
+      ctx.stroke();
+    };
+    const stamp = (u) => {
+      const q = onArc(u);
+      ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(heading(u));
       ctx.drawImage(plane, -plane.width / ratio / 2, -plane.height / ratio / 2, plane.width / ratio, plane.height / ratio);
       ctx.restore();
     };
-    const queue = () => { if (!queued) { queued = true; requestAnimationFrame(draw); } };
-    size();
-    new ResizeObserver(() => { size(); queue(); }).observe(canvas);
-    new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; queue(); }).observe(arc);
-    window.addEventListener('scroll', queue, { passive: true });
-    reduce.addEventListener('change', queue);
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { size(); queue(); });
+    // The scene at rest: the whole trail flown and the plane landed at storage (or, primed, waiting at the Mac).
+    const rest = () => {
+      if (!geo) return;
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, geo.w, geo.h);
+      if (primed) { stamp(0); return; }
+      trail(1); stamp(1);
+    };
+
+    const finish = () => {
+      run = null; primed = false;
+      cancelAnimationFrame(raf); raf = 0; clearTimeout(waiting); waiting = 0;
+      delete arc.dataset.phase;
+      cloud.forEach((el) => el.classList.remove('on'));
+      state.textContent = done.state; count.textContent = done.count;
+      rest();
+    };
+
+    const frame = (now) => {
+      if (!run) return;
+      if (!run.start) { run.start = now; arc.dataset.phase = 'run'; }
+      const t = (now - run.start) / 1000;
+      if (t >= SAVED && state.textContent !== done.state) state.textContent = done.state;
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, geo.w, geo.h);
+      const flown = ease(clamp((t - TAKEOFF) / FLIGHT));
+      trail(flown);
+      ctx.fillStyle = geo.on;
+      for (let k = 0; k < N; k++) {
+        const u = (t - (LEAVE + k * GAP)) / TRAVEL;
+        if (u <= 0) continue;
+        if (u >= 1) {
+          if (!cloud[k].classList.contains('on')) { cloud[k].classList.add('on'); run.landed++; count.textContent = `${run.landed} of ${N} pieces`; }
+          continue;
+        }
+        const p = piece(k, u);
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(u * 5.5 + k);
+        ctx.fillRect(-p.s / 2, -p.s / 2, p.s, p.s);
+        ctx.restore();
+      }
+      stamp(flown);
+      if (run.landed === N && count.textContent !== done.count && t > END - 0.3) count.textContent = done.count;
+      if (t >= END) { finish(); return; }
+      raf = requestAnimationFrame(frame);
+    };
+
+    const shown = () => { const r = arc.getBoundingClientRect(); return r.bottom > 0 && r.top < window.innerHeight; };
+    const fly = () => {
+      if (run) return;
+      if (!primed || reduce.matches || document.hidden) { finish(); return; }
+      armed = false; clearTimeout(waiting); waiting = 0;
+      measure();
+      run = { start: 0, landed: 0 };
+      raf = requestAnimationFrame(frame);
+    };
+    // Emptied only while out of sight (a third of a window away), so nobody sees the save leave.
+    const prime = () => requestAnimationFrame(() => {
+      if (run || primed || !armed || reduce.matches || document.hidden || shown()) return;
+      primed = true;
+      arc.dataset.phase = 'primed';
+      state.textContent = 'Saving…'; count.textContent = `0 of ${N} pieces`;
+      rest();
+    });
+
+    measure(); rest();
+    new ResizeObserver(() => { if (run) finish(); measure(); rest(); }).observe(arc);
+    new IntersectionObserver(([entry]) => { if (entry.isIntersecting) prime(); }, { rootMargin: '35% 0px 35% 0px' }).observe(arc);
+    // Re-armed (and put back) only once the whole section is a third of a window away.
+    new IntersectionObserver(([entry]) => { if (!entry.isIntersecting) { armed = true; if (!run) finish(); } }, { rootMargin: '35% 0px 35% 0px' })
+      .observe(arc.closest('section') || arc);
+    new IntersectionObserver(([entry]) => {
+      if (!primed || run) return;
+      if (entry.intersectionRatio >= 0.6) { fly(); return; }
+      if (entry.isIntersecting) { if (!waiting) waiting = setTimeout(() => { waiting = 0; if (primed && !run && shown()) fly(); }, 2500); }
+      else { clearTimeout(waiting); waiting = 0; }
+    }, { threshold: [0, 0.6] }).observe(arc);
+    document.addEventListener('visibilitychange', () => { if (document.hidden && (run || primed)) finish(); });
+    reduce.addEventListener('change', () => { if (reduce.matches) finish(); });
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { measure(); rest(); });
   }
 
   // ---------------------------------------------------------------------------

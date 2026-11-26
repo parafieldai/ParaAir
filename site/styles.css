@@ -322,14 +322,29 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--tr
 .file-legend .hollow i { box-shadow: inset 0 0 0 1.5px var(--outline); }
 
 /* A save, in two beats: it lands on the Mac, then flies to storage. */
-.arc { position: relative; margin-top: clamp(32px, 5vh, 56px); height: clamp(200px, 26vw, 300px); }
-.arc svg, .arc-canvas { position: absolute; left: 0; right: 0; top: 0; width: 100%; height: calc(100% - 64px); overflow: visible; }
-.arc path { fill: none; stroke: var(--rule-strong); stroke-width: 1.5; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+/* "Saves land on your Mac first": the flight path, and a row of the file's pieces under each end. The page shows the
+   finished scene; a run (motion.js) sets data-phase to land the save on the Mac and fly its pieces into storage. */
+.arc { position: relative; margin-top: clamp(32px, 5vh, 56px); height: clamp(236px, 28vw, 330px); }
+.arc svg { position: absolute; left: 0; right: 0; top: 0; width: 100%; height: calc(100% - 96px); overflow: visible; }
+.arc-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.arc path { fill: none; stroke: var(--rule-strong); stroke-width: 1.5; stroke-dasharray: 2 7; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .arc-end { position: absolute; bottom: 0; display: grid; gap: 2px; font-size: var(--text-base); }
 .arc-end b { font-weight: 600; color: var(--ink); }
-.arc-end span { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.arc-end > span:not(.arc-row) { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .arc-start { left: 0; }
 .arc-finish { right: 0; text-align: right; }
+.arc-row { display: flex; gap: 4px; margin-bottom: 14px; }
+.arc-finish .arc-row { justify-content: flex-end; }
+.arc-row i { width: 9px; height: 9px; border-radius: 2px; background: var(--piece-on); }
+/* During a run storage's slots wait hollow, and each fills as its piece lands. */
+.arc[data-phase] [data-arc-cloud] i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--rule-strong); }
+.arc[data-phase] [data-arc-cloud] i.on { background: var(--piece-on); box-shadow: none; animation: arc-land 0.36s cubic-bezier(0.2, 0.9, 0.3, 1); }
+/* Primed out of sight: the save hasn't landed yet. Running: it drops into the Mac's row, piece by piece. */
+.arc[data-phase="primed"] [data-arc-mac] i { opacity: 0; transform: translateY(-26px); }
+.arc[data-phase="run"] [data-arc-mac] i {
+  transition: transform 0.45s cubic-bezier(0.25, 1.35, 0.45, 1) calc(var(--k, 0) * 26ms), opacity 0.18s linear calc(var(--k, 0) * 26ms);
+}
+@keyframes arc-land { from { transform: scale(1.5); } to { transform: none; } }
 
 /* The app: its menu bar panel, the real thing, standing on the paper. */
 .panel-shot {
@@ -413,6 +428,8 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--tr
   .arc-end { font-size: var(--text-sm); }
 }
 @media (max-width: 560px) {
+  .arc-row { gap: 3px; margin-bottom: 10px; }
+  .arc-row i { width: 6px; height: 6px; border-radius: 1.5px; }
   .repo div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .cta { white-space: normal; text-align: center; padding: 14px 26px; }
   .hero { padding-top: calc(64px + 40px); }
