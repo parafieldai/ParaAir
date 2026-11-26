@@ -89,7 +89,12 @@ final class StreamDriveFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperation
         scopedURL = url
         do {
             let mount = try FinderMountResource(stateRoot: url, requestedProfile: selectedProfile(options))
-            let readonly = !resource.isWritable || options.taskOptions.contains("--rdonly")
+            // macOS 26's `mount -F` marks the path resource not writable although its scope lets this extension write
+            // the state folder (StateRootAccess). Only a folder that really can't be written, or --rdonly, is read-only.
+            let canWrite = resource.isWritable || StateRootAccess.canCreateFiles(in: url)
+            let readonly = !canWrite || options.taskOptions.contains("--rdonly")
+            Logger(subsystem: "dev.streamdrive.app.filesystem", category: "mount")
+                .notice("Resource writable: \(resource.isWritable, privacy: .public), state root writable: \(canWrite, privacy: .public), read-only: \(readonly, privacy: .public)")
             let loaded = StreamDriveVolume(stateRoot: url, mountResource: mount, readOnly: readonly) { [weak self] active in
                 self?.containerStatus = active ? .active : .ready
             }

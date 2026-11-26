@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ParaAir's root helper on macOS 26 (registered with SMAppService.daemon). scripts/build-app.sh installs this as
+     Contents/Library/LaunchDaemons/<app id>.volumes.plist and fills in the app's identifier. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>dev.streamdrive.app.volumes</string>
+	<key>BundleProgram</key><string>Contents/Helpers/ParaAirVolumes</string>
+	<key>MachServices</key><dict><key>dev.streamdrive.app.volumes</key><true/></dict>
+	<key>AssociatedBundleIdentifiers</key><array><string>dev.streamdrive.app</string></array>
+	<key>ProcessType</key><string>Background</string>
+</dict>
+</plist>

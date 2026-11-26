@@ -136,9 +136,9 @@ struct UISnapshots {
         couldntConnect.storageSummary = "ParaAir Cloud · " + fixtureEmail
         couldntConnect.mountPath = "/Volumes/ParaAir Cloud"
         couldntConnect.mountFailed = true
-        var needsNewerMacOS = couldntConnect
-        needsNewerMacOS.mountFailed = false
-        needsNewerMacOS.needsNewerMacOS = true
+        var allowLoginItems = couldntConnect
+        allowLoginItems.mountFailed = false
+        allowLoginItems.needsVolumesApproval = true
         var cloudReady = base
         cloudReady.driveName = "ParaAir Cloud"
         cloudReady.storageSummary = "ParaAir Cloud · " + fixtureEmail
@@ -251,7 +251,7 @@ struct UISnapshots {
                 ("25-still-off", stillOff), ("26-drives-one-needs-sign-in", oneNeedsSignIn), ("27-drives-connected", allConnected),
                 ("28-drives-all-blocked", allBlocked), ("29-drives-connecting", oneConnecting), ("30-drives-other-failed", otherFailed),
                 ("31-drives-switch-off", switchOffSeveral), ("32-drives-cloud-read-only", readOnlyListed),
-                ("36-couldnt-connect", couldntConnect), ("37-needs-macos-27", needsNewerMacOS)]
+                ("36-couldnt-connect", couldntConnect), ("37-allow-login-items", allowLoginItems)]
     }()
 
     /// Drives of other state folders (folders of their own under Cloud Drives, and an older one kept for login).
@@ -1571,20 +1571,23 @@ struct UISnapshots {
         expect(several.notices.first?.id == "selected-mount-failed" && several.notices.first?.action == .openSystemSettings
                && several.notices.first?.text.contains("off and on again") == true && !several.drives.isEmpty,
                "with several drives, a failed mount of the selected one gets a notice with the switch step, and the list stays")
-        let tooOld = HomePresentation.make(scenarios["37-needs-macos-27"]!)
-        expect(tooOld.status.title == "Needs macOS 27" && tooOld.primary.action == .openSoftwareUpdate
-               && !tooOld.showsSwitchPicture && !tooOld.offersTryAgain && tooOld.status.detail.contains("macOS 27 or later"),
-               "on macOS 26 the drive says it needs macOS 27, with Software Update, and never sends anyone to the switch")
-        var tooOldSwitchOff = scenarios["37-needs-macos-27"]!; tooOldSwitchOff.extensionState = .disabled
-        expect(HomePresentation.make(tooOldSwitchOff).status.title == "Needs macOS 27", "even with the switch off, macOS 27 comes first")
-        var tooOldFailed = scenarios["37-needs-macos-27"]!; tooOldFailed.mountFailed = true
-        expect(HomePresentation.make(tooOldFailed).status.title == "Needs macOS 27", "a failed mount on macOS 26 still says macOS 27")
-        var tooOldSeveral = scenarios["30-drives-other-failed"]!; tooOldSeveral.mounted = false; tooOldSeveral.needsNewerMacOS = true
-        tooOldSeveral.mountFailed = true
-        let tooOldList = HomePresentation.make(tooOldSeveral)
-        expect(tooOldList.notices.first?.id == "selected-needs-newer-macos" && tooOldList.notices.first?.action == .openSoftwareUpdate
-               && !tooOldList.notices.contains { $0.id == "selected-mount-failed" },
-               "with several drives, macOS 26 gets the macOS 27 notice, not the switch notice")
+        let approval = HomePresentation.make(scenarios["37-allow-login-items"]!)
+        expect(approval.status.title == HomePresentation.volumesApprovalTitle && approval.primary.action == .openLoginItems
+               && !approval.showsSwitchPicture && !approval.offersTryAgain
+               && approval.status.detail.contains("Login Items & Extensions") && approval.status.detail.contains("/Volumes"),
+               "on macOS 26 the drive asks once for the /Volumes helper in Login Items, with a button that opens it")
+        var approvalSwitchOff = scenarios["37-allow-login-items"]!; approvalSwitchOff.extensionState = .disabled
+        expect(HomePresentation.make(approvalSwitchOff).status.title == HomePresentation.make(scenarios["24-turn-on-first"]!).status.title,
+               "the file system switch comes before the Login Items step")
+        var approvalFailed = scenarios["37-allow-login-items"]!; approvalFailed.mountFailed = true
+        expect(HomePresentation.make(approvalFailed).status.title == HomePresentation.volumesApprovalTitle,
+               "a failed mount while the helper waits still shows the Login Items step")
+        var approvalSeveral = scenarios["30-drives-other-failed"]!; approvalSeveral.mounted = false; approvalSeveral.needsVolumesApproval = true
+        approvalSeveral.mountFailed = true
+        let approvalList = HomePresentation.make(approvalSeveral)
+        expect(approvalList.notices.first?.id == "selected-needs-volumes-approval" && approvalList.notices.first?.action == .openLoginItems
+               && !approvalList.notices.contains { $0.id == "selected-mount-failed" },
+               "with several drives, macOS 26 gets the Login Items notice, not the switch notice")
         var failedSwitchOff = scenarios["36-couldnt-connect"]!; failedSwitchOff.extensionState = .disabled
         expect(HomePresentation.make(failedSwitchOff).status.title == HomePresentation.make(scenarios["24-turn-on-first"]!).status.title
                || HomePresentation.make(failedSwitchOff).primary.action == .openSystemSettings && !HomePresentation.make(failedSwitchOff).offersTryAgain,

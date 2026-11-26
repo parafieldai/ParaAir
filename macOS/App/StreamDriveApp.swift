@@ -146,6 +146,8 @@ final class MenuModel: ObservableObject {
     /// Settings again (HomeInputs.mountFailed) instead of leaving a one-line warning: the usual cause is a switch that
     /// reads on but isn't in effect yet. Cleared when a mount starts or the drive shows up mounted.
     @Published private(set) var mountFailed = false
+    /// macOS 26: ParaAir's /Volumes helper (VolumesHelper). Read at launch; the first mount registers it.
+    @Published private(set) var volumesHelperState = VolumesHelper.state
     @Published var sidebarMessage: String?
     /// Presentation requests shared by the home window, menu bar panel and Storage Settings.
     @Published var appearanceOpen = false
@@ -170,6 +172,7 @@ final class MenuModel: ObservableObject {
     /// Set when ParaAir opens System Settings for the switch; cleared once the extension is on.
     private var extensionSettingsOpenedAt: Date?
     private var extensionWatch: Task<Void, Never>?
+    private var volumesHelperWatch: Task<Void, Never>?
     /// Stale LaunchServices records this process already removed (each is tried once).
     private var forgottenCopies: Set<String> = []
     private lazy var finderSetup = FinderSetupCoordinator(
@@ -818,17 +821,45 @@ final class MenuModel: ObservableObject {
             if sidebarAttempts.insert(identity).inserted { addToSidebar(profile, automatically: true) }
         }
     }
-    /// FSKit's own mount (macOS 27 and later, with the entitlement): the only way a normal user's app can put a drive
-    /// under /Volumes. Without it the mount helper runs /sbin/mount -F, which can't create a folder in /Volumes.
+    /// FSKit's own mount (macOS 27 and later, with the entitlement). Without it (macOS 26) the mount helper runs
+    /// /sbin/mount -F, on a folder in /Volumes that ParaAir's /Volumes helper makes (VolumesHelper).
     var nativeMountAvailable: Bool {
         if #available(macOS 27.0, *), ParaAirHasNativeMountEntitlement(),
            NativeMountOperation.enabledByConfiguration(Bundle.main.infoDictionary ?? [:]) { return true }
         return false
     }
-    /// The drive can't be opened on this Mac: no native mount, and its mount point is under /Volumes (or not chosen yet,
-    /// which means /Volumes/<name>). A mount point elsewhere, set with the paraair CLI, still goes through the helper.
-    func needsNewerMacOS(_ profile: DriveProfile) -> Bool {
+    /// macOS 26: the drive goes in /Volumes (its mount point is there, or not chosen yet, which means /Volumes/<name>)
+    /// through ParaAir's /Volumes helper. A mount point elsewhere, set with the paraair CLI, needs no helper.
+    func usesVolumesHelper(_ profile: DriveProfile) -> Bool {
         !nativeMountAvailable && (profile.mountPoint.map { $0.hasPrefix("/Volumes/") } ?? true)
+    }
+    /// The helper waits for its switch in Login Items & Extensions: the home window shows that step.
+    func needsVolumesApproval(_ profile: DriveProfile) -> Bool {
+        usesVolumesHelper(profile) && volumesHelperState == .needsApproval
+    }
+    /// Opens Login Items & Extensions for the helper's switch, then mounts the selected drive the moment it is on
+    /// (checked every 2 seconds for up to 5 minutes, and each time ParaAir comes to the front).
+    func openVolumesApproval() {
+        VolumesHelper.openApproval()
+        volumesHelperWatch?.cancel()
+        volumesHelperWatch = Task { [weak self] in
+            for _ in 0..<150 {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled, let self else { return }
+                if self.volumesHelperApproved() { return }
+            }
+        }
+    }
+    /// Reads the helper's state again; once it is approved, mounts the selected drive. True when it is approved.
+    @discardableResult
+    private func volumesHelperApproved() -> Bool {
+        guard volumesHelperState == .needsApproval else { return volumesHelperState == .ready }
+        volumesHelperState = VolumesHelper.state
+        guard volumesHelperState == .ready else { return false }
+        AppLog.mount.notice("volumes helper approved; mounting the selected drive")
+        volumesHelperWatch?.cancel()
+        if let selected = profiles.first, !isMounted(selected) { mount(selected) }
+        return true
     }
     /// Reads the mount table again (local, no network). A drive mounted or unmounted outside ParaAir (the paraair CLI,
     /// Finder's eject, another app) isn't in `mounted` until the next reload, so every decision that depends on whether
@@ -873,11 +904,6 @@ final class MenuModel: ObservableObject {
     /// with a kept folder's drive go to `otherDriveIssues`, not to the selected drive's message.
     private func mount(_ profile: DriveProfile, root: URL, readiness: AutoMountReadiness) {
         refreshMountTable()
-        if needsNewerMacOS(profile) {
-            // macOS 26: nothing to try; the home window says the drive needs macOS 27 (HomeInputs.needsNewerMacOS).
-            AppLog.mount.notice("mount skipped: needs macOS 27 for a drive in /Volumes")
-            return
-        }
         guard !mounting, !isMounted(profile) else {
             AppLog.mount.notice("mount skipped gate=\(self.mounting ? "mounting" : "mounted", privacy: .public)")
             return
@@ -899,7 +925,23 @@ final class MenuModel: ObservableObject {
             AppLog.mount.error("mount route=helper missing")
             showMountMessage("This build is missing its mount helper.", about: nil); return
         }
-        AppLog.mount.notice("mount route=helper selected=\(selected)")
+        let inVolumes = usesVolumesHelper(profile)
+        if inVolumes, volumesHelperState != .ready {
+            volumesHelperState = VolumesHelper.register()
+            switch volumesHelperState {
+            case .ready: break
+            case .needsApproval:
+                // The home window shows the Login Items step; approving it mounts the drive (volumesHelperApproved).
+                AppLog.mount.notice("mount waits: the /Volumes helper needs approval")
+                return
+            case .notRegistered, .unavailable:
+                AppLog.mount.error("mount route=helper volumes helper unavailable")
+                if selected { selectedMountFailed(message: "This copy of ParaAir can’t put drives in /Volumes on this Mac. Install ParaAir from paraair.parafield.ai, then try again.") }
+                else { setOtherDriveIssue(Self.otherDriveNotice(profile, root: root), root: root) }
+                return
+            }
+        }
+        AppLog.mount.notice("mount route=helper selected=\(selected) volumes=\(inVolumes)")
         mounting = true
         mountingFolder = root.path
         if selected { mountMessage = nil }
@@ -907,7 +949,8 @@ final class MenuModel: ObservableObject {
             defer { mounting = false; resumeWaitingWork(trigger: "mount-finished") }
             do {
                 let status = try await Task.detached {
-                    try Self.runMountHelper(helper, stateRoot: root, profileName: profile.name)
+                    let point = inVolumes ? try VolumesHelper.mountPoint(finderName: profile.finderName) : nil
+                    return try Self.runMountHelper(helper, stateRoot: root, profileName: profile.name, mountPoint: point)
                 }.value
                 guard root == stateRoot else {
                     // The helper exits 0 only once the volume is in the mount table.
@@ -918,8 +961,10 @@ final class MenuModel: ObservableObject {
                     return
                 }
                 reload()
-                AppLog.mount.notice("helper finished status=\(status) mounted=\(self.isMounted(profile))")
-                if status != 0 || !isMounted(profile) { selectedMountFailed(message: nil) }
+                // Read the saved drive again: on macOS 26 the helper chose its /Volumes folder during this mount.
+                let current = profiles.first { $0.name == profile.name } ?? profile
+                AppLog.mount.notice("helper finished status=\(status) mounted=\(self.isMounted(current))")
+                if status != 0 || !isMounted(current) { selectedMountFailed(message: nil) }
             } catch {
                 AppLog.mount.error("helper failed errno=\((error as? DriveError)?.code ?? -1)")
                 if root == stateRoot { selectedMountFailed(message: error.localizedDescription) }
@@ -981,10 +1026,12 @@ final class MenuModel: ObservableObject {
             Task { resumeWaitingWork(trigger: "mount-failed") }
         }
     }
-    private nonisolated static func runMountHelper(_ helper: URL, stateRoot: URL, profileName: String) throws -> Int32 {
+    /// Runs `paraair mount` as the user. `mountPoint`: the /Volumes folder the /Volumes helper made (macOS 26).
+    private nonisolated static func runMountHelper(_ helper: URL, stateRoot: URL, profileName: String,
+                                                   mountPoint: String? = nil) throws -> Int32 {
         let process = Process()
         process.executableURL = helper
-        process.arguments = ["--state-dir", stateRoot.path, "mount", profileName]
+        process.arguments = ["--state-dir", stateRoot.path, "mount", profileName] + (mountPoint.map { ["--mount-point", $0] } ?? [])
         // The CLI would otherwise ask this app to mount a drive that has no mount point, and the two would loop.
         process.environment = ProcessInfo.processInfo.environment.merging(["PARAAIR_MOUNT_ROUTE": "direct"]) { _, new in new }
         process.standardInput = FileHandle.nullDevice
@@ -1059,6 +1106,7 @@ final class MenuModel: ObservableObject {
     /// Each time ParaAir comes to the front: checks the switch again while it is off (the person may have turned it
     /// on in System Settings without coming through ParaAir), and resumes a waiting mount.
     func resumeAfterSettings() {
+        volumesHelperApproved()
         let fromSettings = extensionSettingsOpenedAt != nil && extensionState != .enabled
         guard finderSetup.hasPendingContinuation || extensionState != .enabled else { return }
         Task {

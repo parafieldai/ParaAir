@@ -135,6 +135,7 @@ sparkle_dir="$(bash "$root/scripts/fetch-sparkle.sh")"
 app_binaries=()
 cli_binaries=()
 launcher_binaries=()
+volumes_binaries=()
 for architecture in $native_archs; do
   binary="$products/ParaAir-app-$architecture"
   xcrun swiftc -parse-as-library -O -target "$architecture-apple-macos26.0" -sdk "$sdk" \
@@ -155,6 +156,12 @@ for architecture in $native_archs; do
   xcrun clang -O2 -Wall -Wextra -Werror -target "$architecture-apple-macos26.0" -isysroot "$sdk" \
     "$root/scripts/cli-launcher.c" -o "$launcher_binary"
   launcher_binaries+=("$launcher_binary")
+  # macOS 26's /Volumes helper: its own small binary from two files, so nothing else runs as root.
+  volumes_binary="$products/ParaAir-volumes-$architecture"
+  xcrun swiftc -O -target "$architecture-apple-macos26.0" -sdk "$sdk" \
+    -module-cache-path "$root/.build/xcode/ModuleCache.noindex" \
+    "$root/Sources/StreamDriveCore/VolumesFolder.swift" "$root/macOS/VolumesHelper/main.swift" -o "$volumes_binary"
+  volumes_binaries+=("$volumes_binary")
 done
 /usr/bin/lipo -create "${app_binaries[@]}" -output "$app/Contents/MacOS/ParaAir"
 /usr/bin/lipo -create "${cli_binaries[@]}" -output "$cli/Contents/MacOS/paraair"
@@ -162,6 +169,7 @@ done
 # helper path. The launcher execs the exact bundled path and carries no secrets.
 rm -f "$app/Contents/Helpers/paraair"
 /usr/bin/lipo -create "${launcher_binaries[@]}" -output "$app/Contents/Helpers/paraair"
+/usr/bin/lipo -create "${volumes_binaries[@]}" -output "$app/Contents/Helpers/ParaAirVolumes"
 if cmp -s "$app/Contents/MacOS/ParaAir" "$cli/Contents/MacOS/paraair"; then
   echo "App and CLI binaries must be distinct; check intermediate output paths." >&2; exit 1
 fi
@@ -175,6 +183,15 @@ if [[ -n "${STREAMDRIVE_SIGN_IDENTITY:-}" ]]; then app_id=dev.streamdrive.app; f
 /usr/bin/plutil -replace CFBundleVersion -string "$app_build" "$app/Contents/Info.plist"
 [[ -z "${PARAAIR_RELEASE_TAG:-}" ]] || /usr/bin/plutil -replace ParaAirReleaseTag -string "$PARAAIR_RELEASE_TAG" "$app/Contents/Info.plist"
 /usr/bin/plutil -replace LSMinimumSystemVersion -string 26.0 "$app/Contents/Info.plist"
+# The /Volumes helper's launchd job, named and labelled after this build's app identifier (SMAppService.daemon).
+# The output folder is reused between builds: drop a job left by a build with the other app identifier.
+rm -rf "$app/Contents/Library/LaunchDaemons"
+mkdir -p "$app/Contents/Library/LaunchDaemons"
+volumes_plist="$app/Contents/Library/LaunchDaemons/$app_id.volumes.plist"
+/usr/bin/plutil -convert xml1 -o "$volumes_plist" "$root/macOS/VolumesHelper/launchd.plist"
+/usr/bin/plutil -replace Label -string "$app_id.volumes" "$volumes_plist"
+/usr/bin/plutil -replace MachServices -json "{\"$app_id.volumes\":true}" "$volumes_plist"
+/usr/bin/plutil -replace AssociatedBundleIdentifiers -json "[\"$app_id\"]" "$volumes_plist"
 bash "$root/scripts/build-icons.sh"
 mkdir -p "$app/Contents/Resources"
 /usr/bin/install -m 644 "$root/macOS/Resources/ParaAirIcon.icns" "$app/Contents/Resources/ParaAirIcon.icns"
@@ -239,6 +256,9 @@ if [[ -n "${STREAMDRIVE_SIGN_IDENTITY:-}" ]]; then timestamp=(--timestamp); fi
 "${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$app/Contents/Frameworks/libstreamdrive.dylib"
 "${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$cli/Contents/Frameworks/libstreamdrive.dylib"
 "${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$app/Contents/Helpers/paraair"
+# Its identifier is its launchd label and Mach service; it accepts only this app and its CLI, from the same team.
+"${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" --identifier "$app_id.volumes" \
+  "$app/Contents/Helpers/ParaAirVolumes"
 # Sparkle inside out: its installer tool and updater app, then the framework itself.
 "${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$sparkle/Versions/B/Autoupdate"
 "${sign_command[@]}" --force --sign "$identity" --options runtime "${timestamp[@]}" "$sparkle/Versions/B/Updater.app"

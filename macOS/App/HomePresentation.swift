@@ -29,8 +29,8 @@ struct HomeInputs: Equatable {
     var mountMessage: String?
     /// The selected drive's last mount didn't connect it (MenuModel.mountFailed).
     var mountFailed = false
-    /// This Mac can't open the drive at all: macOS 26 has no FSKit mount for a normal user's app in /Volumes.
-    var needsNewerMacOS = false
+    /// macOS 26: the drive waits for ParaAir's /Volumes helper to be allowed in Login Items & Extensions.
+    var needsVolumesApproval = false
     /// The drive `mountMessage` is about, recorded when the message was written; nil when it is about no single drive
     /// (System Settings didn't open). Named before the message while drives are listed.
     var mountMessageDrive: String?
@@ -105,8 +105,8 @@ struct HomePresentation: Equatable {
 
     enum Action: Equatable {
         case addStorage, createDrive, signInAgain, openSystemSettings, connectDrive, openInFinder
-        /// System Settings → General → Software Update (a drive that needs a newer macOS).
-        case openSoftwareUpdate
+        /// System Settings → General → Login Items & Extensions, where macOS 26 asks to allow ParaAir's /Volumes helper.
+        case openLoginItems
         /// Opens the list of conflicts and refused changes.
         case reviewChanges
         /// Opens the ParaAir Cloud plan sheet (a workspace with no storage yet).
@@ -182,8 +182,9 @@ struct HomePresentation: Equatable {
     /// Show the picture of the File System Extensions list with ParaAir's switch on, beside the status.
     var showsSwitchPicture = false
 
-    static func needsNewerMacOSDetail(_ drive: String) -> String {
-        "Opening \(drive) in Finder needs macOS 27 or later. On this Mac you can still sign in, manage your team and plan, and use the paraair command."
+    static let volumesApprovalTitle = "Allow ParaAir in Login Items"
+    static func volumesApprovalDetail(_ drive: String) -> String {
+        "To open \(drive) in Finder on this version of macOS, ParaAir needs your OK once. In Login Items & Extensions, turn on ParaAir under App Background Activity. ParaAir uses it only to make the drive’s folder in /Volumes."
     }
 
     static func make(_ input: HomeInputs) -> HomePresentation {
@@ -202,11 +203,13 @@ struct HomePresentation: Equatable {
             result = .init(status: .init(title: "Creating your drive…",
                                          detail: "ParaAir is preparing the drive on this Mac.", tone: .working),
                            primary: .init(action: .createDrive, title: "Creating…", enabled: false, busy: true))
-        } else if !input.mounted && !input.mounting && input.hasDrive && input.needsNewerMacOS {
-            // Before the switch step: on macOS 26 turning ParaAir on wouldn't help, so don't send anyone there.
-            result = .init(status: .init(title: "Needs macOS 27",
-                                         detail: Self.needsNewerMacOSDetail(drive), tone: .attention),
-                           primary: .init(action: .openSoftwareUpdate, title: "Software Update…"))
+        } else if !input.mounted && !input.mounting && input.hasDrive && input.needsVolumesApproval
+                    && input.extensionState == .enabled {
+            // macOS 26, once, after the file system switch: the /Volumes helper waits for its own switch. Turning it
+            // on mounts the drive by itself.
+            result = .init(status: .init(title: Self.volumesApprovalTitle,
+                                         detail: Self.volumesApprovalDetail(drive), tone: .attention),
+                           primary: .init(action: .openLoginItems, title: "Open Login Items…"))
         } else if !input.mounted && !input.mounting && input.extensionState == .unchecked {
             // Not known yet: the switch comes first, so nothing else is offered until the check answers. The button
             // stays usable, in case macOS is slow to answer.
@@ -364,13 +367,13 @@ struct HomePresentation: Equatable {
                 result.notices.append(.init(id: "drive-" + row.id, text: "\(row.name): \(issue)", tone: .attention))
             }
         }
-        if input.needsNewerMacOS, !input.mounted, let name = input.driveName {
-            result.notices.insert(.init(id: "selected-needs-newer-macos", text: "\(name): " + Self.needsNewerMacOSDetail(name),
-                                        tone: .attention, action: .openSoftwareUpdate, actionTitle: "Software Update…"), at: 0)
+        if input.needsVolumesApproval, input.extensionState == .enabled, !input.mounted, let name = input.driveName {
+            result.notices.insert(.init(id: "selected-needs-volumes-approval", text: "\(name): " + Self.volumesApprovalDetail(name),
+                                        tone: .attention, action: .openLoginItems, actionTitle: "Open Login Items…"), at: 0)
         }
         // The selected drive's mount failed with the switch reading on: the list keeps every drive's own action, and
         // a notice names the drive and walks through the switch again, with the button that opens System Settings.
-        if input.mountFailed, !input.needsNewerMacOS, !input.mounted, input.extensionState == .enabled, let name = input.driveName {
+        if input.mountFailed, !input.needsVolumesApproval, !input.mounted, input.extensionState == .enabled, let name = input.driveName {
             result.notices.insert(.init(id: "selected-mount-failed",
                                         text: "\(name): macOS didn’t open the drive. In System Settings, go to General → Login Items & Extensions → By Category → File System Extensions, turn ParaAir file system off and on again, then connect it again.",
                                         tone: .attention, action: .openSystemSettings, actionTitle: "Open System Settings"), at: 0)
