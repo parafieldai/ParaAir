@@ -138,6 +138,7 @@ p { margin: 0; }
   background: var(--ink); color: var(--paper); padding: var(--space-xs) var(--space-sm); border-radius: 999px;
 }
 .skip:focus { top: var(--space-xs); }
+.skip:hover { color: var(--paper); }
 
 /* The mark's colours */
 .mark-a { fill: var(--ink); }
@@ -868,7 +869,12 @@ h2 { font: 500 var(--text-xl)/1.06 var(--font-display); letter-spacing: var(--tr
 }
 @media print {
   /* Print on the light palette whatever the screen uses: every derived token follows these. */
-  :root { --paper: #FFFFFF; --ink: #0E0F12; --ink-2: #4A4F59; --ink-3: #4A4F59; --accent-text: #0E0F12; color-scheme: light; }
+  :root {
+    --paper: #FFFFFF; --ink: #0E0F12; --ink-2: #4A4F59; --ink-3: #4A4F59; --accent-text: #0E0F12;
+    --muted: #EEF0F3; --paper-2: #EEF0F3; --rule: #E6E8EC; --piece-off: #E3E6EB; --piece-stored: #B9BEC7;
+    --card-top: #FFFFFF; --card-bottom: #FFFFFF; --card-edge: rgb(15 23 42 / 0.12);
+    color-scheme: light;
+  }
   .legal-page .masthead, .legal-page .toc, .legal-page .colophon, .legal-page .skip { display: none; }
   .legal { padding-top: 0; }
   .legal-body { display: block; }

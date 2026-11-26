@@ -144,6 +144,8 @@
       if (pointer) light(pointer.x, pointer.y, width < 640 ? 44 : 60, 0.85);
       cool(dt);
       draw(t);
+      // A band without the plane rests once its pieces have cooled and the pointer has left; the pointer wakes it.
+      if (!flies && !pointer && active.length === 0) { running = false; return; }
       raf = requestAnimationFrame(step);
     };
 
@@ -180,6 +182,7 @@
     canvas.parentElement.addEventListener('pointermove', (event) => {
       const rect = canvas.getBoundingClientRect();
       pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      sync();
     });
     canvas.parentElement.addEventListener('pointerleave', () => { pointer = null; });
     new IntersectionObserver(([entry]) => { inView = entry.isIntersecting; sync(); }).observe(canvas);
