@@ -295,7 +295,8 @@
     let width = -1;
     const relayout = () => { if (window.innerWidth === width) return; width = window.innerWidth; build(); shown = window.scrollY; draw(shown, performance.now()); };
     relayout();
-    window.addEventListener('resize', () => { if (window.innerWidth !== width) relayout(); else { fit(); paint(); draw(shown, performance.now()); } }, { passive: true });
+    // A resize can bring an airspace into view, so the loop wakes for it too.
+    window.addEventListener('resize', () => { if (window.innerWidth !== width) relayout(); else { fit(); paint(); draw(shown, performance.now()); } wake(); }, { passive: true });
     window.addEventListener('load', () => {
       // A browser that restores a scroll position after loading skips the entrance: the hero isn't in view.
       if (entrance && window.scrollY > 40) { entrance = null; under.style.removeProperty('--draw'); }
@@ -513,16 +514,17 @@
     // The letters empty while the name is still a third of a window away, out of sight, so nobody sees the pieces
     // leave; if it is already on screen by then, they stay solid and nothing flies this time. The plane flies once
     // most of the name shows, or after a moment once any of it does (someone stopped scrolling at its edge). Out of
-    // sight again, the letters wait emptied; scrolled well away, they fill again. It flies again only after that.
+    // sight again, the letters wait emptied; once the whole section is well away, they fill again. It flies again only
+    // after that.
     const prime = () => requestAnimationFrame(() => {
       if (run || primed || !armed || reduce.matches || document.hidden || shown()) return;
       primed = true;
       letters.forEach((el) => el.style.setProperty('--fill', '0'));
     });
-    new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) prime();
-      else { armed = true; refill(); }
-    }, { rootMargin: '35% 0px 35% 0px' }).observe(demo);
+    new IntersectionObserver(([entry]) => { if (entry.isIntersecting) prime(); }, { rootMargin: '35% 0px 35% 0px' }).observe(demo);
+    // Re-armed (and refilled) only once the whole section, heading and all, is a third of a window away.
+    new IntersectionObserver(([entry]) => { if (!entry.isIntersecting) { armed = true; refill(); } }, { rootMargin: '35% 0px 35% 0px' })
+      .observe(demo.closest('section') || demo);
     new IntersectionObserver(([entry]) => {
       if (!primed || run) return;
       if (entry.intersectionRatio >= 0.6) { fly(); return; }
