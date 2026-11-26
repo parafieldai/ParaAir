@@ -69,6 +69,15 @@ enum CloudAccountDeletionText {
         }
     }
 
+    /// Files this Mac hasn't uploaded yet can't upload once the account is gone: say how many, and how to keep them.
+    /// Nil when none are waiting; without a count, the general warning.
+    static func waitingUploads(_ count: Int?) -> String? {
+        let keep = "wait for them to upload, or copy them out of the drive in Finder, before you confirm."
+        guard let count else { return "Files on this Mac that haven’t uploaded yet can’t upload once the account is deleted: " + keep }
+        guard count > 0 else { return nil }
+        return UploadNotices.notUploaded(count) + " \(count == 1 ? "It" : "They") can’t upload once the account is deleted: " + keep
+    }
+
     static func confirms(_ typed: String, email: String) -> Bool {
         typed.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(email) == .orderedSame
     }
@@ -259,6 +268,8 @@ struct CloudAccountDeletionBanner: View {
 /// What closing the account does, what must change first, and the typed confirmation.
 struct CloudAccountDeletionSheet: View {
     @ObservedObject var model: CloudAccountDeletionModel
+    /// Files waiting to upload on this Mac, when known.
+    var pendingUploads: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -311,6 +322,14 @@ struct CloudAccountDeletionSheet: View {
         Text("Your email address, sign-ins and invitations are deleted too. Billing records stay, as the Privacy Policy says.")
             .font(.callout).foregroundStyle(Air.quiet)
             .fixedSize(horizontal: false, vertical: true)
+        if let waiting = CloudAccountDeletionText.waitingUploads(pendingUploads) {
+            Label {
+                Text(waiting).fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Air.attention)
+            }
+            .font(.callout)
+        }
         if status.blockers.isEmpty {
             Text(CloudAccountDeletionText.grace(status.graceDays))
                 .fixedSize(horizontal: false, vertical: true)

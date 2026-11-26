@@ -34,7 +34,7 @@ struct CloudAccountSection: View {
             Text("ParaAir Cloud")
         }
         .sheet(isPresented: Binding(get: { model.deletion.sheetPresented }, set: { if !$0 { model.deletion.closeSheet() } })) {
-            CloudAccountDeletionSheet(model: model.deletion)
+            CloudAccountDeletionSheet(model: model.deletion, pendingUploads: model.pendingUploads?.total)
         }
     }
 
@@ -206,8 +206,7 @@ struct CloudAccountSection: View {
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text(pendingCount > 0 ? UploadNotices.notUploaded(pendingCount)
-                         : "This Mac stops reaching ParaAir Cloud until you sign in again. Files already on this Mac stay here.")
+                    Text(CloudSignOutText.message(pending: pendingCount))
                 }
             if model.isBusy || model.billingBusy { ProgressView().controlSize(.small) }
         }
@@ -230,6 +229,16 @@ struct CloudAccountSection: View {
             }
             .padding(.top, 8)
         }
+    }
+}
+
+/// The Sign Out confirmation's words. Signing out keeps the drive and its waiting files on this Mac; signing in again
+/// with the same account reuses its record, and the drive uploads them then.
+enum CloudSignOutText {
+    static func message(pending: Int) -> String {
+        guard pending > 0 else { return "This Mac stops reaching ParaAir Cloud until you sign in again. Files already on this Mac stay here." }
+        return UploadNotices.notUploaded(pending) + " If you sign out anyway, \(pending == 1 ? "it stays" : "they stay") on this Mac and "
+            + "\(pending == 1 ? "uploads" : "upload") after you sign in again with this account."
     }
 }
 

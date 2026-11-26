@@ -297,6 +297,40 @@ final class ParaAirCloudSessionTests: XCTestCase {
         expectDriveError(EACCES) { _ = try ParaAirCloudConfiguration.oauthConfiguration(issuer: URL(string: "http://127.0.0.1:8787")!, policy: denied) }
     }
 
+    /// `X-ParaAir-Client` grows with every build, in the form the service already parses (cloud src/index.ts
+    /// `checkClient`: `mac/` and up to three numbers of up to 6 digits, compared in order with `MIN_CLIENT_VERSION`).
+    func testClientVersionCarriesTheBuildNumber() {
+        func version(_ marketing: String?, _ build: String?) -> String {
+            var info: [String: Any] = [:]
+            info["CFBundleShortVersionString"] = marketing; info["CFBundleVersion"] = build
+            return ParaAirCloudConfiguration.clientVersion(info: info)
+        }
+        XCTAssertEqual(version("0.1.0", "72"), "0.1.72", "major.minor, then the build")
+        XCTAssertEqual(version("0.1.1", "80"), "0.1.80", "the build replaces the patch number")
+        XCTAssertEqual(version("1.2", "007"), "1.2.7")
+        XCTAssertEqual(version("2", "5"), "2.0.5")
+        XCTAssertEqual(version("0.1.0", nil), "0.1.0", "no build: the marketing version, as before")
+        XCTAssertEqual(version("0.1.0", "1234567"), "0.1.0", "a build the service can't parse is left out")
+        XCTAssertEqual(version("0.1.0", "72a"), "0.1.0")
+        XCTAssertEqual(version("0.1.0-alpha.11", "72"), "dev")
+        XCTAssertEqual(version(nil, "72"), "dev")
+        let pattern = "^mac/[0-9]{1,6}(\\.[0-9]{1,6}){0,2}$"
+        for value in [version("0.1.0", "72"), version("999999.999999", "999999")] {
+            XCTAssertNotNil(("mac/" + value).range(of: pattern, options: .regularExpression), value)
+        }
+        // The service's olderThan: MIN_CLIENT_VERSION=0.1.73 refuses every earlier alpha (all sent mac/0.1.0) and build 72.
+        func olderThan(_ value: String, _ minimum: String) -> Bool {
+            func numbers(_ text: String) -> [Int] { var parts = text.split(separator: ".").map { Int($0)! }; while parts.count < 3 { parts.append(0) }; return parts }
+            let a = numbers(value), b = numbers(minimum)
+            for index in 0..<3 where a[index] != b[index] { return a[index] < b[index] }
+            return false
+        }
+        XCTAssertTrue(olderThan("0.1.0", version("0.1.0", "73")))
+        XCTAssertTrue(olderThan(version("0.1.0", "72"), "0.1.73"))
+        XCTAssertFalse(olderThan(version("0.1.0", "73"), "0.1.73"))
+        XCTAssertFalse(olderThan(version("0.2.0", "90"), "0.1.73"))
+    }
+
     func testRenewalRefreshesOnlyDueSignedInAccounts() async throws {
         let due = try signIn(expiresAt: Date().addingTimeInterval(60))
         let later = try fake.saveAccount(fake.createAccount(), root: root, vault: vault)

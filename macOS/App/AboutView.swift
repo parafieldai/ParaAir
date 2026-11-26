@@ -1,10 +1,11 @@
 import SwiftUI
 import AppKit
 
-/// About ParaAir: the planes in the sky above the name, the sage line under it, the version and build, and the legal
-/// pages. It replaces the standard panel and shows the same facts.
+/// About ParaAir: the planes in the sky above the name, the sage line under it, the version and build, the legal
+/// pages, and Get Help… and Copy Diagnostics. It replaces the standard panel and shows the same facts.
 struct AboutView: View {
     var version = AppVersionText.current
+    var support = SupportActions.live()
 
     /// The pages the window links, in order.
     static let pages = LegalLinks.about
@@ -25,6 +26,10 @@ struct AboutView: View {
             .accessibilityElement(children: .combine)
             LegalLinksRow(pages: Self.pages)
                 .padding(.top, 24)
+            SupportButtons(actions: support, showsAbout: false, centered: true)
+                .controlSize(.small)
+                .padding(.top, 18)
+                .padding(.horizontal, 24)
         }
         .airFlight(.about, seed: "ParaAir")
         .padding(.bottom, 30)

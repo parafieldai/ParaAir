@@ -20,6 +20,14 @@ final class ParaAirCloudBillingTests: XCTestCase {
         return api
     }
 
+    /// A checkout as the app sends it: both boxes ticked for the disclosure the fake shows. The service refuses one
+    /// without them (since 2026-10-23); testCheckoutWithoutConsentIsRefused checks that.
+    private func agreed(_ request: ParaAirCloudCheckoutRequest) -> ParaAirCloudCheckoutRequest {
+        var request = request
+        request.consent = ParaAirCloudCheckoutConsent(disclosureVersion: fake.disclosureVersion, autoRenew: true, terms: true)
+        return request
+    }
+
     private func expectBillingError(_ code: Int32, _ message: String, file: StaticString = #filePath, line: UInt = #line,
                                     _ action: () throws -> Void) {
         XCTAssertThrowsError(try action(), file: file, line: line) { error in
@@ -186,7 +194,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
 
     func testStripeCheckoutSendsOnlyThePlanAndOpensStripeCheckout() throws {
         fake.billingProvider = "stripe"
-        let url = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month))
+        let url = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month)))
         XCTAssertEqual(url.host, "checkout.stripe.com")
         XCTAssertNotNil(url.fragment, "Stripe's session URL keeps its fragment")
         let request = try XCTUnwrap(fake.requests("POST /v1/billing/checkout").last)
@@ -194,7 +202,8 @@ final class ParaAirCloudBillingTests: XCTestCase {
         XCTAssertTrue(request.headers["x-paraair-client"]?.hasPrefix("mac/") == true)
         XCTAssertTrue(request.headers["authorization"]?.hasPrefix("Bearer pca_") == true)
         let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: request.body) as? [String: Any])
-        XCTAssertEqual(Set(body.keys), ["workspaceId", "plan", "interval", "extraStorageTb"], "no amount and no seats for Personal")
+        XCTAssertEqual(Set(body.keys), ["workspaceId", "plan", "interval", "extraStorageTb", "disclosureVersion", "consent"],
+                       "no amount and no seats for Personal")
         XCTAssertEqual(body["workspaceId"] as? String, account.workspaceID)
         XCTAssertEqual(body["plan"] as? String, "personal")
         XCTAssertEqual(body["interval"] as? String, "month")
@@ -203,7 +212,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
 
     func testPaddleCheckoutOpensTheIssuerPaymentPageAndPortalOpensPaddle() throws {
         fake.billingProvider = "paddle"; fake.paddleSandbox = true
-        let url = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .year))
+        let url = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .year)))
         XCTAssertEqual(url.host, fake.host)
         XCTAssertEqual(url.path, "/billing/pay")
         XCTAssertTrue(url.query?.hasPrefix("_ptxn=txn_") == true)
@@ -219,45 +228,46 @@ final class ParaAirCloudBillingTests: XCTestCase {
     }
 
     func testTeamCheckoutSendsSeatsAndStorage() throws {
-        fake.billingProvider = "stripe"
+        // Stripe direct sells Team, and BILLING_STORAGE_ADDON=1 sells added storage; the service ships with neither.
+        fake.billingProvider = "stripe"; fake.stripeManaged = false; fake.storageAddon = true
         let team = fake.createTeamWorkspace(owner: account)
         for _ in 0..<2 { fake.addMember(workspaceID: team, userID: fake.createAccount().userID, role: "member") }
         let me = try api().me()
         XCTAssertEqual(me.workspaces.first { $0.id == team }?.kind, "team")
         XCTAssertEqual(me.workspaces.first { $0.id == team }?.billing?.checkoutAvailable, true)
 
-        _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .team, interval: .year, seats: 4, extraStorageTb: 2))
+        _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .team, interval: .year, seats: 4, extraStorageTb: 2)))
         let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: try XCTUnwrap(fake.requests("POST /v1/billing/checkout").last).body) as? [String: Any])
         XCTAssertEqual(body["plan"] as? String, "team")
         XCTAssertEqual(body["seats"] as? Int, 4)
         XCTAssertEqual(body["extraStorageTb"] as? Int, 2)
 
         expectBillingError(EINVAL, "ParaAir Cloud didn’t accept that plan. For Team, choose at least one seat per member") {
-            _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .team, interval: .month, seats: 2))
+            _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .team, interval: .month, seats: 2)))
         }
         expectBillingError(EINVAL, "ParaAir Cloud didn’t accept that plan") {
-            _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .personal, interval: .month))
+            _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .personal, interval: .month)))
         }
     }
 
     func testBillingErrorsExplainThePlanNotFiles() throws {
         expectBillingError(ENOENT, "Paid plans aren’t available for this workspace right now") {
-            _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month))
+            _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month)))
         }
-        fake.billingProvider = "stripe"
+        fake.billingProvider = "stripe"; fake.stripeManaged = false
         let member = fake.createAccount()
         let team = fake.createTeamWorkspace(owner: account)
         fake.addMember(workspaceID: team, userID: member.userID, role: "admin")
         XCTAssertEqual(try api(for: member).me().workspaces.first { $0.id == team }?.billing?.checkoutAvailable, false, "owner only")
         expectBillingError(EACCES, "Only the workspace owner can change its plan") {
-            _ = try api(for: member).billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .team, interval: .month, seats: 2))
+            _ = try api(for: member).billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .team, interval: .month, seats: 2)))
         }
         expectBillingError(ENOENT, "The ParaAir Cloud workspace does not exist") {
             _ = try api(for: member).billingPortal(workspaceID: account.workspaceID)
         }
         fake.setBilling(workspaceID: account.workspaceID, .init(state: "past_due"))
         expectBillingError(EBUSY, "This workspace already has a paid plan or a payment that is still going through") {
-            _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month))
+            _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month)))
         }
         fake.setStatus(workspaceID: account.workspaceID, "suspended")
         expectBillingError(EACCES, "This ParaAir Cloud workspace is suspended") { _ = try api().billingPortal(workspaceID: account.workspaceID) }
@@ -265,7 +275,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
 
         fake.sellablePlans = ["personal"]
         expectBillingError(EIO, "Paid plans can’t be bought right now. Try again later") {
-            _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .team, interval: .month, seats: 2))
+            _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .team, interval: .month, seats: 2)))
         }
         XCTAssertEqual(fake.requests("POST /v1/billing/checkout").count, 4, "billing calls are never retried")
 
@@ -291,7 +301,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
             fake.checkoutURLOverride = link
             fake.setBilling(workspaceID: account.workspaceID, nil)
             expectBillingError(EPROTO, "ParaAir Cloud returned a payment page this app won’t open") {
-                _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month))
+                _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month)))
             }
         }
         fake.setBilling(workspaceID: account.workspaceID, .init(state: "active"))
@@ -316,7 +326,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
             ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month, extraStorageTb: 101),
             ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month, extraStorageTb: -1),
         ]
-        for request in bad { expectDriveError(EINVAL) { _ = try api().billingCheckout(request) } }
+        for request in bad { expectDriveError(EINVAL) { _ = try api().billingCheckout(agreed(request)) } }
         expectDriveError(EINVAL) { _ = try api().billingPortal(workspaceID: "ws_" + String(repeating: "a", count: 26)) }
         XCTAssertTrue(fake.requests("POST /v1/billing/checkout").isEmpty)
         XCTAssertTrue(fake.requests("POST /v1/billing/portal").isEmpty)
@@ -336,8 +346,8 @@ final class ParaAirCloudBillingTests: XCTestCase {
         for (body, headers) in replies {
             fake.injectRaw(route: "POST /v1/billing/checkout", status: 429, body: body,
                            headers: headers.merging(["Content-Type": "application/json"]) { a, _ in a })
-            XCTAssertThrowsError(try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal,
-                                                                                        interval: .month))) { error in
+            XCTAssertThrowsError(try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal,
+                                                                                        interval: .month)))) { error in
                 let drive = error as? DriveError
                 XCTAssertEqual(drive?.code, EAGAIN, "\(error)")
                 XCTAssertTrue(drive?.message.hasPrefix("Too many payment pages were opened for this workspace. Try again in") == true,
@@ -358,7 +368,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
         fake.billingProvider = "stripe"
         fake.inject(route: "POST /v1/billing/checkout", status: 503, code: "unavailable", times: 3)
         expectBillingError(EIO, "Payments can’t be reached right now. Try again in a few minutes (request req_") {
-            _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month))
+            _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month)))
         }
         XCTAssertEqual(fake.requests("POST /v1/billing/checkout").count, 1)
         fake.injectTransport(.timedOut, route: "POST /v1/billing/portal")
@@ -396,7 +406,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
 
     func testOfferDecodesTheContractExample() throws {
         let example = Data("""
-        {"provider":"paddle","merchantOfRecord":{"name":"Paddle","reseller":true},"disclosureVersion":"A-draft-2026-10-27b","currency":"USD",
+        {"provider":"paddle","merchantOfRecord":{"name":"Paddle","reseller":true},"disclosureVersion":"A-draft-2026-11-26","currency":"USD",
          "prices":[{"item":"personal_month","kind":"plan","plan":"personal","interval":"month","unitAmountCents":1000,"perMember":false},
                    {"item":"team_year","kind":"plan","plan":"team","interval":"year","unitAmountCents":16000,"perMember":true},
                    {"item":"storage_month","kind":"storage","plan":null,"interval":"month","unitAmountCents":1000,"perMember":false},
@@ -408,7 +418,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
         let offer = try ParaAirCloudJSON.decode(ParaAirCloudBillingOffer.self, from: example)
         XCTAssertEqual(offer.provider, .paddle)
         XCTAssertEqual(offer.merchant, .init(name: "Paddle", reseller: true))
-        XCTAssertEqual(offer.disclosureVersion, "A-draft-2026-10-27b")
+        XCTAssertEqual(offer.disclosureVersion, "A-draft-2026-11-26")
         XCTAssertEqual(offer.prices.map(\.item), ["personal_month", "team_year", "storage_month"], "an unknown kind of item is skipped")
         XCTAssertEqual(offer.unitAmountCents(.personal, .month), 1_000)
         XCTAssertNil(offer.unitAmountCents(.personal, .year), "only what the price map sells")
@@ -451,8 +461,8 @@ final class ParaAirCloudBillingTests: XCTestCase {
         XCTAssertEqual(terms.documentsConsent, "I agree to the [Terms of Service](\(fake.issuerString)/legal/terms) and the "
                        + "[Subscription, Cancellation and Refund Policy](\(fake.issuerString)/legal/subscription-policy), and I am authorized to agree for this team.")
 
-        // Stripe: Parafield charges, and the same text says so.
-        fake.billingProvider = "stripe"
+        // Stripe direct: Parafield charges, and the same text says so.
+        fake.billingProvider = "stripe"; fake.stripeManaged = false
         let stripe = try api().billingOffer(ParaAirCloudOfferRequest(plan: .personal, interval: .month))
         XCTAssertEqual(stripe.merchant, .init(name: "Parafield Inc.", reseller: false))
         let personal = try XCTUnwrap(stripe.quote.flatMap(ParaAirCloudCheckoutTerms.init))
@@ -481,7 +491,7 @@ final class ParaAirCloudBillingTests: XCTestCase {
         expectBillingError(EIO, "Paid plans can’t be bought right now. Try again later") { _ = try api().billingOffer() }
         XCTAssertEqual(try api().me().workspaces[0].billing?.checkoutAvailable, false, "nothing to sell without the settings checkout needs")
         expectBillingError(EIO, "Paid plans can’t be bought right now. Try again later") {
-            _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month))
+            _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month)))
         }
         // Invalid selections never leave the Mac.
         let before = fake.requests("GET /v1/billing/offer").count
@@ -492,6 +502,54 @@ final class ParaAirCloudBillingTests: XCTestCase {
             expectDriveError(EINVAL) { _ = try api().billingOffer(selection) }
         }
         XCTAssertEqual(fake.requests("GET /v1/billing/offer").count, before)
+    }
+
+    /// The service as it ships: Stripe Managed Payments, which can't bill a member added mid-period, so Team is not sold
+    /// (cloud src/billing/config.ts `sellsPlan`). The offer has no Team price in either period, `/v1/me` offers the team's
+    /// owner no checkout while the personal workspace keeps one, and a Team checkout is refused with 503
+    /// `billing_unavailable`. The plan sheet then says Team isn't available yet (UISnapshots, checkBilling).
+    func testManagedPaymentsSellNoTeam() throws {
+        fake.billingProvider = "stripe"
+        XCTAssertTrue(fake.stripeManaged, "the service ships with Managed Payments on")
+        let team = fake.createTeamWorkspace(owner: account)
+        let me = try api().me()
+        XCTAssertEqual(me.workspaces.first { $0.id == account.workspaceID }?.billing?.checkoutAvailable, true)
+        XCTAssertEqual(me.workspaces.first { $0.id == team }?.billing?.checkoutAvailable, false, "no Team checkout for its owner")
+        let offer = try api().billingOffer(ParaAirCloudOfferRequest(plan: .team, interval: .month, seats: 1, workspaceID: team))
+        XCTAssertEqual(offer.merchant, .init(name: "Link", reseller: true))
+        XCTAssertTrue(offer.sells(.personal))
+        XCTAssertFalse(offer.sells(.team), "no Team price in either period")
+        XCTAssertEqual(offer.prices.map(\.item), ["personal_month", "personal_year"], "no Team and no added storage")
+        XCTAssertNil(offer.quote)
+        expectBillingError(EIO, "Paid plans can’t be bought right now. Try again later") {
+            _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: team, plan: .team, interval: .month, seats: 1)))
+        }
+        XCTAssertTrue(fake.checkouts.isEmpty)
+        // Stripe direct and Paddle sell it.
+        fake.stripeManaged = false
+        XCTAssertTrue(try api().billingOffer().sells(.team))
+        fake.billingProvider = "paddle"
+        XCTAssertTrue(try api().billingOffer().sells(.team))
+        XCTAssertEqual(try api().me().workspaces.first { $0.id == team }?.billing?.checkoutAvailable, true)
+    }
+
+    /// Added storage is off unless the service sets BILLING_STORAGE_ADDON=1 (subscription policy 12.1): no storage price,
+    /// no quote with storage, and a checkout asking for it is refused with 400 `invalid_request`.
+    func testAddedStorageIsNotSoldByDefault() throws {
+        fake.billingProvider = "paddle"
+        let offer = try api().billingOffer(ParaAirCloudOfferRequest(plan: .personal, interval: .month, extraStorageTb: 1))
+        XCTAssertNil(offer.storageUnitAmountCents(.month))
+        XCTAssertNil(offer.amountCents(plan: .personal, interval: .month, seats: 1, storageTb: 1), "the app prices no storage the service doesn't sell")
+        XCTAssertNil(offer.quote, "no quote with added storage")
+        XCTAssertNotNil(try api().billingOffer(ParaAirCloudOfferRequest(plan: .personal, interval: .month)).quote)
+        expectBillingError(EINVAL, "ParaAir Cloud didn’t accept that plan") {
+            _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month, extraStorageTb: 1)))
+        }
+        XCTAssertTrue(fake.checkouts.isEmpty)
+        fake.storageAddon = true
+        XCTAssertEqual(try api().billingOffer().storageUnitAmountCents(.month), 1_000)
+        _ = try api().billingCheckout(agreed(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month, extraStorageTb: 1)))
+        XCTAssertEqual(fake.checkouts.last?["extraStorageTb"] as? Int, 1)
     }
 
     /// Free trials (operator decisions 2026-10-27): the quote for a workspace says which trial its checkout starts, the
@@ -505,7 +563,10 @@ final class ParaAirCloudBillingTests: XCTestCase {
         XCTAssertEqual(offer.merchant, .init(name: "Link", reseller: true))
         let quote = try XCTUnwrap(offer.quote)
         XCTAssertEqual(quote.trialDays, 7)
-        XCTAssertEqual(try XCTUnwrap(quote.firstChargeAt).timeIntervalSinceNow, 7 * 86_400, accuracy: 300)
+        // Seven days and an hour, rounded up to the hour (cloud catalog.ts trialEndsAt).
+        let firstCharge = try XCTUnwrap(quote.firstChargeAt)
+        XCTAssertEqual(firstCharge.timeIntervalSinceNow, 7 * 86_400 + 3_600, accuracy: 3_700)
+        XCTAssertEqual(firstCharge.timeIntervalSince1970.truncatingRemainder(dividingBy: 3_600), 0)
         let terms = try XCTUnwrap(ParaAirCloudCheckoutTerms(quote))
         XCTAssertTrue(terms.priceLine.hasSuffix("per month plus tax after a 7-day free trial. Renews automatically every month until you cancel."))
         XCTAssertTrue(terms.bullets[0].hasPrefix("Today you pay nothing. Your free trial ends on "))
@@ -524,7 +585,8 @@ final class ParaAirCloudBillingTests: XCTestCase {
                                                                   trialDays: 7))
         let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: try XCTUnwrap(fake.requests("POST /v1/billing/checkout").last).body) as? [String: Any])
         XCTAssertEqual(body["trialDays"] as? Int, 7)
-        // The same user's team gets no second trial.
+        // The same user's team gets no second trial (through Stripe direct, which sells Team).
+        fake.stripeManaged = false
         let team = fake.createTeamWorkspace(owner: account)
         let teamOffer = try api().billingOffer(ParaAirCloudOfferRequest(plan: .team, interval: .month, workspaceID: team))
         XCTAssertNil(teamOffer.quote?.trialDays)
@@ -548,12 +610,12 @@ final class ParaAirCloudBillingTests: XCTestCase {
         _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .year, consent: consent))
         let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: try XCTUnwrap(fake.requests("POST /v1/billing/checkout").last).body) as? [String: Any])
         XCTAssertEqual(Set(body.keys), ["workspaceId", "plan", "interval", "extraStorageTb", "disclosureVersion", "consent"])
-        XCTAssertEqual(body["disclosureVersion"] as? String, "A-draft-2026-10-27b")
+        XCTAssertEqual(body["disclosureVersion"] as? String, "A-draft-2026-11-26")
         XCTAssertEqual(body["consent"] as? [String: Bool], ["autoRenew": true, "terms": true])
         XCTAssertEqual(fake.checkouts.last?["disclosureVersion"] as? String, offer.disclosureVersion, "the service recorded the version shown")
 
         // The service's text changed after the app showed it: agree again to the new text.
-        fake.disclosureVersion = "A-draft-2026-11-01"
+        fake.disclosureVersion = "A-draft-2026-12-01"
         expectBillingError(ESTALE, "The plan terms changed. Read them again and agree to continue") {
             _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .year, consent: consent))
         }
@@ -571,24 +633,34 @@ final class ParaAirCloudBillingTests: XCTestCase {
         XCTAssertEqual(fake.requests("POST /v1/billing/checkout").count, sent)
     }
 
+    /// The service records consent with every checkout and refuses one without it (400 `invalid_request`, since
+    /// 2026-10-23), so the fake does too; the app never sends one (CloudAccountModel.startCheckout).
+    func testCheckoutWithoutConsentIsRefused() throws {
+        fake.billingProvider = "paddle"
+        expectBillingError(EINVAL, "ParaAir Cloud didn’t accept that plan") {
+            _ = try api().billingCheckout(ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month))
+        }
+        XCTAssertTrue(fake.checkouts.isEmpty)
+    }
+
     /// A new checkout makes the workspace's earlier unpaid page unpayable; one already paid refuses the new checkout.
     func testStartingOverClosesTheEarlierPaymentPage() throws {
         fake.billingProvider = "stripe"
         let request = ParaAirCloudCheckoutRequest(workspaceID: account.workspaceID, plan: .personal, interval: .month)
-        let first = try api().billingCheckout(request)
-        let second = try api().billingCheckout(request)
+        let first = try api().billingCheckout(agreed(request))
+        let second = try api().billingCheckout(agreed(request))
         XCTAssertNotEqual(first, second)
         XCTAssertEqual(fake.closedCheckoutURLs, [first.absoluteString])
         fake.paidUnboundCheckouts = [account.workspaceID]
         expectBillingError(EBUSY, "This workspace already has a paid plan or a payment that is still going through") {
-            _ = try api().billingCheckout(request)
+            _ = try api().billingCheckout(agreed(request))
         }
     }
 
     func testMalformedOffersAreRefused() throws {
         fake.billingProvider = "paddle"
         let valid: [String: Any] = [
-            "provider": "paddle", "merchantOfRecord": ["name": "Paddle", "reseller": true], "disclosureVersion": "A-draft-2026-10-27b",
+            "provider": "paddle", "merchantOfRecord": ["name": "Paddle", "reseller": true], "disclosureVersion": "A-draft-2026-11-26",
             "currency": "USD", "prices": [["item": "personal_month", "kind": "plan", "plan": "personal", "interval": "month",
                                            "unitAmountCents": 1000, "perMember": false]],
             "quote": ["plan": "personal", "interval": "month", "seats": 1, "extraStorageTb": 0, "amountCents": 1000, "currency": "USD",
@@ -679,5 +751,15 @@ final class ParaAirCloudBillingTests: XCTestCase {
         XCTAssertTrue(source.contains("MAX_STORAGE_TB = \(ParaAirCloudBillingCatalog.maxStorageTb);"))
         let disclosure = try String(contentsOf: cloud.appendingPathComponent("src/billing/disclosure.ts"), encoding: .utf8)
         XCTAssertTrue(disclosure.contains("export const DISCLOSURE_VERSION = \"\(FakeParaAirCloud().disclosureVersion)\";"))
+        // The fake's rules for what is sold, and its copy of the text, follow the service's.
+        let config = try String(contentsOf: cloud.appendingPathComponent("src/billing/config.ts"), encoding: .utf8)
+        XCTAssertTrue(config.contains(#"return !(plan === "team" && provider === "stripe" && stripeManaged(env));"#), "Team isn't sold through Managed Payments")
+        XCTAssertTrue(config.contains(#"return env.STRIPE_MANAGED_PAYMENTS !== "0";"#), "Managed Payments is on unless set to 0")
+        XCTAssertTrue(config.contains(#"return env.BILLING_STORAGE_ADDON === "1";"#), "added storage is off unless set to 1")
+        XCTAssertTrue(source.contains("TRIAL_SLACK_MS = 60 * 60_000;"), "a trial ends an hour after its days, rounded up to the hour")
+        XCTAssertTrue(disclosure.contains("first payment (once per person)"))
+        let text = FakeParaAirCloud.disclosure(plan: "personal", interval: "month", seats: 1, storageTb: 0, unit: 1_000, block: 1_000, total: 1_000,
+                                               now: Date(), accountURL: "https://account.example", seller: "link", termsURL: nil, policyURL: nil)
+        XCTAssertTrue(text.terms.contains { $0.contains("first payment (once per person)") } && text.summary.contains { $0.contains("(once per person)") })
     }
 }

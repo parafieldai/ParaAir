@@ -246,7 +246,7 @@ struct HomePresentation: Equatable {
                 let control = cloud.billing.controls.first { $0.action == .choosePlan }
                 result = .init(status: .init(title: Self.noStorageTitle,
                                              // Only the owner can start a plan; anyone else is sent to them.
-                                             detail: control == nil ? "Ask the workspace owner to choose a ParaAir Cloud plan to add files to this drive."
+                                             detail: control == nil ? cloud.billing.noStorageDetail ?? "Ask the workspace owner to choose a ParaAir Cloud plan to add files to this drive."
                                                  : cloud.workspace?.billing?.trialDays.map {
                                                      "Start your \($0)-day free trial to add files to this drive. Nothing is charged before it ends."
                                                  } ?? "Choose a ParaAir Cloud plan to add files to this drive.",

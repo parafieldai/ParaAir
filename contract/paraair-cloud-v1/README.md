@@ -14,6 +14,14 @@ Changing an existing entry is a breaking API change. Update this directory, the 
 
 The billing endpoints below use two codes only they return: `disclosure_outdated` (409) and `billing_unavailable` (503). Clients that predate them map them by status class (`unknown` in `errors.json`).
 
+## Client version
+
+The Mac client sends `X-ParaAir-Client: mac/<version>` on every request. The service accepts `mac/` and up to three numbers of up to 6 digits each (`major[.minor[.patch]]`, missing ones count as 0), or `mac/dev` in dev mode only, and answers 426 `client_too_old` when the numbers are below its `MIN_CLIENT_VERSION` (`MAJOR.MINOR.PATCH`), compared in order. Absent is allowed.
+
+- Clients built from 2026-11-26 send `mac/<major>.<minor>.<build>`, where the build is `CFBundleVersion`, which grows with every release (`mac/0.1.72`). Earlier clients, every 0.1.0 alpha up to alpha 11, send `mac/0.1.0`, so their third number reads as build 0.
+- So `MIN_CLIENT_VERSION=0.1.73` refuses every earlier alpha and builds below 73, and accepts build 73 and later, and any 0.2 or later.
+- A client whose build has more than 6 digits sends its marketing version instead, as before.
+
 ## `errors.json`
 
 ```json
@@ -69,18 +77,24 @@ Free trials and self-serve accounts (added 2026-10-27):
 - With self-serve sign-up (`SELF_SIGNUP=1`), any address can sign in. A new account gets a Personal workspace with no storage, transfer or retained space (`plan.storageLimitBytes` 0, `billing.status` `none`, `checkoutAvailable` true and `trialDays` set) until its trial or a plan starts. Uploads answer 507 `quota_exceeded` until then.
 - With Stripe Managed Payments (`STRIPE_MANAGED_PAYMENTS`, on by default), Link is the merchant of record. Stripe's checkout page then shows Stripe's standard terms, not the disclosure, so the app's plan sheet is where the buyer reads it.
 
+What is sold (updated 2026-11-26):
+
+- **Team is not sold through Stripe Managed Payments.** Adding a member bills the prorated seat at once (subscription policy 12.4), a one-off invoice Managed Payments doesn't support. With Managed Payments the offer lists no Team price in either period, a team workspace's `checkoutAvailable` is false even for its owner (its personal workspace can still check out), an offer quote for Team is null, and a Team checkout answers 503 `billing_unavailable`. Stripe direct (`STRIPE_MANAGED_PAYMENTS=0`) and Paddle sell Team.
+- **Added storage is off by default.** Only with `BILLING_STORAGE_ADDON=1` does the offer list storage prices and a quote include storage; otherwise a quote with `extraStorageTb` above 0 is null and a checkout with it answers 400 `invalid_request` (subscription policy 12.1: added storage is planned, not yet available).
+- A price map may also leave out items; what it leaves out is not sold either.
+
 ### `POST /v1/billing/checkout`
 
 Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted and not required.
 
 ```json
 {"workspaceId":"ws_…","plan":"personal","interval":"month","extraStorageTb":0,
- "disclosureVersion":"A-draft-2026-10-27b","consent":{"autoRenew":true,"terms":true},"trialDays":7}
+ "disclosureVersion":"A-draft-2026-11-26","consent":{"autoRenew":true,"terms":true},"trialDays":7}
 ```
 
-- `plan` is `personal` or `team` and must equal the workspace's `kind`; `interval` is `month` or `year`.
+- `plan` is `personal` or `team` and must equal the workspace's `kind`; `interval` is `month` or `year`. Team is refused (503 `billing_unavailable`) where it isn't sold, see "What is sold".
 - `seats`: Team only, 1 to 1000, at least the workspace's current member count; default the member count. Personal accepts only `1` or no value.
-- `extraStorageTb`: 0 to 100 added 1 TB blocks, default 0.
+- `extraStorageTb`: 0 to 100 added 1 TB blocks, default 0. Above 0 only while added storage is sold (`BILLING_STORAGE_ADDON=1`); otherwise 400 `invalid_request`.
 - `disclosureVersion` and `consent` (added 2026-10-13): the version of the disclosure text the app showed (`disclosureVersion` of `GET /v1/billing/offer`) and the two unticked boxes the buyer ticked (subscription policy 7.1: automatic renewal, and the Terms and the policy). Both are required (since 2026-10-23): `consent.autoRenew` and `consent.terms` must be `true` and the version must be the server's current one; the server stores them with the checkout record, with the time and the `X-ParaAir-Client` version, and the confirmation email cites that record. No released app sent checkout without them.
 - `trialDays` (added 2026-10-27): the free trial the quote for this workspace showed (`quote.trialDays` of `GET /v1/billing/offer?workspaceId=`); absent or 0 for none. A different value answers 409 `disclosure_outdated`, because the buyer agreed to other terms.
 - Each workspace keeps one processor customer, so every checkout and the portal use the same one. A new checkout makes the workspace's earlier unpaid checkouts unpayable (Stripe expires the session, Paddle cancels the transaction); a subscription paid for one of them anyway is cancelled and refunded in full.
@@ -89,7 +103,7 @@ Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted an
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | bad plan, interval, seats or storage; plan does not match the workspace kind; seats below the member count; `disclosureVersion` or `consent` missing, or a box not ticked |
+| 400 | `invalid_request` | bad plan, interval, seats or storage; `extraStorageTb` above 0 while added storage isn't sold; plan does not match the workspace kind; seats below the member count; `disclosureVersion` or `consent` missing, or a box not ticked |
 | 403 | `forbidden` | the caller is not the workspace owner |
 | 403 | `suspended` | the workspace is suspended |
 | 404 | `workspace_not_found` | not a member of that workspace (existence never leaks) |
@@ -97,23 +111,25 @@ Access token, `Content-Type: application/json`. `Idempotency-Key` is accepted an
 | 409 | `disclosure_outdated` | `disclosureVersion` is not the server's current version, or `trialDays` is not the trial this checkout starts: fetch `GET /v1/billing/offer`, show the new text and ask for consent again |
 | 409 | `busy` | the workspace already has a live subscription (`active` or `past_due`) or is being purged: use the portal; or an earlier checkout was paid and its subscription has not arrived yet: wait and refresh `GET /v1/me` |
 | 429 | `rate_limited` | more than 20 checkout or portal sessions for the workspace this hour (`retryAfterSeconds`) |
-| 503 | `billing_unavailable` | billing is not set up on the server (prices, keys, links, or the email and notice settings its notices need): show "plans cannot be bought right now" |
+| 503 | `billing_unavailable` | billing is not set up on the server (prices, keys, links, or the email and notice settings its notices need), or the plan isn't sold (Team through Stripe Managed Payments): show "plans cannot be bought right now" |
 | 503 | `unavailable` | the processor could not be reached |
 
 ### `GET /v1/billing/offer`
 
-Access token. Added 2026-10-13. What the server sells and how, so the plan sheet shows exactly what checkout records and charges. Optional query: `plan`, `interval`, `seats`, `extraStorageTb` (the same rules as checkout; `seats` defaults to 1), and `workspaceId` (added 2026-10-27: a workspace the caller belongs to, so the quote includes the free trial its checkout starts; 404 `workspace_not_found` otherwise). Without `workspaceId` the quote assumes a workspace that has never had a subscription.
+Access token. Added 2026-10-13. What the server sells and how, so the plan sheet shows exactly what checkout records and charges. Optional query: `plan`, `interval`, `seats`, `extraStorageTb` (the same bounds as checkout; `seats` defaults to 1), and `workspaceId` (added 2026-10-27: a workspace the caller belongs to, so the quote includes the free trial its checkout starts; 404 `workspace_not_found` otherwise). Without `workspaceId` the quote assumes a workspace that has never had a subscription. A plan or storage that isn't sold is not an error here: it is missing from `prices`, and its quote is null.
+
+The example is the service as it ships: Stripe Managed Payments, so no Team price, and no storage price because added storage is off.
 
 ```json
-{"provider":"stripe","merchantOfRecord":{"name":"Link","reseller":true},"disclosureVersion":"A-draft-2026-10-27b","currency":"USD",
+{"provider":"stripe","merchantOfRecord":{"name":"Link","reseller":true},"disclosureVersion":"A-draft-2026-11-26","currency":"USD",
  "prices":[{"item":"personal_month","kind":"plan","plan":"personal","interval":"month","unitAmountCents":1000,"perMember":false},
-           {"item":"team_year","kind":"plan","plan":"team","interval":"year","unitAmountCents":16000,"perMember":true},
-           {"item":"storage_month","kind":"storage","plan":null,"interval":"month","unitAmountCents":1000,"perMember":false}],
+           {"item":"personal_year","kind":"plan","plan":"personal","interval":"year","unitAmountCents":10000,"perMember":false}],
  "quote":{"plan":"personal","interval":"month","seats":1,"extraStorageTb":0,"amountCents":1000,"currency":"USD",
-          "trialDays":7,"firstChargeAt":"2026-11-03T14:02:11.000Z",
-          "summary":["Free for 7 days, then $10.00 per month plus tax, renewing automatically every month until you cancel.","…"],
+          "trialDays":7,"firstChargeAt":"2026-12-03T15:00:00.000Z",
+          "summary":["Free for 7 days, then $10.00 per month plus tax, renewing automatically every month until you cancel.","…",
+                     "Full refund if you ask within 14 days of your first payment (once per person).","…"],
           "terms":["ParaAir Cloud Personal, billed monthly","$10.00 per month plus tax after a 7-day free trial. Renews automatically every month until you cancel.",
-                   "- Today you pay nothing. Your free trial ends on November 3, 2026.","- …"],
+                   "- Today you pay nothing. Your free trial ends on December 3, 2026 at 15:00 UTC.","- …"],
           "consent":"I agree that my ParaAir Cloud Personal plan renews automatically after the 7-day free trial at … I agree to the Terms of Service and the …"}}
 ```
 
@@ -123,8 +139,8 @@ Access token. Added 2026-10-13. What the server sells and how, so the plan sheet
 | `merchantOfRecord` | who charges the buyer: a reseller and seller of record (policy 2.2), `{"name":"Link","reseller":true}` (Stripe Managed Payments) or `{"name":"Paddle","reseller":true}`, or `{"name":"Parafield Inc.","reseller":false}` (Stripe direct) |
 | `disclosureVersion` | the current disclosure version; send it back as checkout's `disclosureVersion` |
 | `currency` | the catalog currency (prices are before tax; the processor may charge local currency, shown at its checkout) |
-| `prices` | the catalog items this server sells (those in its price map): `unitAmountCents` per unit per interval, `perMember` for Team |
-| `quote` | with `plan` and `interval`: the amount of the first charge before tax, `trialDays` (the free trial before it, null for none) and `firstChargeAt` (when it falls: now, or when the trial ends), and the disclosure (Appendix A): `summary` (added 2026-10-27: three or four sentences the app's checkout screen leads with, namely the price and automatic renewal, how to cancel, the refund, and with a trial what a failed first payment does), `terms` (a heading, the price line, then bullets prefixed `- `; the app shows them behind "Show full terms") and the `consent` sentences (one box in the app covers both), exactly what the checkout records under `disclosureVersion`; null without them or when that plan is not sold. Links in `consent` are Markdown `[label](url)` |
+| `prices` | the catalog items this server sells: those in its price map, without Team under Stripe Managed Payments and without storage unless added storage is on. `unitAmountCents` per unit per interval, `perMember` for Team |
+| `quote` | with `plan` and `interval`: the amount of the first charge before tax, `trialDays` (the free trial before it, null for none) and `firstChargeAt` (when it falls: now, or when the trial ends, which is `trialDays` days and one hour after the quote, rounded up to the hour, so the quote and a checkout minutes later name the same instant), and the disclosure (Appendix A): `summary` (added 2026-10-27: three or four sentences the app's checkout screen leads with, namely the price and automatic renewal, how to cancel, the refund, and with a trial what a failed first payment does), `terms` (a heading, the price line, then bullets prefixed `- `; the app shows them behind "Show full terms") and the `consent` sentences (one box in the app covers both), exactly what the checkout records under `disclosureVersion`; null without them, when that plan is not sold, or when it asks for added storage that is not sold. Links in `consent` are Markdown `[label](url)` |
 
 Errors: 401 `unauthorized`; 404 `not_found` when billing is off; 400 `invalid_request` for bad query values; 503 `billing_unavailable` as for checkout.
 
@@ -159,7 +175,7 @@ Every entry of `workspaces[]` gains:
 | `graceEndsAt` | set only while `past_due` |
 | `readOnlyAt` | when the workspace becomes (or became) read-only: the scheduled cancellation, the end of the grace period, or the start of the read-only period; null otherwise |
 | `deletionAt` | 30 days after `readOnlyAt`, when known. With the server's admin-confirmed purge (the default) deletion can come later; never earlier |
-| `checkoutAvailable` | the caller is the owner, billing is configured with a price for this workspace's kind, and the workspace has no live subscription |
+| `checkoutAvailable` | the caller is the owner, billing is configured with a price for this workspace's kind, that plan is sold (never Team through Stripe Managed Payments), and the workspace has no live subscription |
 | `portalAvailable` | the caller is the owner and the workspace has a customer with the configured processor |
 | `trialDays` | added 2026-10-27: the free trial this workspace's next checkout starts with; null when there is none or `checkoutAvailable` is false |
 | `trialEndsAt` | added 2026-10-27: while the subscription is in its free trial (`status` `active`), when the trial ends and the first charge falls; null otherwise |

@@ -165,6 +165,7 @@ extension MenuModel {
                 show("storage-settings")
                 self?.cloudAccount.perform(action)
             },
-            checkForUpdates: updater.isAvailable ? { [weak self] in self?.updater.checkForUpdates() } : nil)
+            checkForUpdates: updater.isAvailable ? { [weak self] in self?.updater.checkForUpdates() } : nil,
+            support: .live(stateRoot: stateRoot, showAbout: { show("about") }))
     }
 }

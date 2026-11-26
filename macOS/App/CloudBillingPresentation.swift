@@ -22,6 +22,9 @@ struct CloudBillingPresentation: Equatable {
     var date: Row?
     var notice: HomePresentation.Notice?
     var controls: [Control] = []
+    /// The home window's drive status for a workspace with no storage that no button here can fix, when it isn't "ask
+    /// the owner": its owner can't buy Team because the service doesn't sell it.
+    var noStorageDetail: String?
 
     static let choosePlan = Control(action: .choosePlan, title: "Choose a Plan…")
     static let startTrial = "Start Free Trial…"
@@ -29,6 +32,9 @@ struct CloudBillingPresentation: Equatable {
     /// While a payment page is open: the sheet shows it again (or starts over), never a second checkout.
     static let finishPayment = Control(action: .choosePlan, title: "Finish Payment…")
     static let previousPlan = "Previous plan"
+    /// A team owner whose account can buy plans, but not Team (Stripe Managed Payments doesn't sell it): say so, so a
+    /// Personal plan isn't bought for a team drive it doesn't cover (review 2026-11-26).
+    static let teamUnavailable = "Team plans aren’t available yet, so this team workspace can’t get storage yet. A Personal plan covers only your personal workspace."
 
     /// `planChoiceAvailable`: some workspace of the account offers checkout, so the plan sheet has something to sell.
     /// `pendingCheckout`: a payment page for this workspace is open and not paid yet.
@@ -70,14 +76,21 @@ struct CloudBillingPresentation: Equatable {
             result.summary = nil
             // The workspace's first checkout starts a free trial: the button says so.
             let title = billing.trialDays == nil ? choosePlan.title : startTrial
+            // A team's plan is bought for that team, so a team drive offers Choose a Plan… only when the team itself can
+            // check out. Otherwise the sheet could sell only Personal, which adds nothing to this team (review 2026-11-26).
+            let team = workspace.kind == ParaAirCloudBilling.Plan.team.rawValue
+            let canChoose = team ? checkout : planChoiceAvailable
+            // The account can buy a plan, but not for this team the caller owns: Team isn't sold, or has no price.
+            let teamNotSold = team && owner && !checkout && planChoiceAvailable && workspace.status != "suspended"
             if isUnpaid(workspace) {
                 // "No storage yet" is the headline (Storage Settings) or the drive status (home, menu bar); this says what to do.
                 let trial = billing.trialDays.map { "Start your \($0)-day free trial to store files in ParaAir Cloud. Nothing is charged before it ends." }
-                result.notice = .init(id: "billing", text: owner
+                result.notice = .init(id: "billing", text: teamNotSold ? teamUnavailable : owner
                     ? trial ?? "Choose a plan to store files in ParaAir Cloud."
                     : "This workspace has no storage yet. Ask the workspace owner to choose a plan.", tone: .attention)
-                if planChoiceAvailable, owner { result.controls = [Control(action: .choosePlan, title: title, prominent: true)] }
-            } else if planChoiceAvailable {
+                if canChoose, owner { result.controls = [Control(action: .choosePlan, title: title, prominent: true)] }
+                if teamNotSold { result.noStorageDetail = teamUnavailable }
+            } else if canChoose {
                 result.controls = [Control(action: .choosePlan, title: title)]
             }
         case .active where billing.cancelAtPeriodEnd:
@@ -208,7 +221,10 @@ struct CloudPlanChoice: Equatable {
                 .sorted { ($0.id == preferredWorkspaceID ? 0 : 1) < ($1.id == preferredWorkspaceID ? 0 : 1) }
             guard open.isEmpty || offer?.sells(plan) != true else { return Option(plan: plan, workspaces: open) }
             let reason: String
-            if kind.isEmpty {
+            if let offer, !offer.sells(plan) {
+                // No price in either period (Team through Stripe Managed Payments): nothing here can change that.
+                reason = notSold(plan)
+            } else if kind.isEmpty {
                 reason = plan == .team ? "For team workspaces. This account has none yet." : "This account has no personal workspace."
             } else if kind.contains(where: { $0.billing?.isLive == true }) {
                 reason = plan == .team ? "Your team already has a plan." : "Your personal workspace already has a plan."
@@ -222,10 +238,24 @@ struct CloudPlanChoice: Equatable {
         return CloudPlanChoice(personal: option(.personal), team: option(.team))
     }
 
-    /// Team seats start at one. The service requires at least one seat per member, but `/v1/me` does not say how many
-    /// members a team has, and `plan.seats` is the seats usable now (an admin grant or the last paid count), not the
-    /// members, so starting there could pre-select seats nobody uses (review 2026-10-13).
-    static func defaultSeats(_ workspace: ParaAirCloudMe.Workspace?) -> Int { 1 }
+    /// "Team isn’t available yet.": the offer has no price for the plan in either period.
+    static func notSold(_ plan: ParaAirCloudBilling.Plan) -> String { "\(plan == .team ? "Team" : "Personal") isn’t available yet." }
+
+    /// The plan the sheet starts on: the drive's own kind when it can be bought (a team drive starts on Team for that
+    /// team), else Personal when it can, else Team when it can, else Personal.
+    static func initialPlan(_ choice: CloudPlanChoice, driveKind: String?) -> ParaAirCloudBilling.Plan {
+        if driveKind == ParaAirCloudBilling.Plan.team.rawValue, choice.team.available { return .team }
+        return choice.personal.available || !choice.team.available ? .personal : .team
+    }
+
+    /// Team seats start at the seats the team's members use, as the Members section's list reports them (`seatsUsed`),
+    /// because the service refuses fewer seats than members; one when that list isn't loaded for this team. Not
+    /// `plan.seats`: that is the seats usable now (an admin grant or the last paid count), which could pre-select seats
+    /// nobody uses (review 2026-10-13).
+    static func defaultSeats(_ workspace: ParaAirCloudMe.Workspace?, members: ParaAirCloudMemberList? = nil) -> Int {
+        guard let workspace, let members, members.workspace.id == workspace.id else { return 1 }
+        return min(ParaAirCloudBillingCatalog.maxSeats, max(1, members.workspace.seatsUsed))
+    }
 }
 
 /// Plan card figures from the service's offer. The plan size leads, the total price supports it, the per-seat price
@@ -270,10 +300,27 @@ struct CloudPlanOffer: Equatable {
                      price: "\(unit) per seat per \(interval == .year ? "year" : "month")", detail: other ?? "One seat for each member")
     }
 
-    /// A plan the offer has no price for in this period: the size, and that it is not sold that way.
+    /// A plan the offer has no price for in this period, but has in the other: the size, and that it is not sold this way.
     static func unpriced(_ plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval) -> CloudPlanOffer {
         .init(name: plan == .team ? "Team" : "Personal", size: CloudUsagePresentation.format(ParaAirCloudBillingCatalog.terabyte),
               sizeCaption: plan == .team ? "per seat, shared by the team" : "of storage for you",
               price: "Not sold \(interval == .year ? "yearly" : "monthly")", detail: "Try the other billing period")
+    }
+
+    /// A plan the offer sells in neither period (Team through Stripe Managed Payments): not available yet, never "try
+    /// the other billing period" (review 2026-11-26).
+    static func notSold(_ plan: ParaAirCloudBilling.Plan) -> CloudPlanOffer {
+        .init(name: plan == .team ? "Team" : "Personal", size: CloudUsagePresentation.format(ParaAirCloudBillingCatalog.terabyte),
+              sizeCaption: plan == .team ? "per seat, shared by the team" : "of storage for you", price: "Not available yet",
+              detail: plan == .team ? "A Personal plan doesn’t cover a team" : "Not sold monthly or yearly")
+    }
+
+    /// The card the plan sheet shows: the selection's price when the plan can be chosen; Team's per-seat terms when it
+    /// can't be chosen here but is sold; otherwise why it can't be bought this period or at all.
+    static func card(_ plan: ParaAirCloudBilling.Plan, interval: ParaAirCloudBilling.Interval, seats: Int, available: Bool,
+                     offer: ParaAirCloudBillingOffer) -> CloudPlanOffer {
+        let priced = plan == .team && !available ? perSeat(interval: interval, offer: offer)
+            : make(plan, interval: interval, seats: plan == .team ? seats : 1, offer: offer)
+        return priced ?? (offer.sells(plan) ? unpriced(plan, interval: interval) : notSold(plan))
     }
 }

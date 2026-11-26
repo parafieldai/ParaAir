@@ -105,16 +105,23 @@ final class FakeParaAirCloud: @unchecked Sendable {
     /// A service from before billing: `/v1/me` has no `billing` objects.
     var omitsBilling = false
     /// Plans with configured prices; checkout for any other plan is 503 `billing_unavailable`, as with a partial price
-    /// map, and the offer lists only these plans.
+    /// map, and the offer lists only these plans. Team is also refused under Stripe Managed Payments (`sells`).
     var sellablePlans: Set<String> = ["personal", "team"]
     /// False: billing is set up without what checkout needs (keys, prices, notice settings): 503 `billing_unavailable`.
     var billingConfigured = true
-    /// The service's `DISCLOSURE_VERSION`; a checkout naming another is 409 `disclosure_outdated`.
-    var disclosureVersion = "A-draft-2026-10-27b"
+    /// The service's `DISCLOSURE_VERSION` (cloud src/billing/disclosure.ts); a checkout naming another is 409
+    /// `disclosure_outdated`.
+    var disclosureVersion = "A-draft-2026-11-26"
     /// `BILLING_TRIAL_DAYS` on Stripe: the free trial a workspace's first checkout starts with, once per user (0: none).
     var trialDays = 0
-    /// `STRIPE_MANAGED_PAYMENTS`: Link (Stripe Managed Payments) is the merchant of record instead of Parafield Inc.
-    var stripeManaged = false
+    /// `STRIPE_MANAGED_PAYMENTS`: Link (Stripe Managed Payments) is the merchant of record instead of Parafield Inc. On
+    /// unless the service sets it to 0, as the service ships. Team is not sold then (cloud src/billing/config.ts
+    /// `sellsPlan`): the offer lists no Team price, `/v1/me` offers no Team checkout and checkout answers 503
+    /// `billing_unavailable`. False is Stripe direct, which sells Team.
+    var stripeManaged = true
+    /// `BILLING_STORAGE_ADDON=1` (cloud `storageAddon`). Off by default, as on the service: the offer lists no storage
+    /// price, a quote with added storage is null, and checkout with `extraStorageTb` above 0 answers 400 `invalid_request`.
+    var storageAddon = false
     /// Prices the offer lists instead of the catalog's (the server's catalog after a price change).
     var priceOverrides: [String: Int] = [:]
     /// An earlier checkout of the workspace was paid but its subscription has not arrived: a new checkout is 409 `busy`.
@@ -798,6 +805,17 @@ final class FakeParaAirCloud: @unchecked Sendable {
 
     private static let liveBillingStates: Set<String> = ["active", "past_due", "deleting"]
 
+    /// `sellsPlan` and the price map: a plan with a price, and never Team through Stripe Managed Payments.
+    private func sells(_ plan: String) -> Bool {
+        sellablePlans.contains(plan) && !(plan == "team" && billingProvider == "stripe" && stripeManaged)
+    }
+
+    /// `trialEndsAt` of the service's catalog: the trial's days plus an hour (`TRIAL_SLACK_MS`), rounded up to the hour.
+    static func trialEndsAt(_ now: Date, days: Int) -> Date {
+        guard days > 0 else { return now }
+        return Date(timeIntervalSince1970: ((now.timeIntervalSince1970 + Double(days) * 86_400 + 3_600) / 3_600).rounded(.up) * 3_600)
+    }
+
     /// `trialDaysOf` of the service: Stripe, a workspace never subscribed, a user who has not had a trial.
     private func offeredTrial(_ workspace: Workspace?, user: String) -> Int {
         billingProvider == "stripe" && workspace?.billing == nil && !trialledUsers.contains(user) ? trialDays : 0
@@ -810,7 +828,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
         let owner = role == "owner"
         var checkout = false, portal = false
         if let configured, owner, workspace.status != "suspended" {
-            checkout = billingConfigured && sellablePlans.contains(workspace.kind)
+            checkout = billingConfigured && sells(workspace.kind)
                 && !(account.map { Self.liveBillingStates.contains($0.state) } ?? false)
             portal = account.map { $0.provider == configured && $0.hasCustomer && $0.state != "deleting" && $0.state != "deleted" } ?? false
         }
@@ -855,17 +873,14 @@ final class FakeParaAirCloud: @unchecked Sendable {
                   range.contains(number.intValue) else { throw Fail(code: "invalid_request") }
             return number.intValue
         }
-        _ = try integer("extraStorageTb", 0...100)
-        // consentFrom: both or neither; a version of printable ASCII and both boxes ticked.
-        var agreed: String?
-        if request["disclosureVersion"] != nil || request["consent"] != nil {
-            guard let version = request["disclosureVersion"] as? String, (1...64).contains(version.utf8.count),
-                  version.utf8.allSatisfy({ (0x21...0x7e).contains($0) }), let consent = request["consent"] as? [String: Any],
-                  (consent["autoRenew"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue }) == true,
-                  (consent["terms"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue }) == true else {
-                throw Fail(code: "invalid_request")
-            }
-            agreed = version
+        // Added storage is not sold unless BILLING_STORAGE_ADDON=1 (policy 12.1).
+        if (try integer("extraStorageTb", 0...100) ?? 0) > 0, !storageAddon { throw Fail(code: "invalid_request") }
+        // consentFrom: both required (since 2026-10-23), a version of printable ASCII and both boxes ticked.
+        guard let agreed = request["disclosureVersion"] as? String, (1...64).contains(agreed.utf8.count),
+              agreed.utf8.allSatisfy({ (0x21...0x7e).contains($0) }), let consent = request["consent"] as? [String: Any],
+              (consent["autoRenew"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue }) == true,
+              (consent["terms"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue }) == true else {
+            throw Fail(code: "invalid_request")
         }
         let workspace = try billingOwner(user: user, request["workspaceId"])
         guard workspace.kind == plan else { throw Fail(code: "invalid_request") }
@@ -876,8 +891,8 @@ final class FakeParaAirCloud: @unchecked Sendable {
         } else if let given = try integer("seats", 1...1000), given != 1 {
             throw Fail(code: "invalid_request")
         }
-        guard billingConfigured, sellablePlans.contains(plan) else { throw Fail(code: "billing_unavailable") }
-        if let agreed, agreed != disclosureVersion { throw Fail(code: "disclosure_outdated") }
+        guard billingConfigured, sells(plan) else { throw Fail(code: "billing_unavailable") }
+        if agreed != disclosureVersion { throw Fail(code: "disclosure_outdated") }
         if let account = workspace.billing, Self.liveBillingStates.contains(account.state) { throw Fail(code: "busy") }
         // The trial the app showed (absent: none) must be the one this checkout starts.
         let trial = offeredTrial(workspace, user: user)
@@ -922,7 +937,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
         let seller = billingProvider == "paddle" ? "paddle" : stripeManaged ? "link" : "parafield"
         func amount(_ id: String) -> Int { priceOverrides[id] ?? Self.catalog[id]! }
         let sold = ["personal_month", "personal_year", "team_month", "team_year", "storage_month", "storage_year"].filter {
-            $0.hasPrefix("storage") || sellablePlans.contains(String($0.split(separator: "_")[0]))
+            $0.hasPrefix("storage") ? storageAddon : sells(String($0.split(separator: "_")[0]))
         }
         let prices: [[String: Any]] = sold.map { id in
             let parts = id.split(separator: "_").map(String.init)
@@ -944,7 +959,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
             }
             let seats = try quantity("seats", plan == "team" ? 1...1000 : 1...1, 1)
             let storage = try quantity("extraStorageTb", 0...100, 0)
-            if sellablePlans.contains(plan) {
+            if sells(plan), storage == 0 || storageAddon {
                 let unit = amount("\(plan)_\(interval)"), block = amount("storage_\(interval)")
                 let total = unit * (plan == "team" ? seats : 1) + block * storage
                 let now = Date()
@@ -952,7 +967,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
                                            now: now, accountURL: issuerString + "/billing/account", seller: seller, trialDays: trial,
                                            termsURL: issuerString + "/legal/terms", policyURL: issuerString + "/legal/subscription-policy")
                 quote = ["plan": plan, "interval": interval, "seats": seats, "extraStorageTb": storage, "amountCents": total, "currency": "USD",
-                         "trialDays": trial > 0 ? trial : NSNull(), "firstChargeAt": Self.date(now.addingTimeInterval(Double(trial) * 86_400)),
+                         "trialDays": trial > 0 ? trial : NSNull(), "firstChargeAt": Self.date(Self.trialEndsAt(now, days: trial)),
                          "summary": text.summary, "terms": text.terms, "consent": text.consent]
             }
         }
@@ -971,7 +986,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "UTC")!
         let months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
         // With a trial the first charge, and every renewal date after it, falls on the day the trial ends.
-        let trial = trialDays > 0, first = now.addingTimeInterval(Double(trialDays) * 86_400)
+        let trial = trialDays > 0, first = trialEndsAt(now, days: trialDays)
         let day = calendar.component(.day, from: first), month = months[calendar.component(.month, from: first) - 1]
         // A deadline with its UTC time, as disclosure.ts gives it.
         let firstDay = "\(month) \(day), \(calendar.component(.year, from: first)) at "
@@ -1017,7 +1032,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
                 + "Cancel before your renewal date to avoid the next charge."
             : "Cancel any time online: in the ParaAir app (Storage Settings > Manage Plan) or at \(accountURL). Cancel before your renewal date "
                 + "to avoid the next charge. You keep access until the end of the \(period) you paid for.")
-        bullets.append("Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
+        bullets.append("Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment (once per person)\(yearly ? " or within 14 days of any yearly renewal charge" : "").")
         bullets.append("We will email you at least 14 days before any price change, and you can cancel first.")
         terms += bullets.map { "- " + $0 }
         func link(_ label: String, _ url: String?) -> String { url.map { "[\(label)](\($0))" } ?? label }
@@ -1027,7 +1042,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
             : "I agree that my ParaAir Cloud Personal plan renews automatically\(after) at \(total) per \(period) plus tax until I cancel."
         let documents = "I agree to the \(link("Terms of Service", termsURL)) and the \(link("Subscription, Cancellation and Refund Policy", policyURL))"
             + "\(team ? ", and I am authorized to agree for this team" : "")."
-        // The short screen's lines (disclosure.ts, A-draft-2026-10-27b).
+        // The short screen's lines (disclosure.ts, A-draft-2026-11-26).
         let price = team ? "\(unit) per member per \(period) plus tax (\(total) for \(seats) member\(seats == 1 ? "" : "s")"
             + "\(storageTb > 0 ? " and \(storageTb) TB added storage" : ""))" : "\(total) per \(period) plus tax"
         let place = "in ParaAir (Storage Settings > Manage Plan) or at \(accountURL)"
@@ -1036,7 +1051,7 @@ final class FakeParaAirCloud: @unchecked Sendable {
                              : "\(price), charged today and renewing automatically every \(period) until you cancel.",
                        trial ? "\(who) online before \(firstDay) to pay nothing: \(place)."
                              : "\(who) online any time: \(place). Access lasts until the end of the \(period) paid for.",
-                       "Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment\(yearly ? " or of any yearly renewal charge" : "")."]
+                       "Full refund if you ask within 14 days of \(trial ? "your" : "this") first payment (once per person)\(yearly ? " or of any yearly renewal charge" : "")."]
         if trial { summary.append("If that first payment fails, the plan stops at once: your files become read-only for 30 days, then are deleted.") }
         return (terms, summary, renewal + " " + documents)
     }

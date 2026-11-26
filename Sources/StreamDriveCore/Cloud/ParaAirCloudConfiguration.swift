@@ -53,12 +53,21 @@ public enum ParaAirCloudConfiguration {
     public static let chunkSize = 4_194_304
     static let developerOverrideFile = "paraair-cloud-service.json"
 
-    /// Sent as `X-ParaAir-Client: mac/<version>`. The service accepts `major[.minor[.patch]]`
-    /// (up to 6 digits each); anything else is sent as `dev`, which only a dev-mode service accepts.
-    public static var clientVersion: String {
-        guard let value = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
-              value.range(of: "^[0-9]{1,6}(\\.[0-9]{1,6}){0,2}$", options: .regularExpression) != nil else { return "dev" }
-        return value
+    /// Sent as `X-ParaAir-Client: mac/<version>`. The service accepts `major[.minor[.patch]]` (up to 6 digits each) and
+    /// refuses anything older than its `MIN_CLIENT_VERSION` (426 `client_too_old`), comparing the three numbers in order.
+    /// Every 0.1.0 alpha sent `mac/0.1.0`, so the service couldn't tell them apart. The third number is now the build
+    /// (`CFBundleVersion`), which grows with every release whatever the marketing version: `mac/0.1.72` is 0.1.x build
+    /// 72, and `MIN_CLIENT_VERSION=0.1.73` refuses that build and every earlier alpha. Without a build of up to 6 digits
+    /// the marketing version is sent as before; anything else is sent as `dev`, which only a dev-mode service accepts.
+    public static var clientVersion: String { clientVersion(info: Bundle.main.infoDictionary ?? [:]) }
+
+    static func clientVersion(info: [String: Any]) -> String {
+        guard let marketing = info["CFBundleShortVersionString"] as? String,
+              marketing.range(of: "^[0-9]{1,6}(\\.[0-9]{1,6}){0,2}$", options: .regularExpression) != nil else { return "dev" }
+        guard let build = (info["CFBundleVersion"] as? String).flatMap({ $0.range(of: "^[0-9]{1,6}$", options: .regularExpression) == nil ? nil : Int($0) })
+        else { return marketing }
+        let parts = marketing.split(separator: ".").compactMap { Int($0) }
+        return "\(parts[0]).\(parts.count > 1 ? parts[1] : 0).\(build)"
     }
 
     /// The developer override `<stateRoot>/paraair-cloud-service.json` is read only

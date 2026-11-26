@@ -23,6 +23,8 @@ struct HomeActions {
     var billing: (CloudBillingPresentation.Action) -> Void = { _ in }
     /// Sparkle's "Check for Updates…"; nil where the updater isn't available.
     var checkForUpdates: (() -> Void)?
+    /// Get Help…, Copy Diagnostics and About ParaAir (Support.swift).
+    var support = SupportActions()
 }
 
 struct CredentialTarget: Identifiable {
@@ -616,6 +618,7 @@ private struct AdvancedControls: View {
             if let checkUpdatesAutomatically {
                 Toggle("Check for updates automatically", isOn: checkUpdatesAutomatically)
             }
+            SupportButtons(actions: actions.support)
         }
         .controlSize(.small)
     }
@@ -640,6 +643,9 @@ private struct AdvancedMenuItems: View {
             Button(actions.credentialTargets.count > 1 ? "Metadata Credential for \(target.id)…" : "Metadata Credential…",
                    action: target.action)
         }
+        Divider()
+        Button("Get Help…", action: actions.support.getHelp)
+        Button("About ParaAir", action: actions.support.showAbout)
     }
 }
 
