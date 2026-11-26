@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ParaAir: cloud storage as a Mac drive</title>
-  <meta name="description" content="Cloud storage as a Mac drive. Open big files without downloading them first. Open source alpha for Apple Silicon Macs on macOS 26 or later.">
+  <meta name="description" content="Cloud storage as a Mac drive. Open big files without downloading them first. Free and open source on your own bucket, or ParaAir Cloud, planned at half the price of Space. Alpha for Apple Silicon Macs on macOS 26 or later.">
   <meta name="color-scheme" content="light dark">
   <link rel="icon" href="glide.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
@@ -104,6 +104,7 @@
       <h2 id="open-title">Open source, everything on your&nbsp;Mac.</h2>
       <div class="open-copy">
         <p class="say">The app, the drive Finder shows, the <code>paraair</code> command and the bridge to the JuiceFS engine underneath are public under the Apache 2.0 licence. Read what runs on your Mac, build it yourself, or point it at your own&nbsp;storage.</p>
+        <p class="say">On your own storage, your files stay in your bucket in JuiceFS’s open format, not one of ours. Nothing locks them to&nbsp;ParaAir.</p>
         <a class="source-link" href="https://github.com/parafieldai/ParaAir"><svg class="source-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>Read the source on GitHub</a>
       </div>
       <dl class="repo" aria-label="What the public repository holds">
@@ -116,11 +117,24 @@
     </section>
 
     <section class="story choice" aria-labelledby="choice-title">
-      <h2 id="choice-title">Your storage, or ours.</h2>
+      <h2 id="choice-title">Your bucket or ours.</h2>
       <div class="choice-pair">
-        <p><strong>Bring a bucket.</strong> Free and open source. Cloudflare R2 works today.</p>
-        <p><strong data-signup="invite">ParaAir Cloud is coming.</strong><strong data-signup="open" hidden>ParaAir Cloud.</strong> No buckets, no keys.</p>
+        <p><strong>Bring a bucket.</strong> Free and open source, a drive for one Mac at a time. Cloudflare R2 works&nbsp;today.</p>
+        <p><strong data-signup="invite">ParaAir Cloud is coming.</strong><strong data-signup="open" hidden>ParaAir Cloud.</strong> One drive for you and your agents, no buckets or keys. $10 a month for 1&nbsp;TB, <a href="pricing.html#compare">half the price of&nbsp;Space</a>.</p>
       </div>
+    </section>
+
+    <section class="story agents" aria-labelledby="agents-title">
+      <h2 id="agents-title">A drive your agents can&nbsp;use.</h2>
+      <p class="say">On ParaAir Cloud, scripts and agents work in the same folders you do, through the <code>paraair</code> command. On your own bucket, ParaAir is a drive for one&nbsp;Mac.</p>
+      <dl class="repo" aria-label="What ParaAir Cloud gives scripts and agents">
+        <div><dt>--json</dt><dd>Answers in JSON with fixed exit codes, under a versioned contract</dd></div>
+        <div><dt>changes --follow</dt><dd>A live feed of every change in a folder</dd></div>
+        <div><dt>versions</dt><dd>Earlier versions of a file, and <code>restore-version</code> to bring one back</dd></div>
+        <div><dt>--conflict-copies</dt><dd>When saves from two places meet, one keeps the name and the other is saved beside it</dd></div>
+        <div><dt>access set</dt><dd>Folder permissions for each person or credential: none, read, create or write</dd></div>
+        <div><dt>credentials</dt><dd>A login for each backend, limited to the folders you give it, revoked with one command</dd></div>
+      </dl>
     </section>
 
     <section class="access" id="access" aria-labelledby="access-title" data-flight="close">

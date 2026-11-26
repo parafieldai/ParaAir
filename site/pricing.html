@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ParaAir pricing</title>
-  <meta name="description" content="ParaAir is free with your own storage. ParaAir Cloud Personal is planned at $10 a month or $100 a year for 1 TB, with a 7-day free trial. Invite-only for now, and billing isn't switched on yet.">
+  <meta name="description" content="ParaAir is free and open source with your own storage. ParaAir Cloud Personal is planned at $10 a month or $100 a year for 1 TB, half the price of Space, with a 7-day free trial. Invite-only for now, and billing isn't switched on yet.">
   <meta name="color-scheme" content="dark light">
   <link rel="icon" href="glide.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
@@ -43,7 +43,8 @@
         <h2 class="path-name" id="own-title">Your own storage</h2>
         <p class="path-price"><span class="price">Free</span></p>
         <div class="path-desc">
-          <p>The open-source app, on a bucket you already pay&nbsp;for. Cloudflare&nbsp;R2 works today.</p>
+          <p>The open-source app, on a bucket you already pay&nbsp;for. A drive for one Mac at a&nbsp;time.</p>
+          <p>Cloudflare&nbsp;R2 works today. Your files stay in your bucket, in JuiceFS’s open&nbsp;format.</p>
         </div>
         <div class="path-action">
           <a class="cta" data-release-download href="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.11/ParaAir-0.1.0-alpha.11.dmg">Download for Mac</a>
@@ -57,7 +58,7 @@
         <p class="path-price"><span class="price">$10</span> <span class="price-unit">a month</span></p>
         <p class="price-alt">or $100 a year</p>
         <div class="path-desc">
-          <p>1&nbsp;TB of our storage. No buckets, no&nbsp;keys.</p>
+          <p>1&nbsp;TB of our storage. No buckets, no&nbsp;keys. One drive for you and your&nbsp;agents.</p>
           <p>Your first plan starts with a 7-day free&nbsp;trial.</p>
           <p class="path-status" data-signup="invite"><strong>Invite-only for now.</strong> Billing isn’t switched on, so nobody is charged yet. These are the planned prices for when it opens; taxes may&nbsp;apply.</p>
         </div>
@@ -123,8 +124,51 @@
             <th scope="row">After cancelling</th>
             <td><span class="fig">Read-only for 30 days</span></td>
           </tr>
+          <tr>
+            <th scope="row">For scripts and agents</th>
+            <td><span class="fig">Included</span><span class="more">The <code>paraair</code> command’s versioned contract (JSON, fixed exit codes), a live change feed, file versions and restore, conflict copies, folder permissions and revocable service&nbsp;credentials.</span></td>
+          </tr>
         </tbody>
       </table>
+    </section>
+
+    <section class="spec compare" id="compare" aria-labelledby="compare-title">
+      <h2 id="compare-title">Half the price of Space.</h2>
+      <p class="say">Against other streaming drives, Personal costs 44–50% less than Space, 86–89% less than LucidLink and 87% less than Suite Studios. Helumi costs the&nbsp;same.</p>
+      <table class="spec-table compare-table">
+        <caption>About 1&nbsp;TB of streaming drive: US list prices before tax, read on each company’s pricing page on 26&nbsp;November&nbsp;2026.<span data-signup="invite"> ParaAir Cloud’s prices are&nbsp;planned.</span></caption>
+        <thead>
+          <tr><th scope="col">Drive</th><th scope="col">Month to month</th><th scope="col">Billed yearly, per month</th></tr>
+        </thead>
+        <tbody>
+          <tr class="ours">
+            <th scope="row">ParaAir Cloud Personal<span class="more">1&nbsp;TB</span></th>
+            <td><span class="fig">$10</span></td>
+            <td><span class="fig">$8.33</span><span class="more">$100 a year</span></td>
+          </tr>
+          <tr>
+            <th scope="row"><a href="https://spacefs.com/">Space</a> Individual<span class="more">1&nbsp;TB</span></th>
+            <td><span class="fig">$20</span></td>
+            <td><span class="fig">$15</span><span class="more">$180 a year</span></td>
+          </tr>
+          <tr>
+            <th scope="row"><a href="https://www.lucidlink.com/pricing">LucidLink</a> Starter or Business<span class="more">Storage added up to 1&nbsp;TB</span></th>
+            <td><span class="fig">$70–80</span></td>
+            <td><span class="fig">$69–75</span></td>
+          </tr>
+          <tr>
+            <th scope="row"><a href="https://www.suitestudios.io/pricing">Suite Studios</a> Managed<span class="more">Per TB, 5 users included</span></th>
+            <td><span class="fig">$75</span></td>
+            <td><span class="more">Not shown</span></td>
+          </tr>
+          <tr>
+            <th scope="row"><a href="https://www.helumi.app/">Helumi</a><span class="more">1&nbsp;TB</span></th>
+            <td><span class="fig">$10</span></td>
+            <td><span class="more">Not shown</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="compare-note">Bringing your own bucket is free with ParaAir. <a href="https://spacefs.com/enterprise/">Space</a> and <a href="https://www.lucidlink.com/pricing">LucidLink</a> offer your own storage only on their Enterprise plans, and Helumi doesn’t offer&nbsp;it.</p>
     </section>
 
     <section class="later" aria-labelledby="team-title">
@@ -134,8 +178,20 @@
     </section>
 
     <section class="faq" aria-labelledby="faq-title">
-      <h2 id="faq-title">Trial, transfer and cancelling.</h2>
+      <h2 id="faq-title">Questions.</h2>
       <div class="faq-list">
+        <details>
+          <summary>Which storage can I bring?</summary>
+          <p>Cloudflare R2 works today, and it’s the one we’ve tested. The app also connects to Backblaze&nbsp;B2, Amazon&nbsp;S3 and a NAS that serves an S3 API over HTTPS. With your own storage, the drive is for one Mac at a&nbsp;time.</p>
+        </details>
+        <details>
+          <summary>Do the agent features work on my own bucket?</summary>
+          <p>No. The change feed, file versions, conflict copies, folder permissions and service credentials need ParaAir Cloud. On your own bucket, ParaAir is a drive for one&nbsp;Mac.</p>
+        </details>
+        <details>
+          <summary>What if I stop using ParaAir?</summary>
+          <p>The app is open source under the Apache 2.0 licence. On your own storage, your files stay in your bucket in JuiceFS’s open format, not one of ours. On ParaAir Cloud, cancelling leaves you 30 days of read-only access to copy them&nbsp;out.</p>
+        </details>
         <details>
           <summary>What counts as transfer?</summary>
           <p>Streaming and downloads: the data read from your ParaAir Cloud storage. Each month includes 3× your plan’s storage at full speed, which is 3&nbsp;TB on Personal.</p>
