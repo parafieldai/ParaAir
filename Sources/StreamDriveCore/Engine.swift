@@ -414,6 +414,10 @@ public final class Engine {
     private var copyRetries: [String: (at: UInt64, failures: Int)] = [:]
     /// Files whose never-published change a delete is dropping (discardNewFile): no upload of them starts. Guarded by `memory`.
     private var removing = Set<String>()
+    /// Bumped for each change discardNewFile drops, with the generation of each path's latest drop (the newest kept), so
+    /// an upload that began waiting before the drop learns of it after the delete ends too. Guarded by `memory`.
+    private var dropGeneration: UInt64 = 0
+    private var droppedAt: [String: UInt64] = [:]
     /// Set by `close`: uploads stop, and an upload it stopped isn't counted as a failure. Guarded by `memory`.
     private var closed = false
     /// A change that loses to another device's is saved beside the file as a conflict copy (saveConflictCopy) and
@@ -1112,13 +1116,17 @@ public final class Engine {
     /// One upload of `path`'s journal. True when it published and a tail left a newer journal behind.
     private func uploadOnce(_ path: String, modifiedNoLaterThan cutoff: Int64) throws -> Bool {
         var continues = false
+        let begun = memory.withLock { dropGeneration }
         try legacyUploadLock.withShared {
         let pathLock = try uploadLock(for: path)
         try pathLock.withLock {
         // Whether an earlier attempt of this identity may already have published.
         var prior = true
-        // A delete is dropping this file's change instead (discardNewFile); a caller waiting for it to publish learns it didn't.
-        if memory.withLock({ removing.contains(path) }) { throw DriveError(ECANCELED, "The file is being deleted") }
+        // A delete is dropping, or dropped while this waited for the lock, this file's change instead of uploading it
+        // (discardNewFile): a caller waiting for it to publish learns it didn't.
+        if memory.withLock({ removing.contains(path) || (droppedAt[path] ?? 0) > begun }) {
+            throw DriveError(ECANCELED, "The file was deleted before it uploaded")
+        }
         guard var pending: Journal = try lock.withLock({
             guard var item: Journal = try db.get("journal", path) else { return nil }
             if item.state == "conflict" { throw DriveError(ESTALE, Self.conflictMessage) }
@@ -1400,6 +1408,10 @@ public final class Engine {
                         try invalidateListings(); try invalidatePins(under: path)
                     }
                     dropped = true
+                    memory.withLock {
+                        dropGeneration &+= 1; droppedAt[path] = dropGeneration
+                        if droppedAt.count > 1024 { let recent = dropGeneration &- 512; droppedAt = droppedAt.filter { $0.value > recent } }
+                    }
                     // Dropped: a failed cleanup is not a failed delete. Later passes reclaim the payloads.
                     try? recoverOrphans()
                 }

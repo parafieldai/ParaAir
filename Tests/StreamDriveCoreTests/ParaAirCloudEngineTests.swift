@@ -226,6 +226,38 @@ final class ParaAirCloudEngineTests: XCTestCase {
         XCTAssertTrue(try engine.flushUploads().isEmpty)
     }
 
+    /// An fsync that waits for the file's upload lock while a delete holds it and drops the change fails with ECANCELED
+    /// after the delete ends: it never reports as published data that was discarded. (Getting the lock before the delete
+    /// does, it fails the same way: `removing`.)
+    func testFsyncWaitingWhileADeleteDropsTheFileFails() throws {
+        let engine = try open()
+        _ = try engine.create("/raced.bin", directory: false)
+        _ = try engine.write("/raced.bin", offset: 0, data: seededBytes(1000, seed: 60))
+        // The commit's reply is lost, so the delete asks the commit fence while it holds the file's upload lock.
+        fake.injectTransport(.timedOut, route: "POST /v1/drives/{d}/uploads/{u}/commit", times: 3)
+        XCTAssertEqual(try engine.flushUploads().first?.lastErrno, ETIMEDOUT)
+        fake.delay(route: "POST /v1/drives/{d}/transactions/{tx}/fence", seconds: 0.6)
+        let removed = expectation(description: "delete returned")
+        let removal = NSMutableArray()
+        DispatchQueue.global().async {
+            do { try engine.remove("/raced.bin", directory: false); removal.add("removed") } catch { removal.add(error) }
+            removed.fulfill()
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while fake.requests("POST /v1/drives/{d}/transactions/{tx}/fence").isEmpty, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        let synced = expectation(description: "fsync returned")
+        let outcome = NSMutableArray()
+        DispatchQueue.global().async {
+            do { try engine.fsync("/raced.bin"); outcome.add("published") } catch { outcome.add(error) }
+            synced.fulfill()
+        }
+        wait(for: [removed, synced], timeout: 5)
+        XCTAssertEqual(removal.firstObject as? String, "removed")
+        XCTAssertEqual((outcome.firstObject as? DriveError)?.code, ECANCELED, "\(outcome)")
+        XCTAssertNil(fake.contents(driveID: account.driveID, path: "/raced.bin"))
+        XCTAssertTrue(try engine.uploads().isEmpty)
+    }
+
     /// A file that was published keeps the usual delete: storage removes it.
     func testDeletingPublishedFileStillRemovesItInStorage() throws {
         let engine = try open()

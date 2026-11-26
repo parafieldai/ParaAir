@@ -464,6 +464,55 @@ final class ParaAirCloudBackendTests: XCTestCase {
         XCTAssertEqual(fake.chunkPuts(sha(data)), 2, "busy, busy after 0.1 s; 0.1 + 0.2 s is past the 0.25 s budget")
     }
 
+    /// The budget counts from the refusal itself, so time other chunks spend uploading in that round isn't free: a
+    /// chunk busy at once, then a slow upload of the next chunk, ends the attempt instead of starting another round.
+    func testRefusalBudgetCountsFromTheRefusal() throws {
+        let data = seededBytes(chunk + 900, seed: 54), parts = chunks(of: data)
+        var options = pacing(floor: 0.1, longest: 2, budget: 0.25); options.maxConcurrentChunkUploads = 1
+        let b = try backend(options)
+        fake.busyChunk(sha(parts[0]), answers: 1)
+        fake.delay(route: putRoute, seconds: 0.3)
+        expectDriveError(EAGAIN, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/slow-round.bin", data)) }
+        XCTAssertEqual(fake.chunkPuts(sha(parts[0])), 1, "no round after the budget ran out")
+        XCTAssertEqual(fake.chunkPuts(sha(parts[1])), 1)
+    }
+
+    /// A call stopped while it waits for an access token (a refresh stalled on the token endpoint) stops at once; the
+    /// refresh itself goes on for the drive's other calls.
+    func testStoppedCallDoesNotWaitForATokenRefresh() throws {
+        final class StalledTokens: ParaAirCloudTokenProvider, @unchecked Sendable {
+            private let condition = NSCondition()
+            private var stalled = true
+            func accessToken() throws -> String {
+                condition.lock(); while stalled { condition.wait() }; condition.unlock()
+                return "pca_test"
+            }
+            func release() { condition.lock(); stalled = false; condition.broadcast(); condition.unlock() }
+            func tokenRejected(_ token: String) {}
+        }
+        let tokens = StalledTokens()
+        defer { tokens.release() }
+        let api = ParaAirCloudAPI(http: try session.http(), tokens: tokens)
+        let stop = ParaAirCloudCancellation()
+        api.cancellation = stop
+        fake.clearLog()
+        let stopped = expectation(description: "call stopped")
+        let outcome = NSMutableArray()
+        let driveID = account.driveID
+        DispatchQueue.global().async {
+            do { _ = try api.drive(driveID) } catch { outcome.add(error) }
+            stopped.fulfill()
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+        stop.cancel()
+        wait(for: [stopped], timeout: 2)
+        XCTAssertEqual((outcome.firstObject as? DriveError)?.code, ECANCELED)
+        XCTAssertTrue(fake.requests.isEmpty)
+        // Already stopped: refused before asking for a token, even one at hand.
+        tokens.release()
+        expectDriveError(ECANCELED) { _ = try api.drive(driveID) }
+    }
+
     /// Throttling, the service's own errors and cut-offs are about the service, not the chunk: once one comes back, no
     /// further chunks are sent into it this round (the old client stopped at the first error too). A busy chunk doesn't
     /// stop the others (testBusyChunkWaitsWhileTheOthersUpload).

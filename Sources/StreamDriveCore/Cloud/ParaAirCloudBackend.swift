@@ -319,10 +319,12 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
         var streak: Int
         var error: ParaAirCloudCallError
     }
-    /// The chunks a round of `putChunks` left for later: when the first may go again, and the latest refusal.
+    /// The chunks a round of `putChunks` left for later: when the first may go again, the latest refusal, and when the
+    /// round met its first refusal (a chunk held from before counts from the round's start).
     private struct Deferred {
         var earliest: Date
         var error: ParaAirCloudCallError
+        var firstRefusal: Date
     }
     /// How a refused chunk PUT is tried again.
     enum ChunkRefusal: Equatable {
@@ -457,8 +459,9 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
                     // Some chunks wait. If the first may go again soon, wait for it, then ask the service which chunks it
                     // still lacks (a reserve of the same transaction, no bodies): a held chunk another PUT finished meanwhile
                     // is never sent again. Otherwise the upload ends here and the engine tries the file later.
+                    // Counted from the refusal itself, so other chunks uploading in that round don't hide the time.
                     let at = now()
-                    let since = firstRefusal ?? at
+                    let since = min(firstRefusal ?? left.firstRefusal, left.firstRefusal)
                     firstRefusal = since; rounds += 1
                     let delay = max(0, left.earliest.timeIntervalSince(at))
                     guard delay <= options.longestChunkWait, at.timeIntervalSince(since) + delay <= options.chunkWaitBudget,
@@ -548,14 +551,14 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
             return index
         }
         var left: Deferred?
-        func leave(_ until: Date, _ error: ParaAirCloudCallError) {
-            left = Deferred(earliest: min(left?.earliest ?? until, until), error: error)
+        func leave(_ until: Date, _ error: ParaAirCloudCallError, at refused: Date) {
+            left = Deferred(earliest: min(left?.earliest ?? until, until), error: error, firstRefusal: min(left?.firstRefusal ?? refused, refused))
         }
         let started = now()
         var work: [Int] = []
         lock.lock()
         for index in indices {
-            if let held = holds[hashes[index]], held.until > started { leave(held.until, held.error) } else { work.append(index) }
+            if let held = holds[hashes[index]], held.until > started { leave(held.until, held.error, at: started) } else { work.append(index) }
         }
         lock.unlock()
         guard !work.isEmpty else { return left }
@@ -587,8 +590,8 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
                         } catch let error as ParaAirCloudCallError {
                             if [.sizeMismatch, .chunkHashMismatch].contains(error.code), !resent { resent = true; continue }
                             guard let refusal = Self.chunkRefusal(error) else { throw UploadFailure(error: error) }
-                            let until = hold(hashes[index], after: error, as: refusal)
-                            state.lock(); leave(until, error); if refusal.stopsOtherChunks { serviceRefused = true }; state.unlock()
+                            let refused = now(), until = hold(hashes[index], after: error, as: refusal)
+                            state.lock(); leave(until, error, at: refused); if refusal.stopsOtherChunks { serviceRefused = true }; state.unlock()
                             break
                         }
                     }

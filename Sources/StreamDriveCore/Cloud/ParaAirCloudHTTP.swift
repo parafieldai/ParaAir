@@ -431,6 +431,24 @@ final class ParaAirCloudCancellation: @unchecked Sendable {
         condition.lock(); tasks[task.taskIdentifier] = nil; condition.unlock()
     }
 
+    /// Runs `body` on another thread and waits for it, or until this is cancelled (ECANCELED, nothing sent): for a step
+    /// that can block without a request of its own to cancel, such as a token refresh other callers share. A cancelled
+    /// wait leaves `body` running to its end, and its result is dropped.
+    func waitFor<T>(_ body: @escaping () throws -> T) throws -> T {
+        let outcome = WaitOutcome<T>()
+        condition.lock()
+        if cancelled { condition.unlock(); throw Self.stopped(disposition: .attemptNotDispatched) }
+        condition.unlock()
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let result = Result { try body() }
+            condition.lock(); outcome.value = result; condition.broadcast(); condition.unlock()
+        }
+        condition.lock(); defer { condition.unlock() }
+        while outcome.value == nil, !cancelled { condition.wait() }
+        if let value = outcome.value { return try value.get() }
+        throw Self.stopped(disposition: .attemptNotDispatched)
+    }
+
     /// Sleeps up to `seconds`; false when cancelled before or during the wait.
     func wait(_ seconds: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(max(0, seconds))
@@ -439,6 +457,9 @@ final class ParaAirCloudCancellation: @unchecked Sendable {
         return !cancelled
     }
 }
+
+/// What `ParaAirCloudCancellation.waitFor` waits for; guarded by the cancellation's condition.
+private final class WaitOutcome<T>: @unchecked Sendable { var value: Result<T, Error>? }
 
 /// UI code runs blocking ParaAir Cloud calls here so the cooperative pool never blocks.
 public enum ParaAirCloudBlocking {

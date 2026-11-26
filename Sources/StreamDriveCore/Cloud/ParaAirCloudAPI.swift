@@ -406,19 +406,20 @@ public final class ParaAirCloudAPI: @unchecked Sendable {
         var attempt = 0, refreshed = false, retryAfterWaits = 0
         // Once an attempt may have reached the service, a later attempt that never left
         // this Mac cannot prove the request was not applied.
-        var maybeApplied = false, again = false
+        var maybeApplied = false
         func unsent(_ error: DriveError) -> ParaAirCloudCallError {
             ParaAirCloudCallError(drive: maybeApplied && error.disposition == .attemptNotDispatched ? error.with(.ambiguous) : error, code: nil)
         }
         while true {
-            // A wait below may have outlasted the call's purpose.
-            if again, cancellation?.isCancelled == true { throw unsent(ParaAirCloudCancellation.stopped(disposition: .attemptNotDispatched)) }
-            again = true
+            // Stopped before it starts, or a wait below outlasted the call's purpose.
+            if cancellation?.isCancelled == true { throw unsent(ParaAirCloudCancellation.stopped(disposition: .attemptNotDispatched)) }
             attempt += 1
             let bearer: String?
             switch call.authorization {
             case .access:
-                do { bearer = try tokens.accessToken() }
+                // A refresh may wait on the token endpoint (or for another caller's refresh): a stopped call stops
+                // waiting, and the refresh goes on for the drive's other calls.
+                do { bearer = try cancellation.map { stop in try stop.waitFor { [tokens] in try tokens.accessToken() } } ?? tokens.accessToken() }
                 catch let error as DriveError { throw unsent(error.with(.attemptNotDispatched)) }
             case .read(let token): bearer = token
             case .none: bearer = nil
