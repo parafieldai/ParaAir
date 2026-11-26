@@ -260,7 +260,15 @@
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { width = -1; relayout(); });
     window.addEventListener('scroll', wake, { passive: true });
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { paint(); draw(shown, performance.now()); });
-    reduce.addEventListener('change', () => { width = -1; relayout(); });
+    // Turning reduced motion on mid-entrance ends the entrance at once: no more frames, the underline fully drawn.
+    reduce.addEventListener('change', () => {
+      if (reduce.matches) {
+        entrance = null;
+        if (under) under.style.removeProperty('--draw');
+        cancelAnimationFrame(raf); raf = 0;
+      }
+      width = -1; relayout();
+    });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
 
     // Only when someone is looking: in a hidden tab the underline simply stays drawn.
@@ -287,6 +295,7 @@
       reads.forEach(([from, to, at]) => { for (let i = from; i <= to && i < letters.length; i++) letters[i].classList.toggle('down', p >= at); });
     };
     window.addEventListener('scroll', () => { if (!queued) { queued = true; requestAnimationFrame(show); } }, { passive: true });
+    reduce.addEventListener('change', show);
     show();
   }
 
@@ -339,6 +348,7 @@
     new ResizeObserver(() => { size(); queue(); }).observe(canvas);
     new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; queue(); }).observe(arc);
     window.addEventListener('scroll', queue, { passive: true });
+    reduce.addEventListener('change', queue);
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { size(); queue(); });
   }
 

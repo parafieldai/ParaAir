@@ -245,10 +245,10 @@ main, .colophon { position: relative; z-index: 1; }
 h1 {
   font: 500 clamp(3rem, 0.9rem + 7.4vw, 8.4rem)/0.96 var(--font-display);
   letter-spacing: var(--track-display);
-  max-width: 11ch;
   overflow-wrap: anywhere;
   text-wrap: balance;
 }
+.hero h1 { max-width: 11ch; }
 /* The lead plane's trail: the emphasis, under the words it flew beneath. */
 .under { position: relative; white-space: nowrap; }
 .under::after {
@@ -278,7 +278,8 @@ h1 {
   margin: 0 auto;
   padding: 0 var(--gutter);
 }
-h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--track-title); text-wrap: balance; overflow-wrap: anywhere; max-width: 18ch; }
+h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--track-title); text-wrap: balance; overflow-wrap: anywhere; }
+.story h2, .access h2 { max-width: 18ch; }
 .say { margin-top: var(--space-md); font-size: var(--text-lg); color: var(--ink-2); max-width: 36ch; }
 
 /* The file is its own name: hollow letters are still in storage, solid ones came down to the Mac. */
@@ -397,6 +398,21 @@ h2 { font: 500 var(--text-xl)/1.04 var(--font-display); letter-spacing: var(--tr
 }
 @media (prefers-reduced-motion: reduce) {
   .file span { transition: none; }
+}
+
+/* The pricing page's allowance meter: its explanation beside the meter, as before the homepage changed. */
+.pricing .scene {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: var(--section) var(--gutter) 0;
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: var(--space-xl);
+  align-items: center;
+}
+.pricing .scene-copy p { margin-top: var(--space-md); font-size: var(--text-lg); color: var(--ink-2); max-width: 34ch; }
+@media (max-width: 900px) {
+  .pricing .scene { grid-template-columns: minmax(0, 1fr); gap: var(--space-lg); }
 }
 
 /* ------------------------------------------------------------------------------------------------
