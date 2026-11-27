@@ -73,7 +73,7 @@ export function MacDemo() {
     <div className="hxd" ref={root}>
       <AnimatePresence>
         {ready && (
-          <m.div key={`f${run}`} className="hxd-finder" initial={{ opacity: 0, y: "2%", scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0 }} transition={spring}>
+          <m.div key={`f${run}`} className="hxd-finder" initial={still ? false : { opacity: 0, y: "2%", scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0 }} transition={still ? { duration: 0 } : spring}>
             <aside className="hxd-side">
               <p>Favorites</p>
               {FAVORITES.map(([label, id]) => <span key={label}><Icon id={id} />{label}</span>)}
@@ -89,7 +89,7 @@ export function MacDemo() {
               <div className="hxd-grid">
                 {FILES.map((file, i) => (
                   <m.div key={file.name} className={`hxd-item${i === OPEN && picked ? " is-sel" : ""}`} initial={false}
-                    animate={{ opacity: i < shown ? 1 : 0, y: i < shown ? "0%" : "-40%", scale: i < shown ? 1 : 0.9 }} transition={{ type: "spring", stiffness: 200, damping: 24 }}>
+                    animate={{ opacity: i < shown ? 1 : 0, y: i < shown ? "0%" : "-40%", scale: i < shown ? 1 : 0.9 }} transition={still ? { duration: 0 } : { type: "spring", stiffness: 200, damping: 24 }}>
                     <span className="hxd-thumb" ref={i === OPEN ? clip : undefined}><Thumb file={file} /></span>
                     <b>{file.file}</b>
                     <em>{file.size}</em>

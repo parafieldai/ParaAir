@@ -129,7 +129,23 @@ export function Hero({ hero, mac }) {
   const copy = hero.querySelector(".hero-copy");
 
   useLayoutEffect(() => {
-    setLayout(layoutTiles(stage.clientWidth, stage.clientHeight));
+    let size = [stage.clientWidth, stage.clientHeight];
+    setLayout(layoutTiles(size[0], size[1]));
+    // Lay the prints out again when the stage changes enough to need it: across the phone breakpoint, or by more than
+    // a sixth of its width or a quarter of its height (not for a phone's toolbar sliding away).
+    let timer = 0;
+    const onResize = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const w = stage.clientWidth, h = stage.clientHeight, [w0, h0] = size;
+        if ((w < 720) !== (w0 < 720) || Math.abs(w - w0) / w0 > 1 / 6 || Math.abs(h - h0) / h0 > 1 / 4) {
+          size = [w, h];
+          setLayout(layoutTiles(w, h));
+        }
+      }, 200);
+    };
+    window.addEventListener("resize", onResize);
+    return () => { clearTimeout(timer); window.removeEventListener("resize", onResize); };
   }, [stage]);
 
   useEffect(() => {

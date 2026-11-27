@@ -247,10 +247,11 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
       const alpha = appear * (1 - gone);
       tile.el.style.opacity = alpha.toFixed(3);
       tile.el.style.visibility = alpha < 0.005 ? "hidden" : "visible";
+      const shows = alpha >= 0.005 && sx + tile.w > 0 && sx < W && sy + tile.h > 0 && sy < VH;
       const near = alpha >= 0.005 && sx + tile.w > -160 && sx < W + 160 && sy + tile.h > -160 && sy < VH + 160;
       if (near && !tile.loaded) loadMedia(tile);
       if (t > 0.02 || grab) moved = true;
-      playMedia(tile, moved && near && visible && !still.matches);
+      playMedia(tile, moved && shows && visible && !still.matches);
       tile.el.style.transform = `translate3d(${(sx + ox).toFixed(1)}px,${(sy + oy).toFixed(1)}px,0) rotate(${(ox * 0.05).toFixed(2)}deg) scale(${(0.95 + 0.05 * appear - 0.03 * gone).toFixed(3)})`;
     }
 

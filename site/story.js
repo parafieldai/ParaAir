@@ -124,7 +124,7 @@
     if (shownStep !== step) {
       shownStep = step;
       buttons.forEach((b, i) => { b.setAttribute('aria-selected', String(i === step)); b.classList.toggle('is-on', i === step); });
-      captions.forEach((c, i) => c.classList.toggle('is-on', i === step));
+      captions.forEach((c, i) => { c.classList.toggle('is-on', i === step); c.setAttribute('aria-hidden', String(i !== step)); });
     }
     bars.forEach((bar, i) => { bar.style.transform = `scaleX(${i === step ? Math.min(1, t / DUR[step]) : i < step ? 1 : 0})`; });
     syncFilm(step);
@@ -152,7 +152,8 @@
     });
   });
   new IntersectionObserver((entries) => { visible = entries[entries.length - 1].isIntersecting; if (!visible && film) film.pause(); wake(); }, { threshold: 0.25 }).observe(root);
-  still.addEventListener('change', () => go(step));
+  // A pending frame would carry the step on past its end, so it goes before the step is shown at rest.
+  still.addEventListener('change', () => { cancelAnimationFrame(frame); frame = 0; go(step); });
   go(0);
   if (still.matches) render(0, DUR[0]);
 })();

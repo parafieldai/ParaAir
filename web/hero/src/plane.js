@@ -46,6 +46,8 @@ function soft(q, [radii, bows]) {
 
 // Builds the plane's SVG inside `svg` and returns draw(pose) for each frame.
 export function createPlane(svg) {
+  // A new layout starts a new engine on the same <svg>: begin from an empty one.
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
   svg.setAttribute("viewBox", `0 0 ${SIZE} ${SIZE}`);
   const make = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); svg.appendChild(e); return e; };
   const defs = make("defs", {});

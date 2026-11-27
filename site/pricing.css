@@ -69,8 +69,9 @@
 .meter-read i:nth-of-type(10) { --at: 1463ms; } .meter-read i:nth-of-type(11) { --at: 1617ms; } .meter-read i:nth-of-type(12) { --at: 1771ms; }
 .meter-read i:nth-of-type(13) { --at: 2398ms; } .meter-read i:nth-of-type(14) { --at: 3354ms; } .meter-read i:nth-of-type(15) { --at: 4309ms; }
 .meter-read i:nth-of-type(16) { --at: 5265ms; }
-.scene-meter.is-in .meter-glider { animation: meter-glide 6.4s linear infinite; }
-.scene-meter.is-in .meter-read i::after { animation: meter-lit 6.4s var(--ease) var(--at, 0ms) infinite; }
+/* is-live (home.js) only while the meter is on screen, so it never animates off screen. */
+.scene-meter.is-live .meter-glider { animation: meter-glide 6.4s linear infinite; }
+.scene-meter.is-live .meter-read i::after { animation: meter-lit 6.4s var(--ease) var(--at, 0ms) infinite; }
 @keyframes meter-glide {
   0% { transform: translateX(calc(var(--g) / -2)) rotate(45deg); opacity: 0; }
   4% { opacity: 1; }
@@ -150,6 +151,6 @@
   .meter-lane { --g: 20px; --gap: 4px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .scene-meter.is-in .meter-glider, .scene-meter.is-in .meter-read i::after { animation: none; }
+  .scene-meter.is-live .meter-glider, .scene-meter.is-live .meter-read i::after { animation: none; }
   .faq-list summary::after { transition: none; }
 }

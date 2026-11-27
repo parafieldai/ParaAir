@@ -576,10 +576,20 @@
     start();
   }
 
+  // -------------------------------------------------------------------------------------------- scenes
+  // Pricing's allowance meter (and any [data-scene]) animates only while it is on screen.
+  const scenes = [...document.querySelectorAll('[data-scene]')];
+  if ('IntersectionObserver' in window) {
+    const live = new IntersectionObserver((entries) => entries.forEach((e) => e.target.classList.toggle('is-live', e.isIntersecting)), { threshold: 0.3 });
+    scenes.forEach((s) => live.observe(s));
+  } else scenes.forEach((s) => s.classList.add('is-live'));
+
   // -------------------------------------------------------------------------------------------- posters
   // The clips below the first screen fetch their poster frame only as they come near, so the first load stays light.
-  const posters = [...document.querySelectorAll('video[data-poster]')];
-  const setPoster = (v) => { if (!v.poster) v.poster = v.dataset.poster; };
+  // The same for the Finder demo's thumbnails: the hero grows tall only once its script runs, so a lazy image there
+  // could otherwise start loading while the page is still short.
+  const posters = [...document.querySelectorAll('video[data-poster], img[data-src]')];
+  const setPoster = (el) => { if (el.dataset.src) { if (!el.src) el.src = el.dataset.src; } else if (!el.poster) el.poster = el.dataset.poster; };
   if ('IntersectionObserver' in window) {
     const near = new IntersectionObserver((entries) => entries.forEach((e) => { if (e.isIntersecting) { setPoster(e.target); near.unobserve(e.target); } }), { rootMargin: '600px 0px' });
     posters.forEach((v) => near.observe(v));
