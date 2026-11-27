@@ -7,6 +7,21 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>ParaAir updates</description>
     <language>en</language>
     <item>
+      <title>ParaAir 0.1.0 alpha 14</title>
+      <pubDate>Fri, 27 Nov 2026 07:43:28 GMT</pubDate>
+      <sparkle:version>92</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/parafieldai/ParaAir/releases/tag/v0.1.0-alpha.14</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<ul>
+<li>Your ParaAir drive no longer puts an icon on the desktop. It stays in the Finder sidebar under Locations.</li>
+<li>If ParaAir Cloud needs a newer version of ParaAir, the app shows Update ParaAir and keeps the drive read-only until you update, instead of folders that fail to open.</li>
+<li>On macOS 26 this update may turn the switch off once more. ParaAir shows the step when it opens.</li>
+</ul>
+]]></description>
+      <enclosure url="https://github.com/parafieldai/ParaAir/releases/download/v0.1.0-alpha.14/ParaAir-0.1.0-alpha.14.zip" length="50288886" type="application/octet-stream" sparkle:edSignature="J+Nr/D3vl+dC2VbFt5feUNuK0tQkq8tCDm8OnrGMcC4017xgAv1JqCsT1uQjojeQQ+UFehevf+hJHFsxYfrbCQ=="/>
+    </item>
+    <item>
       <title>ParaAir 0.1.0 alpha 13</title>
       <pubDate>Thu, 26 Nov 2026 16:38:51 GMT</pubDate>
       <sparkle:version>88</sparkle:version>
@@ -172,6 +187,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: XjI2kN9dRVyjpUwDulX0tkqTRj4potVa7oh2/IdZmO52UAOmm/mIEshVvtzTd6wTAUXQnU+dQbRyB3THIQm3Cg==
-length: 13455
+edSignature: fRCsYvSJfV6cURWhXP7Bw50GNMf9aCiw7U0r2uWskt1Xt0mreul1fX4UXbetEWB/7buxrRx6+iE40j6PFPwlAw==
+length: 14636
 -->
