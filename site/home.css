@@ -23,6 +23,7 @@
   --rule-2: rgb(20 21 24 / 0.13);
   --sage: #9AC7B4;
   --sage-deep: #3F7A64;
+  --mark-paper: #F1EFE7; /* the app icon's wing */
   --sage-wash: #DCEDE5;
   --select: #2F7CF6;
   --focus: #0A66E8;
@@ -72,6 +73,8 @@ code { font-family: var(--mono); font-size: 0.9em; }
 /* The plane is drawn through <use>, so its colours come in as inherited custom properties. */
 .mark-a { fill: var(--plane-a, var(--ink)); }
 .mark-b { fill: var(--plane-b, var(--sage)); }
+/* On the ink buttons the wing is the app icon's paper, as in the Dock. */
+.mark-on-ink { fill: var(--mark-paper); }
 
 /* ---------------------------------------------------------------- bar */
 .bar {

@@ -6,8 +6,9 @@
   const root = document.documentElement;
   const css = (name) => getComputedStyle(root).getPropertyValue(name).trim();
   const clamp = (v, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, v));
-  // The ParaAir mark (the paper plane in site/logo-mark.svg): a folded dart's three faces in a 100-unit box, far to near.
-  const MARK = [["wingLit", [[93.6, 4], [40.2, 81.1], [6.4, 81.2]]], ["keelLit", [[83.9, 20.7], [40.2, 81.1], [55.1, 96]]], ["wing", [[93.6, 4], [60.8, 76.5], [40.2, 81.1]]]];
+  // The ParaAir mark, as the app icon draws it (macOS/App/BrandIconGeometry.swift, site/logo-mark.svg): the wing and the
+  // tail, in a 100-unit box.
+  const MARK = [["wing", [[0.7, 32.6], [99.3, 0.0], [69.3, 64.8], [53.7, 45.2]]], ["tail", [[53.7, 45.2], [69.3, 64.8], [34.6, 100.0], [37.2, 55.7]]]];
 
   // The mark drawn once into a small canvas, nose pointing along +x, so each frame only stamps it.
   const sprite = (size, ink, sage, ratio) => {
@@ -24,10 +25,8 @@
       g.beginPath();
       poly.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y)));
       g.closePath();
-      g.fillStyle = tone === 'wingLit' ? ink : sage;
-      g.globalAlpha = tone === 'wing' ? 0.7 : 1;
+      g.fillStyle = tone === 'wing' ? ink : sage;
       g.fill();
-      g.globalAlpha = 1;
     });
     return c;
   };

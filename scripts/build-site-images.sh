@@ -2,7 +2,7 @@
 # Builds the site's two generated images. Run from anywhere on a Mac with Xcode's command line tools and Google Chrome:
 #
 #   site/favicon.ico   the app icon at 16, 32 and 48 px (PNG entries), drawn by the same BrandIconGeometry renderer as
-#                      scripts/build-icons.sh, so browsers that ask for /favicon.ico get the icon glide.svg shows
+#                      scripts/build-icons.sh, so browsers that ask for /favicon.ico get the icon site/icon.svg shows
 #   site/og-card.png   the 1200x630 link preview (og:image, twitter:image), a headless-Chrome screenshot of
 #                      scripts/og-card.html
 #
