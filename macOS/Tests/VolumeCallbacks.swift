@@ -468,7 +468,8 @@ struct VolumeCallbackTests {
             for field in standardFields {
                 try check(standard.isValid(field), "FSKit standard attribute missing: \(field.rawValue)")
             }
-            try check(standard.flags == 0, "Unsupported BSD file flags must be clear")
+            // Only the root is hidden (keeps the drive off Finder's desktop); every other item reports no flags.
+            try check(standard.flags == (item === root ? UInt32(UF_HIDDEN) : 0), "Only the volume root may report a BSD flag (UF_HIDDEN)")
         }
         let sourceMetadata = try attributes(try lookup("source", directory: root, volume: volume),
                                             volume: volume, wanted: standardMask)

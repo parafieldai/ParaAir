@@ -101,6 +101,8 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
     private static let uploadLog = Logger(subsystem: "dev.streamdrive.app.filesystem", category: "upload")
     private static let indexLog = Logger(subsystem: "dev.streamdrive.app.filesystem", category: "index")
     private static let cacheLog = Logger(subsystem: "dev.streamdrive.app.filesystem", category: "cache")
+    /// BSD flags of the volume root: hidden, so Finder doesn't put the drive on the desktop. Every other item reports 0.
+    static let rootFlags = UInt32(UF_HIDDEN)
     /// Kernel cache changes for items another device changed. Never the serial queue and never under `stateLock`:
     /// the kernel may call back into the volume while it applies one.
     private let invalidationQueue = DispatchQueue(label: "dev.streamdrive.filesystem.invalidate", qos: .utility)
@@ -397,9 +399,12 @@ final class StreamDriveVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWrite
         result.type = entry.kind == .directory ? .directory : .file
         result.mode = entry.mode; result.uid = getuid(); result.gid = getgid()
         result.linkCount = 1
-        // BSD flags aren't supported by this adapter; an unset property means
+        // BSD flags aren't stored by this adapter; an unset property means
         // "missing", whereas zero explicitly reports no flags to FSKit.
-        result.flags = 0
+        // The volume root alone reports UF_HIDDEN: Finder then leaves the drive
+        // off the desktop, like a cloud drive, while it keeps its sidebar entry
+        // under Locations and opens normally (tested on macOS 26.6.2).
+        result.flags = entry.path == "/" ? Self.rootFlags : 0
         result.size = UInt64(max(0, entry.size))
         if wanted == nil || wanted!.isAttributeWanted(.allocSize) {
             result.allocSize = UInt64(max(0, try (engine ?? storage()).allocatedLocalBytes(entry.path)))
