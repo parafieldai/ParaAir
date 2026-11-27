@@ -82,6 +82,33 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const push = Math.pow(1 - d / reach, 2) * 22 * scale;
     return [(dx / (d || 1)) * push, (dy / (d || 1)) * push];
   };
+  // While the plane waits, the prints part around it so it sits on open paper: each print overlapping the circle of
+  // radius r round the plane moves straight away from it, just far enough to clear it. The pocket closes as it flies.
+  const clearOf = (x, y, w, h, c, r) => {
+    let dx = x + w / 2 - c[0], dy = y + h / 2 - c[1];
+    const d = Math.hypot(dx, dy) || 1;
+    dx /= d; dy /= d;
+    const gap = (s) => {
+      const nx = Math.max(x + dx * s, Math.min(c[0], x + dx * s + w)), ny = Math.max(y + dy * s, Math.min(c[1], y + dy * s + h));
+      return Math.hypot(nx - c[0], ny - c[1]);
+    };
+    if (gap(0) >= r) return [0, 0];
+    let lo = 0, hi = r + Math.max(w, h);
+    for (let i = 0; i < 14; i++) { const mid = (lo + hi) / 2; if (gap(mid) >= r) hi = mid; else lo = mid; }
+    return [dx * hi, dy * hi];
+  };
+  // The same for the hint beside the plane (box [x0, y0, x1, y1]), so it sits on the paper too, never on a print.
+  const clearBox = (x, y, w, h, b) => {
+    let dx = x + w / 2 - (b[0] + b[2]) / 2, dy = y + h / 2 - (b[1] + b[3]) / 2;
+    const d = Math.hypot(dx, dy) || 1;
+    dx /= d; dy /= d;
+    const hits = (s) => x + dx * s < b[2] && x + dx * s + w > b[0] && y + dy * s < b[3] && y + dy * s + h > b[1];
+    if (!hits(0)) return [0, 0];
+    let lo = 0, hi = Math.max(w, h) + Math.max(b[2] - b[0], b[3] - b[1]);
+    for (let i = 0; i < 14; i++) { const mid = (lo + hi) / 2; if (hits(mid)) lo = mid; else hi = mid; }
+    return [dx * hi, dy * hi];
+  };
+  let hintEl = null, hintBox = null;
 
   // ------------------------------------------------------------------ the plan: when each print lifts off, and its particles
   const sampleTile = (tile, cols, rows) => {
@@ -205,7 +232,7 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     // A little rise and fall in the air as it goes, which settles as it lands.
     const bob = Math.sin(t * 2.1) * 5 * (1 - landed);
     const px = world[0] - view[0], py = world[1] - view[1] + bob;
-    const scale = lerp(fit * lerp(0.95, 1.2, smooth(T.fly, T.fly + 2, t)), landScale, smooth(T.cam1 - 1.4, T.touch, t));
+    const scale = lerp(fit * lerp(1.1, 1.2, smooth(T.fly, T.fly + 2, t)), landScale, smooth(T.cam1 - 1.4, T.touch, t));
     const aim = 1 - smooth(T.touch - 1.3, T.touch - 0.1, t);
     const h0 = headingAt(t - 0.16), h1 = headingAt(t + 0.16);
     const bank = clamp(Math.atan2(Math.sin(h1 - h0), Math.cos(h1 - h0)) * 90, -24, 24) * aim;
@@ -216,6 +243,22 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const rot = (((want + 540) % 360) - 180) * aim;
     planeWrap.style.opacity = shown.toFixed(3);
     planeWrap.style.transform = `translate3d(${(px - SIZE / 2).toFixed(1)}px,${(py - SIZE / 2).toFixed(1)}px,0) rotate(${rot.toFixed(2)}deg) scale(${scale.toFixed(3)})`;
+    // Waiting for the reader, the plane leans forward now and then along its nose (hero.css, .is-waiting), and the scroll
+    // hint sits right beside it (below it when there's no room on the right), so the next step is next to its subject.
+    const waiting = shown > 0.6 && t < 0.35;
+    planeWrap.classList.toggle("is-waiting", waiting);
+    if (waiting) { planeWrap.style.setProperty("--hx-nx", Math.cos(nose).toFixed(3)); planeWrap.style.setProperty("--hx-ny", Math.sin(nose).toFixed(3)); }
+    const pocketR = SIZE * scale * 0.55 + 22 * fit;
+    if (!hintEl) hintEl = hero.querySelector(".hx-hint");
+    hintBox = null;
+    if (hintEl && t < 0.4) {
+      const hw = hintEl.offsetWidth, hh = hintEl.offsetHeight, m = 16, side = pocketR * 0.95;
+      let hx = px + side, hy = py - hh / 2;
+      if (hx + hw > W - m) { hx = clamp(px - hw / 2, m, W - m - hw); hy = py + side; }
+      hintEl.style.left = "0px"; hintEl.style.top = "0px"; hintEl.style.bottom = "auto";
+      hintEl.style.transform = `translate3d(${hx.toFixed(1)}px,${hy.toFixed(1)}px,0)`;
+      hintBox = [hx - 14, hy - 14, hx + hw + 14, hy + hh + 14];
+    }
 
     // No words to begin with: the headline appears only once the plane has landed. Until then it can't be clicked,
     // but it stays in the page for screen readers, and a key that puts focus in it shows it at once (on a card while
@@ -231,10 +274,16 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const prevWorld = F.planeWorld(t - 0.14);
     const prevPlane = [prevWorld[0] - view[0], prevWorld[1] - view[1]];
     const flying = t < T.touch - 0.4;
+    const pocket = 1 - smooth(0.04, 0.6, t);
     for (const tile of tiles) {
       const [sx, sy] = tileAt(tile, view);
       tile.sx = sx; tile.sy = sy;
-      let ox = 0, oy = 0;
+      let ox = 0, oy = 0, kx = 0, ky = 0;
+      if (pocket > 0.001) {
+        const q = clearOf(sx, sy, tile.w, tile.h, [px, py], pocketR);
+        const b = hintBox ? clearBox(sx + q[0], sy + q[1], tile.w, tile.h, hintBox) : [0, 0];
+        kx = (q[0] + b[0]) * pocket; ky = (q[1] + b[1]) * pocket;
+      }
       if (flying) {
         const a = wakeOf(sx + tile.w / 2, sy + tile.h / 2, Math.max(tile.w, tile.h), [px, py], scale);
         const b = wakeOf(sx + tile.w / 2, sy + tile.h / 2, Math.max(tile.w, tile.h), prevPlane, scale);
@@ -250,7 +299,7 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
       const near = alpha >= 0.005 && sx + tile.w > -160 && sx < W + 160 && sy + tile.h > -160 && sy < VH + 160;
       if (near && !tile.loaded) loadMedia(tile);
       playMedia(tile, shows && visible && !still.matches);
-      tile.el.style.transform = `translate3d(${(sx + ox).toFixed(1)}px,${(sy + oy).toFixed(1)}px,0) rotate(${(ox * 0.05).toFixed(2)}deg) scale(${(0.95 + 0.05 * appear - 0.03 * gone).toFixed(3)})`;
+      tile.el.style.transform = `translate3d(${(sx + ox + kx).toFixed(1)}px,${(sy + oy + ky).toFixed(1)}px,0) rotate(${(ox * 0.05).toFixed(2)}deg) scale(${(0.95 + 0.05 * appear - 0.03 * gone).toFixed(3)})`;
     }
 
     // Where the plane has been, kept in the world so it streams away behind it as the canvas moves.
@@ -407,6 +456,7 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     ctx.clearRect(0, 0, W, VH);
     copy.style.opacity = ""; copy.style.transform = ""; copy.style.pointerEvents = ""; copy.inert = false; copy.classList.remove("hx-card");
     drawPlane(REST_POSE);
+    planeWrap.classList.remove("is-waiting");
     planeWrap.style.opacity = "1";
     planeWrap.style.transform = `translate3d(${(rest[0] - SIZE / 2).toFixed(1)}px,${(rest[1] - SIZE / 2).toFixed(1)}px,0) scale(${landScale.toFixed(3)})`;
     store.set({ phase: "demo", arrived: 1, still: true, chapter: 0, hint: 0 });
