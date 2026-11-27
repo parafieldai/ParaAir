@@ -23,6 +23,7 @@ struct UISnapshots {
         failures += checkLoginItem()
         failures += checkVersionText()
         failures += checkUpdateGate()
+        failures += checkUpdateRequired()
         failures += checkButtonHeights()
         failures += checkLegalLinks()
         failures += checkLaunchGaps()
@@ -42,7 +43,7 @@ struct UISnapshots {
         where ["1-first-run", "3-turn-on", "5-connected", "6-connected-sign-in", "10-cloud-quota-blocked", "11-cloud-signed-out",
                "14-cloud-past-due", "15-cloud-read-only", "16-cloud-pending-deletion", "17-owned-elsewhere",
                "19-uploads-failing", "20-conflicts", "22-cloud-no-storage", "26-drives-one-needs-sign-in", "28-drives-all-blocked",
-               "29-drives-connecting", "31-drives-switch-off"].contains(name) {
+               "29-drives-connecting", "31-drives-switch-off", "38-cloud-update-required", "39-drives-update-required"].contains(name) {
             let view = MenuBarPanel(input: input, details: details(for: input),
                                     connectAutomatically: .constant(true), actions: HomeActions())
             // Dark too for the states people see most: the menu bar panel follows the system appearance.
@@ -432,6 +433,15 @@ struct UISnapshots {
         readOnlyListed.uploadActivity = nil
         readOnlyListed.cloudUsage = CloudUsage(workspace: fixtureMe(stored: 640_000_000_000, status: "read_only").workspaces.first, state: .loaded)
         readOnlyListed.otherDrives = [fixtureParaOS]
+        // ParaAir Cloud refuses this build (426 client_too_old, 2026-11-27): the plan summary failed, earlier changes wait.
+        var updateRequired = cloudReady
+        updateRequired.cloudUpdateRequired = true
+        updateRequired.cloudUsage = CloudUsage(workspace: nil, state: .failed)
+        var updateRequiredListed = updateRequired
+        updateRequiredListed.uploadActivity = nil
+        updateRequiredListed.otherDrives = [fixtureParaOS]
+        var updateRequiredOff = updateRequired
+        updateRequiredOff.mounted = false
         return [("1-first-run", firstRun), ("2-storage-ready", ready), ("3-turn-on", turnOn),
                 ("4-checking", checking), ("5-connected", connected), ("6-connected-sign-in", mountedIssue),
                 ("7-sign-in-needed", issue), ("8-connecting", connecting),
@@ -444,7 +454,9 @@ struct UISnapshots {
                 ("25-still-off", stillOff), ("26-drives-one-needs-sign-in", oneNeedsSignIn), ("27-drives-connected", allConnected),
                 ("28-drives-all-blocked", allBlocked), ("29-drives-connecting", oneConnecting), ("30-drives-other-failed", otherFailed),
                 ("31-drives-switch-off", switchOffSeveral), ("32-drives-cloud-read-only", readOnlyListed),
-                ("36-couldnt-connect", couldntConnect), ("37-allow-login-items", allowLoginItems)]
+                ("36-couldnt-connect", couldntConnect), ("37-allow-login-items", allowLoginItems),
+                ("38-cloud-update-required", updateRequired), ("39-drives-update-required", updateRequiredListed),
+                ("40-cloud-update-required-off", updateRequiredOff)]
     }()
 
     /// Drives of other state folders (folders of their own under Cloud Drives, and an older one kept for login).
@@ -2374,6 +2386,46 @@ struct UISnapshots {
                 failures.append("button height (\(name)): ink \(ink), outline \(outline), expected \(expected)")
             }
         }
+        return failures
+    }
+
+    /// ParaAir Cloud refuses this version (ParaAirCloudVersionGate): Update ParaAir… leads wherever a cloud drive or
+    /// sign-in is involved, the drive reads as read-only, and a drive on the person's own storage keeps its state.
+    static func checkUpdateRequired() -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: Bool, _ message: String) { if !condition { failures.append("update required: " + message) } }
+        let scenarios = Dictionary(uniqueKeysWithValues: homeScenarios)
+        let mounted = HomePresentation.make(scenarios["38-cloud-update-required"]!)
+        expect(mounted.status.title == "Update ParaAir" && mounted.status.tone == .problem, "a refused cloud drive leads with Update ParaAir")
+        expect(mounted.primary == .init(action: .updateApp, title: "Update ParaAir…") && mounted.showsPrimary, "the one action is Update ParaAir…")
+        expect(mounted.status.detail.hasPrefix("ParaAir Cloud no longer accepts this version of ParaAir.")
+               && mounted.status.detail.contains("this drive is read-only") && mounted.status.detail.contains("upload after the update"),
+               "the mounted drive is read-only and earlier changes upload after the update")
+        expect(mounted.offersOpenInFinder, "files on this Mac still open")
+        let off = HomePresentation.make(scenarios["40-cloud-update-required-off"]!)
+        expect(off.status.detail.hasSuffix("Update to connect ParaAir Cloud.") && !off.offersOpenInFinder, "an unmounted drive connects after the update")
+        let listed = HomePresentation.make(scenarios["39-drives-update-required"]!)
+        expect(listed.status.title == "Update ParaAir" && listed.showsPrimary && listed.primary.action == .updateApp,
+               "with several drives, Update ParaAir… leads too")
+        expect(listed.drives.count == 2 && listed.status.detail.contains("your ParaAir Cloud drives are read-only"), "every drive stays listed")
+        expect(listed.drives.allSatisfy { $0.stateTitle == "Read-only" && $0.tone == .attention && $0.action == .openInFinder },
+               "connected cloud drives read as read-only and still open in Finder")
+        var mixed = scenarios["27-drives-connected"]!; mixed.cloudUpdateRequired = true
+        let mixedRows = HomePresentation.make(mixed).drives
+        expect(mixedRows.first { $0.storage.hasPrefix("Cloudflare R2") }?.stateTitle == "Connected"
+               && mixedRows.first { $0.storage.hasPrefix("ParaAir Cloud") }?.stateTitle == "Read-only", "a drive on the person's own storage stays Connected")
+        var firstRun = scenarios["1-first-run"]!; firstRun.cloudUpdateRequired = true
+        let setup = HomePresentation.make(firstRun)
+        expect(setup.status.title == "Update ParaAir" && setup.status.detail.hasSuffix("Update to sign in and set up a drive.") && setup.steps.count == 4,
+               "signing in waits for the update; the setup steps stay")
+        var ownBucket = scenarios["5-connected"]!; ownBucket.cloudUpdateRequired = true
+        let own = HomePresentation.make(ownBucket)
+        expect(own.status.title == "Connected" && own.notices.first?.id == "update-required" && own.notices.first?.action == .updateApp
+               && own.notices.first?.tone == .problem, "a drive on the person's own storage keeps its state; a notice offers the update")
+        expect(HomePresentation.make(scenarios["9-cloud-ready"]!).status.title == "Connected", "no refusal, no update state")
+        expect(CloudAccountModel.asksForUpdate(CloudAccountModel.updateForBilling)
+               && CloudAccountModel.asksForUpdate(CloudAccountModel.message(DriveError(ENOTSUP, "Update ParaAir to keep using ParaAir Cloud")))
+               && !CloudAccountModel.asksForUpdate("ParaAir Cloud is temporarily unavailable."), "the plan sheet offers Update ParaAir… for these messages only")
         return failures
     }
 

@@ -23,7 +23,8 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
         /// A newer connection of the same person or credential to this drive replaced it (close 4008): wait long.
         case replaced
         /// The service refused the request: `errno` EACCES (signed out, 401), ENOENT (no such drive or no access),
-        /// EPERM (forbidden or suspended), EINVAL (anything else it refused).
+        /// EPERM (forbidden or suspended), ENOTSUP (this version of ParaAir is too old, 426; also without connecting
+        /// while ParaAirCloudVersionGate holds that answer), EINVAL (anything else it refused).
         case refused(Int32)
         /// The connection failed, went quiet, the Mac slept, or the service closed it (a deploy).
         case dropped
@@ -40,6 +41,10 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
 
     public let driveID: String
     private let url: URL
+    /// The service's https (or loopback http) origin, for the version gate.
+    private let issuer: URL
+    /// What the service said about this version of ParaAir; tests use their own.
+    var versionGate: ParaAirCloudVersionGate = .shared
     private let tokens: any ParaAirCloudTokenProvider
     private let options: Options
     private let configuration: URLSessionConfiguration
@@ -72,7 +77,7 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
         parts.path = "/v1/drives/\(driveID)/changes/stream"
         parts.query = nil; parts.fragment = nil
         guard let url = parts.url else { throw DriveError(EINVAL, "Invalid ParaAir Cloud address") }
-        self.driveID = driveID; self.url = url; self.tokens = tokens; self.options = options; self.handler = handler
+        self.driveID = driveID; self.url = url; self.issuer = issuer; self.tokens = tokens; self.options = options; self.handler = handler
         let config = configuration.copy() as! URLSessionConfiguration
         config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
         config.httpShouldSetCookies = false; config.httpCookieAcceptPolicy = .never
@@ -104,6 +109,8 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
 
     private func connect() {
         guard !finished, task == nil else { return }
+        // Refused as too old: not again until the gate lets a call ask.
+        guard versionGate.admits(issuer, path: url.path) else { finish(.refused(ENOTSUP)); return }
         let token: String
         do { token = try tokens.accessToken() }
         catch let error as DriveError {
@@ -142,6 +149,7 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
                     if case .string(let text) = message, let cursor = Self.cursor(in: text) {
                         let first = !self.received
                         self.received = true
+                        if first { self.versionGate.answered(self.issuer, path: self.url.path, status: 101) }
                         self.handler(.cursor(cursor, first: first))
                     }
                     self.receive(task)
@@ -193,12 +201,14 @@ public final class ParaAirCloudChangeStream: NSObject, @unchecked Sendable {
         if closeCode == Self.closeExpired || closeReason == "expired" { finish(.expired); return }
         if closeCode == Self.closeReplaced || closeReason == "replaced" { finish(.replaced); return }
         if let status = (task.response as? HTTPURLResponse)?.statusCode, status != 101 {
+            versionGate.answered(issuer, path: url.path, status: status)
             switch status {
             case 401:
                 if let bearer { tokens.tokenRejected(bearer) }
                 finish(.refused(EACCES))
             case 404: finish(.refused(ENOENT))
             case 403: finish(.refused(EPERM))
+            case 426: finish(.refused(ENOTSUP))
             case 400...499: finish(.refused(EINVAL))
             default: finish(.dropped)
             }

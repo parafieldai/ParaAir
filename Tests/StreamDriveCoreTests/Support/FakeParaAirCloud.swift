@@ -143,6 +143,8 @@ final class FakeParaAirCloud: @unchecked Sendable {
     private var storedAfterBusy: Set<String> = []           // shas another PUT stores right after a busy answer
     private var nextID: Int64 = 1
     private var faults: [Fault] = []
+    private var minimumClient: String?
+    private var minimumBillingClient: String?
     private var log: [LoggedRequest] = []
     private var delays: [String: TimeInterval] = [:]
     private var inFlight: [String: Int] = [:]
@@ -265,6 +267,17 @@ final class FakeParaAirCloud: @unchecked Sendable {
     }
     func injectRaw(route: String, status: Int, body: Data, headers: [String: String] = [:], times: Int = 1) {
         locked { faults.append(Fault(route: route, remaining: times, action: .raw(Reply(status: status, headers: headers, body: body)))) }
+    }
+    /// The service's `MIN_CLIENT_VERSION` and `MIN_CLIENT_VERSION_BILLING` (cloud README "Client versions"): a `mac/`
+    /// version below the first is refused on every /v1 call but /v1/health, below the second on /v1/billing calls, with
+    /// 426 `client_too_old`. `mac/dev` passes both, as in dev mode. Nil: no floor.
+    var minimumClientVersion: String? {
+        get { locked { minimumClient } }
+        set { locked { minimumClient = newValue } }
+    }
+    var minimumBillingClientVersion: String? {
+        get { locked { minimumBillingClient } }
+        set { locked { minimumBillingClient = newValue } }
     }
     /// Every request on `route` waits this long before it is answered (outside the fake's lock).
     func delay(route: String, seconds: TimeInterval) { locked { delays[route] = seconds } }
@@ -444,7 +457,9 @@ final class FakeParaAirCloud: @unchecked Sendable {
             let route = Self.route(method: method, path: path)
             switch route {
             case "GET /v1/health":
-                return json(200, ["ok": true, "apiVersion": 1, "minClientVersion": "0.1.0"])
+                var health: [String: Any] = ["ok": true, "apiVersion": 1, "minClientVersion": minimumClient ?? "0.0.0"]
+                if let billing = minimumBillingClient { health["minClientVersionBilling"] = billing }
+                return json(200, health)
             case "POST /oauth/token": return token(Self.form(body))
             case "POST /oauth/revoke": return revoke(Self.form(body))
             case "GET /oauth/authorize": return authorize(query)
@@ -460,12 +475,12 @@ final class FakeParaAirCloud: @unchecked Sendable {
                 }
                 return json(200, ["messages": messages])
             case "GET /v1/w/{w}/chunks/{sha}":
-                try checkClient(headers)
+                try checkClient(headers, route: route)
                 return try chunkGet(workspace: parts[2], sha: parts[4], headers: headers)
             default: break
             }
             guard parts.count >= 2, parts[0] == "v1" else { throw Fail(code: "not_found") }
-            try checkClient(headers)
+            try checkClient(headers, route: route)
             let user = try authenticate(headers)
             return try authorizedRoute(route: route, parts: parts, query: query, headers: headers, body: body, user: user)
         } catch let fail as Fail {
@@ -478,11 +493,16 @@ final class FakeParaAirCloud: @unchecked Sendable {
 
     /// `mac/<major[.minor[.patch]]>` or `mac/dev` (this fake is a dev-mode service). The client always sends
     /// the header, so the fake also requires it; the service allows it to be absent.
-    private func checkClient(_ headers: [String: String]) throws {
+    private func checkClient(_ headers: [String: String], route: String) throws {
         guard let client = headers["x-paraair-client"] else { throw Fail(code: "client_too_old") }
         guard client == "mac/dev" || client.range(of: "^mac/[0-9]{1,6}(\\.[0-9]{1,6}){0,2}$", options: .regularExpression) != nil else {
             throw Fail(code: "invalid_request")
         }
+        guard client != "mac/dev" else { return }
+        let floors = [minimumClient, route.contains(" /v1/billing/") ? minimumBillingClient : nil].compactMap { $0 }
+        func numbers(_ value: String) -> [Int] { let parts = value.split(separator: ".").map { Int($0) ?? 0 }; return parts + Array(repeating: 0, count: 3 - parts.count) }
+        let version = numbers(String(client.dropFirst("mac/".count)))
+        if floors.contains(where: { version.lexicographicallyPrecedes(numbers($0)) }) { throw Fail(code: "client_too_old") }
     }
 
     private func authorizedRoute(route: String, parts: [String], query: [String: String], headers: [String: String], body: Data,

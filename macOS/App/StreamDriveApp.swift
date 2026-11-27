@@ -169,6 +169,9 @@ final class MenuModel: ObservableObject {
     private var shownTurnedOff = false
     /// Other copies of ParaAir that LaunchServices knows about and that still exist.
     @Published private(set) var otherAppCopies: [String] = []
+    /// ParaAir Cloud refuses this version of ParaAir (ParaAirCloudVersionGate, as this app's own calls heard it):
+    /// the home window and menu bar lead with Update ParaAir….
+    @Published private(set) var cloudUpdateRequired = ParaAirCloudVersionGate.shared.refusal() == .service
     /// Set when ParaAir opens System Settings for the switch; cleared once the extension is on.
     private var extensionSettingsOpenedAt: Date?
     private var extensionWatch: Task<Void, Never>?
@@ -223,6 +226,9 @@ final class MenuModel: ObservableObject {
         logLifecycle("launch")
         startRenewal()
         updater.$pendingUpdateTitle.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
+        NotificationCenter.default.publisher(for: ParaAirCloudVersionGate.didChange).receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.cloudUpdateRequired = ParaAirCloudVersionGate.shared.refusal() == .service }
+            .store(in: &observations)
         AppTermination.model = self
         let early = AppTermination.pendingURLs
         AppTermination.pendingURLs = []
@@ -285,6 +291,11 @@ final class MenuModel: ObservableObject {
     lazy var updater = AppUpdater { [weak self] done in
         guard let self else { return done(.install) }
         self.ejectAllDrives(done)
+    }
+
+    /// Update ParaAir…: Sparkle's check, or the download page where the updater doesn't run (development builds).
+    func updateApp() {
+        if updater.isAvailable { updater.checkForUpdates() } else { NSWorkspace.shared.open(LegalLinks.site) }
     }
 
     /// Every way ParaAir quits passes here: Quit ParaAir, logging out, another app asking it to
@@ -373,6 +384,7 @@ final class MenuModel: ObservableObject {
 
     private func observeCloudAccount() {
         cloudObservation = cloudAccount.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        cloudAccount.updateApp = { [weak self] in self?.updateApp() }
         cloudAccount.refreshPendingUploads = { [weak self] in await self?.activity.refreshNow() }
         cloudAccount.knownStateRoots = { [weak self] in self?.knownStateRoots() ?? [] }
         cloudAccount.signedInFolder = { [weak self] root in self?.rememberStateRoot(root) }

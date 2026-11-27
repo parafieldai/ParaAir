@@ -36,6 +36,8 @@ final class ChangeFeedMonitor {
         /// After a failed read: no read before this, stream or not.
         var failureUntil: TimeInterval = 0
         var failureWait: TimeInterval
+        /// The last read failed because ParaAir Cloud refuses this version of ParaAir (logged once, not per read).
+        var refusedAsTooOld = false
         var mounted = false
         var stream: ParaAirCloudChangeStream?
         /// Which stream `stream` is; events from earlier ones are ignored.
@@ -123,7 +125,9 @@ final class ChangeFeedMonitor {
                 state.push.heard(cursor: cursor, first: first)
             case .closed(let closure):
                 state.stream = nil
-                state.push.closed(closure == .expired ? .expired : closure == .replaced ? .replaced : .other, now: now,
+                // Refused as too old: reconnecting gets the same answer, so wait as long as for a replaced stream.
+                let long = closure == .replaced || closure == .refused(ENOTSUP)
+                state.push.closed(closure == .expired ? .expired : long ? .replaced : .other, now: now,
                                   jitter: .random(in: 0.8...1.2))
                 // Anything missed while it went down shows within a poll (not before a failed read's backoff ends).
                 state.due = max(state.failureUntil, min(state.due, now + interval))
@@ -219,9 +223,17 @@ final class ChangeFeedMonitor {
             case .success(let (box, folders, changes, cursor, more)):
                 engines[key] = box
                 state.failureWait = interval; state.failureUntil = 0
+                if state.refusedAsTooOld { state.refusedAsTooOld = false; log.notice("change feed accepted again") }
                 state.due = done + state.schedule.next(changes: changes, now: done)
                 reached = (cursor, !more)
                 if folders > 0 { log.notice("changes from other devices refreshed folders=\(folders)") }
+            case .failure(let error) where ParaAirCloudOutcome.of(error) == .updateRequired:
+                // ParaAir Cloud refuses this version until it is updated: read again when the gate next lets a call
+                // ask (the home window says to update meanwhile).
+                engines[key] = nil
+                state.failureUntil = done + max(interval, ParaAirCloudVersionGate.shared.recheckInterval)
+                state.due = state.failureUntil
+                if !state.refusedAsTooOld { state.refusedAsTooOld = true; log.error("change feed paused: ParaAir Cloud refuses this version") }
             case .failure(let error):
                 engines[key] = nil
                 state.failureWait = min(60, max(interval, state.failureWait * 2))

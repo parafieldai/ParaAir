@@ -106,6 +106,9 @@ public protocol StorageBackend: AnyObject {
     /// called again with `cancelled: false`. For deleting a file whose change was never published: the change is dropped
     /// instead of uploaded. Never opens a connection; storage that can't stop an upload ignores it.
     func cancelCommit(transactionID: String, cancelled: Bool)
+    /// Whether storage refuses this version of ParaAir until it is updated (ParaAir Cloud's 426 `client_too_old`), as
+    /// it last answered. Never opens a connection.
+    func updateRequired() -> Bool
 }
 
 /// Shared-editing services of a drive's storage, beyond files (cloud README: "Change feed", "Conflict copies").
@@ -143,6 +146,7 @@ public extension StorageBackend {
     }
     func commitStatus(transactionID: String, path: String, expectedVersion: String?) throws -> CommitStatus { .unknown }
     func cancelCommit(transactionID: String, cancelled: Bool) {}
+    func updateRequired() -> Bool { false }
     func capacity() throws -> VolumeCapacity? { nil }
     func backupIndex(replacing previous: String?) throws -> String? { nil }
     func ownership(refresh: Bool) throws -> StorageOwnership? { nil }

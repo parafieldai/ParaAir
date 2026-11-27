@@ -46,6 +46,9 @@ struct HomeInputs: Equatable {
     var cloudUsage: CloudUsage?
     /// An update found by a scheduled check while ParaAir wasn't in front ("ParaAir 0.1.0 alpha 3").
     var updateTitle: String?
+    /// ParaAir Cloud refuses this version of ParaAir (426 `client_too_old`, ParaAirCloudVersionGate): its drives are
+    /// read-only on this Mac until ParaAir is updated.
+    var cloudUpdateRequired = false
     /// For ages such as how long failing uploads have waited.
     var now = Date()
     /// The drives of the other state folders ParaAir knows (kept for login or remembered). With any, the window lists
@@ -115,6 +118,9 @@ struct HomePresentation: Equatable {
         case showOtherCopies
         /// A drive row's Remove from List…: ParaAir forgets another folder's drive (after a confirmation).
         case removeFromList
+        /// Sparkle's Check for Updates… (the download page where the updater isn't available): ParaAir Cloud refuses
+        /// this version.
+        case updateApp
     }
     enum StepState: Equatable { case done, current, upcoming }
 
@@ -188,8 +194,49 @@ struct HomePresentation: Equatable {
     }
 
     static func make(_ input: HomeInputs) -> HomePresentation {
-        input.otherDrives.isEmpty ? one(input) : several(input)
+        var result = input.otherDrives.isEmpty ? one(input) : several(input)
+        if input.cloudUpdateRequired { requireUpdate(&result, input) }
+        return result
     }
+
+    static let updateRequiredTitle = "Update ParaAir"
+    static let updateActionTitle = "Update ParaAir…"
+    static let updateRequiredLead = "ParaAir Cloud no longer accepts this version of ParaAir."
+
+    /// ParaAir Cloud refuses this version of ParaAir until it is updated: its drives stay mounted read-only (files on
+    /// this Mac open, earlier changes wait to upload) and nothing else they need can happen first, so updating leads.
+    /// The drive list, notices and setup steps stay as they are. With only a drive on the person's own storage, which
+    /// the refusal doesn't touch, it is a notice instead.
+    private static func requireUpdate(_ result: inout HomePresentation, _ input: HomeInputs) {
+        let drive = input.driveName ?? "your drive"
+        guard !input.otherDrives.isEmpty || input.storageKind == .paraairCloud || !input.hasDrive else {
+            result.notices.insert(.init(id: "update-required", text: updateRequiredLead + " Update to keep using ParaAir Cloud.",
+                                        tone: .problem, action: .updateApp, actionTitle: updateActionTitle), at: 0)
+            return
+        }
+        let detail: String
+        if !input.otherDrives.isEmpty {
+            detail = " Until you update, your ParaAir Cloud drives are read-only on this Mac: files already here open, and changes made earlier upload after the update."
+        } else if input.mounted {
+            detail = " Until you update, this drive is read-only: files already on this Mac open, and changes made earlier upload after the update."
+        } else if input.hasDrive {
+            detail = " Update to connect \(drive)."
+        } else {
+            detail = " Update to sign in and set up a drive."
+        }
+        result.status = .init(title: updateRequiredTitle, detail: updateRequiredLead + detail, tone: .problem)
+        result.primary = .init(action: .updateApp, title: updateActionTitle)
+        result.showsPrimary = true
+        result.offersCheckAgain = false; result.offersTryAgain = false; result.showsSwitchPicture = false
+        result.offersOpenInFinder = input.otherDrives.isEmpty && input.mounted
+        // A connected ParaAir Cloud drive in the list is read-only now, not simply Connected.
+        for index in result.drives.indices where result.drives[index].state == .connected
+            && result.drives[index].storage.hasPrefix(cloudStoragePrefix) {
+            result.drives[index].stateTitle = "Read-only"; result.drives[index].tone = .attention
+        }
+    }
+    /// How a ParaAir Cloud drive's storage line begins ("ParaAir Cloud · maya@example.com"; MenuModel.connectionSummary).
+    static let cloudStoragePrefix = "ParaAir Cloud"
 
     /// The selected folder's drive is the only one, or there is none yet.
     private static func one(_ input: HomeInputs) -> HomePresentation {

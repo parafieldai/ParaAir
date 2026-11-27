@@ -492,8 +492,13 @@ public final class Engine {
         parent == "/" || path == parent || path.hasPrefix(parent + "/")
     }
     private func parent(_ path: String) -> String { (path as NSString).deletingLastPathComponent.isEmpty ? "/" : (path as NSString).deletingLastPathComponent }
+    /// Storage can't be asked now: the network, or storage refusing this version of ParaAir until it is updated
+    /// (ParaAir Cloud's 426 `client_too_old`). Either way what this Mac already has answers: cached metadata,
+    /// listings and blocks read as when offline, and pending changes wait. New changes are refused while storage
+    /// refuses this version (refuseIfReadOnly).
     private func isOfflineError(_ error: Error) -> Bool {
         guard let code = (error as? DriveError)?.code else { return false }
+        if code == ENOTSUP { return ParaAirCloudOutcome.of(error) == .updateRequired }
         return [EIO, ENETDOWN, ENETUNREACH, EHOSTUNREACH, ECONNRESET, ECONNREFUSED, ETIMEDOUT, ENOTCONN].contains(code)
     }
     /// Records metadata learned from a publication or namespace change.
@@ -822,7 +827,7 @@ public final class Engine {
 
     @discardableResult public func write(_ value: String, offset: Int64, data: Data) throws -> Int {
         let path = try canonicalPath(value)
-        try refuseIfOwnedElsewhere(path)
+        try refuseIfReadOnly(path)
         let wrote: Int = try withWritableJournal(path) { pending in
             guard offset >= 0, data.count <= 64 * 1024 * 1024, offset <= Int64.max - Int64(data.count) else {
                 throw DriveError(EINVAL, "Invalid write range (maximum 64 MiB per call)")
@@ -847,7 +852,7 @@ public final class Engine {
     }
     public func create(_ value: String, directory: Bool) throws -> FileEntry {
         let path = try canonicalPath(value)
-        try refuseIfOwnedElsewhere(path)
+        try refuseIfReadOnly(path)
         if Housekeeping.isRefused(path) || (directory && Housekeeping.isLocalOnly(path)) {
             throw DriveError(EACCES, "macOS system folders are not stored on this drive")
         }
@@ -873,7 +878,7 @@ public final class Engine {
     }
     public func truncate(_ value: String, size: Int64) throws {
         let path = try canonicalPath(value)
-        try refuseIfOwnedElsewhere(path)
+        try refuseIfReadOnly(path)
         try withWritableJournal(path, cleansUp: true) { pending in
             guard size >= 0 else { throw DriveError(EINVAL, "Negative file size") }
             try ensureJournalSpace(0, drainable: true)
@@ -1264,7 +1269,7 @@ public final class Engine {
     }
     public func move(_ source: String, to destination: String) throws {
         let from = try canonicalPath(source), to = try canonicalPath(destination)
-        try refuseIfOwnedElsewhere(from)
+        try refuseIfReadOnly(from)
         if Housekeeping.isRefused(from) { throw DriveError(ENOENT, "No such file") }
         if Housekeeping.isRefused(to) { throw DriveError(EACCES, "macOS system folders are not stored on this drive") }
         let localFrom = Housekeeping.isLocalOnly(from), localTo = Housekeeping.isLocalOnly(to)
@@ -1295,7 +1300,7 @@ public final class Engine {
     }
     public func remove(_ value: String, directory: Bool) throws {
         let path = try canonicalPath(value)
-        try refuseIfOwnedElsewhere(path)
+        try refuseIfReadOnly(path)
         guard path != "/" else { throw DriveError(EBUSY, "Cannot remove the drive root") }
         if Housekeeping.staysLocal(path) {
             try lock.withLock {
@@ -1669,7 +1674,7 @@ public final class Engine {
         }
         let target = try canonicalPath((parent(path) == "/" ? "" : parent(path)) + "/" + name)
         guard target != path, !Housekeeping.staysLocal(target) else { throw DriveError(EINVAL, "Choose another name for your copy") }
-        try refuseIfOwnedElsewhere(target)
+        try refuseIfReadOnly(target)
         do { _ = try stat(target); throw DriveError(EEXIST, "Something named “\(name)” is already in this folder") }
         catch let error as DriveError where error.code == ENOENT {}
         do { guard try stat(parent(target)).kind == .directory else { throw DriveError(ENOTDIR, "The file’s folder is gone") } }
@@ -2248,12 +2253,17 @@ public final class Engine {
         return IndexBackupStatus(lastBackupNanoseconds: state.lastBackupAt, pendingSinceNanoseconds: state.firstChangeAt,
                                  lastError: state.lastError, lastErrno: state.lastErrno)
     }
-    /// Refuses a change once another Mac owns the drive. Housekeeping stays local, so it is
-    /// never refused.
-    private func refuseIfOwnedElsewhere(_ path: String) throws {
-        guard !Housekeeping.staysLocal(path), let owner = try ownedElsewhere(refresh: false) else { return }
+    /// Refuses a change while storage refuses this version of ParaAir (it couldn't upload, and the person should
+    /// update rather than pile up changes only this Mac has), and once another Mac owns the drive. Housekeeping stays
+    /// local, so it is never refused.
+    private func refuseIfReadOnly(_ path: String) throws {
+        guard !Housekeeping.staysLocal(path) else { return }
+        if backend.updateRequired() { throw DriveError(EROFS, Self.updateRequiredMessage) }
+        guard let owner = try ownedElsewhere(refresh: false) else { return }
         throw DriveError(EROFS, "This drive is now used on \(owner.ownerName ?? "another Mac"). It’s read-only on this Mac.")
     }
+    /// Starts with the service's own message, so ParaAirCloudOutcome reads it as `.updateRequired`.
+    static let updateRequiredMessage = ParaAirCloudErrorCode.clientTooOld.message + ". Until then, this drive is read-only on this Mac."
     /// Whether another Mac owns this drive. After 10 s, asks storage, which answers from its
     /// last check without the network; with `refresh`, storage reads the owner record now.
     /// Offline or unconnected, the saved answer stands. Changes are saved for other

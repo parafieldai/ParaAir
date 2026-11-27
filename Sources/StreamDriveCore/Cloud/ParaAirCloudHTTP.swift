@@ -44,6 +44,8 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
     let defaultTimeout: TimeInterval
     /// Fail-fast window after an offline-class transport failure; tests shorten it.
     var offlineBackoffInterval: TimeInterval = 5
+    /// What the service said about this version of ParaAir; a refused call gets its 426 again without the network.
+    var versionGate: ParaAirCloudVersionGate = .shared
     private let queue = DispatchQueue(label: "dev.streamdrive.cloud.http")
     private let lock = NSLock()
     private var session: URLSession!
@@ -59,6 +61,8 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
     private final class Pending {
         let limit: Int
         let route: String
+        /// For the version gate; never logged.
+        let path: String
         let probe: Bool
         var cancellation: ParaAirCloudCancellation?
         let started = DispatchTime.now()
@@ -68,9 +72,9 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
         /// Keeps the client alive until every started request has completed.
         var owner: ParaAirCloudHTTP?
         let signpost: OSSignpostIntervalState
-        init(limit: Int, route: String, probe: Bool, signpost: OSSignpostIntervalState,
+        init(limit: Int, route: String, path: String, probe: Bool, signpost: OSSignpostIntervalState,
              completion: @escaping (Result<Response, DriveError>) -> Void) {
-            self.limit = limit; self.route = route; self.probe = probe; self.signpost = signpost; self.completion = completion
+            self.limit = limit; self.route = route; self.path = path; self.probe = probe; self.signpost = signpost; self.completion = completion
         }
     }
 
@@ -242,6 +246,12 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
             lock.unlock()
             completion(.failure(ParaAirCloudCancellation.stopped(disposition: .attemptNotDispatched))); return nil
         }
+        // The service refused this version: the same answer, without asking again until the gate lets a call through.
+        if !versionGate.admits(baseURL, path: request.path) {
+            lock.unlock()
+            Self.logger.debug("\(route, privacy: .public) 426 without sending: this version is refused")
+            completion(.success(ParaAirCloudVersionGate.refusedResponse)); return nil
+        }
         var probe = false
         if let until = offlineUntil {
             if Date() < until || probeInFlight {
@@ -253,7 +263,7 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
         }
         let task = session.dataTask(with: urlRequest)
         let state = Self.signposter.beginInterval("request", id: Self.signposter.makeSignpostID())
-        let entry = Pending(limit: request.maxResponseBytes, route: route, probe: probe, signpost: state, completion: completion)
+        let entry = Pending(limit: request.maxResponseBytes, route: route, path: request.path, probe: probe, signpost: state, completion: completion)
         entry.owner = self
         entry.cancellation = request.cancellation
         pending[task.taskIdentifier] = entry
@@ -298,6 +308,7 @@ public final class ParaAirCloudHTTP: NSObject, URLSessionDataDelegate, @unchecke
         }
         let completion = state.completion; state.completion = nil; state.owner = nil
         lock.unlock()
+        if case .success(let response) = result { versionGate.answered(baseURL, path: state.path, status: response.status) }
         Self.signposter.endInterval("request", state.signpost)
         let milliseconds = (DispatchTime.now().uptimeNanoseconds - state.started.uptimeNanoseconds) / 1_000_000
         switch result {

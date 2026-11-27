@@ -25,6 +25,8 @@ struct CLIOutcome: Equatable {
     static let versionConflict = CLIOutcome(code: "version_conflict", exitCode: 16)
     /// No such file, version or conflict copy.
     static let notFound = CLIOutcome(code: "not_found", exitCode: 17)
+    /// ParaAir Cloud no longer accepts this version of ParaAir (426 `client_too_old`): update the app.
+    static let updateRequired = CLIOutcome(code: "update_required", exitCode: 18)
 
     static func of(_ error: Error) -> CLIOutcome {
         if error is CLIUsageError { return .usage }
@@ -33,6 +35,7 @@ struct CLIOutcome: Equatable {
         case .notSignedIn?: return .notSignedIn
         case .forbidden?: return .forbidden
         case .driveNotFound?: return .driveNotFound
+        case .updateRequired?: return .updateRequired
         case nil: return .failed
         }
     }

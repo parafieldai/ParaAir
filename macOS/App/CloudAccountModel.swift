@@ -100,6 +100,8 @@ final class CloudAccountModel: ObservableObject {
     private var deletionObservation: AnyCancellable?
     /// Set by the app so the sign-out confirmation counts uploads that are current.
     var refreshPendingUploads: (@MainActor () async -> UploadActivity?)?
+    /// Set by the app: Update ParaAir… (Sparkle's check, or the download page).
+    var updateApp: (@MainActor () -> Void)?
     /// Files not uploaded yet across the signed-in account's drives on this Mac, for the deletion sheet; nil while it is
     /// counted or when a drive couldn't be read (the sheet then shows its general warning).
     @Published private(set) var accountPendingUploads: Int?
@@ -433,7 +435,8 @@ final class CloudAccountModel: ObservableObject {
                 self.summaryState = .loaded; self.summaryLoadedAt = Date()
                 self.settlePendingCheckout()
             case .failure(let error):
-                self.log.error("cloud summary failed errno=\(Self.code(error))")
+                // Refused as too old: ParaAirCloudVersionGate logged it once and the home window says to update.
+                if !Self.isUpdateRequired(error) { self.log.error("cloud summary failed errno=\(Self.code(error))") }
                 self.summaryState = .failed
             }
         }
@@ -545,7 +548,7 @@ final class CloudAccountModel: ObservableObject {
             } catch {
                 guard signedInAccount == account, offerID == id else { return }
                 log.error("cloud billing offer failed errno=\(Self.code(error))")
-                offer = .failed(Self.message(error))
+                offer = .failed(Self.billingMessage(error))
             }
         }
     }
@@ -576,7 +579,7 @@ final class CloudAccountModel: ObservableObject {
                 if signedInAccount == account, case .loading(let current) = quote, current == selection { offer = .loaded(value) }
             } catch {
                 log.error("cloud billing terms failed errno=\(Self.code(error))")
-                outcome = .failed(selection, Self.message(error))
+                outcome = .failed(selection, Self.billingMessage(error))
             }
             guard signedInAccount == account, case .loading(let current) = quote, current == selection else { return }
             quote = outcome
@@ -611,7 +614,7 @@ final class CloudAccountModel: ObservableObject {
             } catch {
                 guard signedInAccount == account, checkoutID == id else { return }
                 log.error("cloud checkout failed errno=\(Self.code(error))")
-                checkout = .failed(Self.message(error))
+                checkout = .failed(Self.billingMessage(error))
                 // 409 disclosure_outdated: show the service's new text, which must be agreed to again.
                 if (error as? DriveError)?.code == ESTALE { loadQuote(request.selection, force: true) }
             }
@@ -675,7 +678,7 @@ final class CloudAccountModel: ObservableObject {
             } catch {
                 guard signedInAccount == account else { return }
                 log.error("cloud billing portal failed errno=\(Self.code(error))")
-                message = Self.message(error)
+                message = Self.billingMessage(error)
             }
         }
     }
@@ -827,6 +830,20 @@ final class CloudAccountModel: ObservableObject {
         if let error = error as? DriveError { return sentence(error.localizedDescription) }
         return "ParaAir Cloud couldn’t finish that. Try again."
     }
+
+    /// A plan, checkout or billing-portal call: the service may refuse this version for billing alone
+    /// (`MIN_CLIENT_VERSION_BILLING`), while files keep working.
+    nonisolated static func billingMessage(_ error: Error) -> String {
+        guard isUpdateRequired(error), ParaAirCloudVersionGate.shared.refusal() != .service else { return message(error) }
+        return updateForBilling
+    }
+    nonisolated static let updateForBilling = "Update ParaAir to choose or change a plan. Your files keep working meanwhile."
+
+    /// A message from `message` or `billingMessage` that asks for an update, for a sheet to offer Update ParaAir….
+    nonisolated static func asksForUpdate(_ message: String) -> Bool { message.hasPrefix("Update ParaAir") }
+
+    /// ParaAir Cloud refused this version of ParaAir (426 `client_too_old`).
+    nonisolated static func isUpdateRequired(_ error: Error) -> Bool { ParaAirCloudOutcome.of(error) == .updateRequired }
 
     /// Core messages are short phrases; shown alone they read as sentences.
     nonisolated private static func sentence(_ text: String) -> String {

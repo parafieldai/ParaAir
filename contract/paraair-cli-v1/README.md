@@ -306,8 +306,11 @@ Exit codes:
 | 15 | `not_mounted` | The path isn't on a mounted ParaAir drive, or no known profile is mounted there |
 | 16 | `version_conflict` | The file's current version isn't the expected one |
 | 17 | `not_found` | No such file, version, conflict copy, service credential or member (`versions`, `cat-version`, `restore-version`, `conflict-info`, `credentials revoke`, `members role`, `members remove`) |
+| 18 | `update_required` | ParaAir Cloud no longer accepts this version of ParaAir: update the app (Check for Updates… in ParaAir, or the download page), then run the command again |
 
-11, 12 and 14 can come from any command that talks to the service. New codes may be added within v1.
+11, 12, 14 and 18 can come from any command that talks to the service. New codes may be added within v1.
+
+`changes --follow` ends with 18 too; it doesn't wait it out. While ParaAir Cloud refuses the app's version, its mounted drives stay mounted and read-only: files already on this Mac open, new changes are refused (EROFS), and changes made earlier wait and upload once ParaAir is updated.
 
 With `--json`, a failure prints this to standard output, and the process exits with `exitCode`:
 

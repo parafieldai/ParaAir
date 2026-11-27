@@ -294,6 +294,16 @@ final class CLIApplicationTests: XCTestCase {
         XCTAssertTrue(try ProfileStore(root: fresh.root).list().isEmpty)
     }
 
+    /// ParaAir Cloud refusing this version (426 client_too_old), and a mounted drive refusing a change while it does, are
+    /// exit 18 `update_required` (contract/paraair-cli-v1), so another app can say to update instead of waiting.
+    func testRefusedAppVersionIsExit18() {
+        let refused = DriveError(ENOTSUP, "Update ParaAir to keep using ParaAir Cloud (request req_TEST)", disposition: .attemptNotDispatched)
+        XCTAssertEqual(CLIOutcome.of(refused), CLIOutcome(code: "update_required", exitCode: 18))
+        let readOnly = DriveError(EROFS, "Update ParaAir to keep using ParaAir Cloud. Until then, this drive is read-only on this Mac.")
+        XCTAssertEqual(CLIOutcome.of(readOnly), .updateRequired)
+        XCTAssertEqual(CLIOutcome.of(DriveError(ENOTSUP, "Only ParaAir Cloud drives have a change feed")), .failed)
+    }
+
     func testCloudConnectRejectsBYOFlags() throws {
         let fixture = try cloudFixture()
         let app = CLIApplication(environment: ["STREAMDRIVE_HOME": fixture.root.path], dependencies: fixture.dependencies)

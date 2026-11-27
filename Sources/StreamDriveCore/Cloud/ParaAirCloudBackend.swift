@@ -87,6 +87,12 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
         try api().stat(driveID: driveID, path: canonicalPath(path))
     }
 
+    /// The service refused this version for its file calls (ParaAirCloudVersionGate), as this process last heard.
+    public func updateRequired() -> Bool {
+        guard let api = lock.withLock({ apiInstance }) else { return false }
+        return api.http.versionGate.refusal(for: api.http.baseURL) == .service
+    }
+
     /// Every page, deduplicated by path (the last one wins).
     public func list(_ path: String) throws -> [FileEntry] {
         let path = try canonicalPath(path), api = try api()

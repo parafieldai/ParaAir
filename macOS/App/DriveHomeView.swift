@@ -74,6 +74,7 @@ extension MenuModel {
             ownedElsewhere: profile == nil ? nil : driveNotices?.ownedElsewhere.map { $0.ownerName ?? "another Mac" },
             cloudUsage: profile?.backend == .paraairCloud && cloudAccount.signedInAccount != nil ? cloudAccount.usage : nil,
             updateTitle: updater.pendingUpdateTitle,
+            cloudUpdateRequired: cloudUpdateRequired,
             otherDrives: others)
     }
 
@@ -118,6 +119,7 @@ extension MenuModel {
             case .showOtherCopies: self.showOtherCopies()
             // Only another folder's drive can be removed (the drive closure below handles it).
             case .removeFromList: break
+            case .updateApp: self.updateApp()
             }
         }
         return HomeActions(

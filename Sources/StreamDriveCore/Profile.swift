@@ -468,6 +468,8 @@ private final class LazyProfileBackend: StorageBackend {
     func backupIndex(replacing previous: String?) throws -> String? { try withBackend { try $0.backupIndex(replacing: previous) } }
     /// Only from a connected backend: asking must never open a connection.
     func ownership(refresh: Bool) throws -> StorageOwnership? { try lock.withLock { connected }?.ownership(refresh: refresh) }
+    /// Only from a connected backend: one not connected hasn't been answered.
+    func updateRequired() -> Bool { lock.withLock { connected }?.updateRequired() ?? false }
     func collaboration() throws -> DriveCollaboration? { try withBackend { try $0.collaboration() } }
     func close() throws {
         lock.lock(); closed = true; let backend = connected; connected = nil; lock.unlock()

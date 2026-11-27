@@ -185,7 +185,12 @@ struct CloudPlanSheet: View {
                 HStack {
                     Spacer()
                     Button("Cancel", role: .cancel) { model.closePlans() }.keyboardShortcut(.cancelAction)
-                    Button("Try Again") { model.loadOffer() }.keyboardShortcut(.defaultAction)
+                    // Refused as too old: trying again gets the same answer; updating is what helps.
+                    if CloudAccountModel.asksForUpdate(message), let update = model.updateApp {
+                        Button(HomePresentation.updateActionTitle) { model.closePlans(); update() }.keyboardShortcut(.defaultAction)
+                    } else {
+                        Button("Try Again") { model.loadOffer() }.keyboardShortcut(.defaultAction)
+                    }
                 }
             } else {
                 HStack(spacing: 10) {
