@@ -82,6 +82,44 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const push = Math.pow(1 - d / reach, 2) * 22 * scale;
     return [(dx / (d || 1)) * push, (dy / (d || 1)) * push];
   };
+  // While the plane waits, the prints part around it (and around the hint beside it) so they sit on open paper: each
+  // print overlapping the obstacle moves away from it, just far enough to clear it. The direction is chosen when the
+  // print first overlaps (away from the obstacle's centre, or straight down when the centres meet) and kept while it
+  // overlaps, so a print dragged through the middle doesn't flip across the pocket. The pocket closes as the plane flies.
+  const escapeOf = (tile, x, y, w, h, cx, cy) => {
+    if (!tile.esc) {
+      const dx = x + w / 2 - cx, dy = y + h / 2 - cy, d = Math.hypot(dx, dy);
+      tile.esc = d > 1 ? [dx / d, dy / d] : [0, 1];
+    }
+    return tile.esc;
+  };
+  const pushUntil = (clear, reach) => {
+    if (clear(0)) return 0;
+    let lo = 0, hi = reach;
+    for (let i = 0; i < 16; i++) { const mid = (lo + hi) / 2; if (clear(mid)) hi = mid; else lo = mid; }
+    return hi;
+  };
+  const clearOf = (tile, x, y, w, h, c, r) => {
+    const gapAt = (dx, dy, s) => {
+      const nx = Math.max(x + dx * s, Math.min(c[0], x + dx * s + w)), ny = Math.max(y + dy * s, Math.min(c[1], y + dy * s + h));
+      return Math.hypot(nx - c[0], ny - c[1]);
+    };
+    if (gapAt(0, 0, 0) >= r) { tile.esc = null; return [0, 0]; }
+    const [dx, dy] = escapeOf(tile, x, y, w, h, c[0], c[1]);
+    const s = pushUntil((k) => gapAt(dx, dy, k) >= r, 2 * r + w + h);
+    return [dx * s, dy * s];
+  };
+  const clearBox = (tile, x, y, w, h, b) => {
+    const hits = (dx, dy, s) => x + dx * s < b[2] && x + dx * s + w > b[0] && y + dy * s < b[3] && y + dy * s + h > b[1];
+    if (!hits(0, 0, 0)) { tile.esc = null; return [0, 0]; }
+    const [dx, dy] = escapeOf(tile, x, y, w, h, (b[0] + b[2]) / 2, (b[1] + b[3]) / 2);
+    const s = pushUntil((k) => !hits(dx, dy, k), w + h + (b[2] - b[0]) + (b[3] - b[1]));
+    return [dx * s, dy * s];
+  };
+  let hintEl = null, hintBox = null, soundEl = null;
+  // The pocket rests while the reader drags the canvas (and while it glides on): prints then move with the hand and
+  // never jump across it. Once the canvas is still it eases back in, and the prints ease out of the way.
+  let pocketK = 1;
 
   // ------------------------------------------------------------------ the plan: when each print lifts off, and its particles
   const sampleTile = (tile, cols, rows) => {
@@ -205,7 +243,7 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     // A little rise and fall in the air as it goes, which settles as it lands.
     const bob = Math.sin(t * 2.1) * 5 * (1 - landed);
     const px = world[0] - view[0], py = world[1] - view[1] + bob;
-    const scale = lerp(fit * lerp(0.95, 1.2, smooth(T.fly, T.fly + 2, t)), landScale, smooth(T.cam1 - 1.4, T.touch, t));
+    const scale = lerp(fit * lerp(1.1, 1.2, smooth(T.fly, T.fly + 2, t)), landScale, smooth(T.cam1 - 1.4, T.touch, t));
     const aim = 1 - smooth(T.touch - 1.3, T.touch - 0.1, t);
     const h0 = headingAt(t - 0.16), h1 = headingAt(t + 0.16);
     const bank = clamp(Math.atan2(Math.sin(h1 - h0), Math.cos(h1 - h0)) * 90, -24, 24) * aim;
@@ -216,6 +254,36 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const rot = (((want + 540) % 360) - 180) * aim;
     planeWrap.style.opacity = shown.toFixed(3);
     planeWrap.style.transform = `translate3d(${(px - SIZE / 2).toFixed(1)}px,${(py - SIZE / 2).toFixed(1)}px,0) rotate(${rot.toFixed(2)}deg) scale(${scale.toFixed(3)})`;
+    // Waiting for the reader, the plane leans forward now and then along its nose (hero.css, .is-waiting), and the scroll
+    // hint sits right beside it (below it when there's no room on the right), so the next step is next to its subject.
+    const waiting = shown > 0.6 && t < 0.35;
+    planeWrap.classList.toggle("is-waiting", waiting);
+    if (waiting) { planeWrap.style.setProperty("--hx-nx", Math.cos(nose).toFixed(3)); planeWrap.style.setProperty("--hx-ny", Math.sin(nose).toFixed(3)); }
+    const pocketR = SIZE * scale * 0.55 + 22 * fit;
+    if (!hintEl) hintEl = hero.querySelector(".hx-hint");
+    if (!soundEl) soundEl = stage.querySelector(".hx-sound");
+    hintBox = null;
+    // Placed (and cleared around) for as long as the pocket is open, so prints settle back smoothly after the hint
+    // fades; it is hidden from 0.35 on.
+    if (hintEl && t < 0.6) {
+      const hw = hintEl.offsetWidth, hh = hintEl.offsetHeight, m = 16, side = pocketR * 0.95;
+      // The first of right of the plane, below it and above it that stays on the visible screen (on a short one the
+      // stage, 560 px at least, is taller than the window), clear of the header bar and of the sound button; failing
+      // all three, the right-hand spot held on screen.
+      const bottom = Math.min(VH, window.innerHeight) - m, top = 76;
+      const st = stage.getBoundingClientRect(), sb = soundEl ? soundEl.getBoundingClientRect() : null;
+      const sound = sb && sb.width ? [sb.left - st.left - 8, sb.top - st.top - 8, sb.right - st.left + 8, sb.bottom - st.top + 8] : null;
+      const centred = clamp(px - hw / 2, m, W - m - hw);
+      const spots = [[px + side, py - hh / 2], [centred, py + side], [centred, py - side - hh]];
+      const fits = ([x, y]) => x >= m && x + hw <= W - m && y >= top && y + hh <= bottom
+        && !(sound && x < sound[2] && x + hw > sound[0] && y < sound[3] && y + hh > sound[1]);
+      let [hx, hy] = spots.find(fits) || spots[0];
+      hx = clamp(hx, m, Math.max(m, W - m - hw));
+      hy = clamp(hy, m, Math.max(m, bottom - hh));
+      hintEl.style.left = "0px"; hintEl.style.top = "0px"; hintEl.style.bottom = "auto";
+      hintEl.style.transform = `translate3d(${hx.toFixed(1)}px,${hy.toFixed(1)}px,0)`;
+      hintBox = [hx - 14, hy - 14, hx + hw + 14, hy + hh + 14];
+    }
 
     // No words to begin with: the headline appears only once the plane has landed. Until then it can't be clicked,
     // but it stays in the page for screen readers, and a key that puts focus in it shows it at once (on a card while
@@ -231,14 +299,25 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const prevWorld = F.planeWorld(t - 0.14);
     const prevPlane = [prevWorld[0] - view[0], prevWorld[1] - view[1]];
     const flying = t < T.touch - 0.4;
+    const pocket = (1 - smooth(0.04, 0.6, t)) * pocketK;
     for (const tile of tiles) {
       const [sx, sy] = tileAt(tile, view);
       tile.sx = sx; tile.sy = sy;
-      let ox = 0, oy = 0;
+      let ox = 0, oy = 0, kx = 0, ky = 0;
+      if (pocketK < 0.01) tile.esc = null;
+      if (pocket > 0.001) {
+        // With the hint showing, one box holding both the plane's circle and the hint is cleared, so a print moved off
+        // one can never be moved back onto the other.
+        const q = hintBox
+          ? clearBox(tile, sx, sy, tile.w, tile.h, [Math.min(px - pocketR, hintBox[0]), Math.min(py - pocketR, hintBox[1]), Math.max(px + pocketR, hintBox[2]), Math.max(py + pocketR, hintBox[3])])
+          : clearOf(tile, sx, sy, tile.w, tile.h, [px, py], pocketR);
+        kx = q[0] * pocket; ky = q[1] * pocket;
+      }
       if (flying) {
         const a = wakeOf(sx + tile.w / 2, sy + tile.h / 2, Math.max(tile.w, tile.h), [px, py], scale);
         const b = wakeOf(sx + tile.w / 2, sy + tile.h / 2, Math.max(tile.w, tile.h), prevPlane, scale);
-        ox = (a[0] + b[0]) * 0.6; oy = (a[1] + b[1]) * 0.6;
+        // The wake's nudge fades in as the pocket closes, so it never pushes a print back into the open pocket.
+        ox = (a[0] + b[0]) * 0.6 * (1 - pocket); oy = (a[1] + b[1]) * 0.6 * (1 - pocket);
       }
       const appear = smooth(tile.enter * 0.5, tile.enter * 0.5 + 0.6, shown * 1.0);
       const f = p && p.fade.has(tile) ? p.fade.get(tile) : Infinity;
@@ -250,7 +329,7 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
       const near = alpha >= 0.005 && sx + tile.w > -160 && sx < W + 160 && sy + tile.h > -160 && sy < VH + 160;
       if (near && !tile.loaded) loadMedia(tile);
       playMedia(tile, shows && visible && !still.matches);
-      tile.el.style.transform = `translate3d(${(sx + ox).toFixed(1)}px,${(sy + oy).toFixed(1)}px,0) rotate(${(ox * 0.05).toFixed(2)}deg) scale(${(0.95 + 0.05 * appear - 0.03 * gone).toFixed(3)})`;
+      tile.el.style.transform = `translate3d(${(sx + ox + kx).toFixed(1)}px,${(sy + oy + ky).toFixed(1)}px,0) rotate(${(ox * 0.05).toFixed(2)}deg) scale(${(0.95 + 0.05 * appear - 0.03 * gone).toFixed(3)})`;
     }
 
     // Where the plane has been, kept in the world so it streams away behind it as the canvas moves.
@@ -368,13 +447,16 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     // movement; there is no speed limit, so the story never trails behind the scroll or plays on after it stops.
     const goal = target();
     const before = t;
+    const pocketWant = grab || vel[0] || vel[1] ? 0 : 1;
+    pocketK += (pocketWant - pocketK) * (1 - Math.exp(-dt / 0.12));
+    if (Math.abs(pocketWant - pocketK) < 0.002) pocketK = pocketWant;
     t += (goal - t) * (1 - Math.exp(-dt / 0.09));
     if (Math.abs(goal - t) < 0.002) t = goal;
     const shown = smooth(0, 1.1, (now - start) / 1000);
     render(t, shown);
     cue(before, t);
     // Stop drawing once everything has come to rest; a scroll, a drag or a resize starts it again.
-    const busy = t !== goal || shown < 1 || grab || vel[0] || vel[1];
+    const busy = t !== goal || shown < 1 || grab || vel[0] || vel[1] || pocketK !== pocketWant;
     raf = busy && visible && !still.matches ? requestAnimationFrame(frame) : 0;
   };
   // The sound effects follow the story forwards only: a print lifting off, the stream reaching the lid, the plane
@@ -407,6 +489,7 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     ctx.clearRect(0, 0, W, VH);
     copy.style.opacity = ""; copy.style.transform = ""; copy.style.pointerEvents = ""; copy.inert = false; copy.classList.remove("hx-card");
     drawPlane(REST_POSE);
+    planeWrap.classList.remove("is-waiting");
     planeWrap.style.opacity = "1";
     planeWrap.style.transform = `translate3d(${(rest[0] - SIZE / 2).toFixed(1)}px,${(rest[1] - SIZE / 2).toFixed(1)}px,0) scale(${landScale.toFixed(3)})`;
     store.set({ phase: "demo", arrived: 1, still: true, chapter: 0, hint: 0 });
