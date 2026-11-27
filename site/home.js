@@ -74,7 +74,7 @@
     },
   };
 
-  // The ParaAir mark's faces (scripts/site-logo.mjs), far to near, in a 100-unit box.
+  // The ParaAir mark's faces (the paper plane in logo-mark.svg), far to near, in a 100-unit box.
   const PLANE = [["wingLit", [[93.6, 4], [40.2, 81.1], [6.4, 81.2]]], ["keelLit", [[83.9, 20.7], [40.2, 81.1], [55.1, 96]]], ["wing", [[93.6, 4], [60.8, 76.5], [40.2, 81.1]]]];
   const PAPER_TONES = { wingLit: '#FFFFFF', wing: '#D3D5D9', keelLit: '#5B5F67' };
 
@@ -331,7 +331,7 @@
     let built = false, timer = 0, total = 0;
     const build = () => {
       built = true;
-      let n = 1186;
+      let n = 1312;
       ['2025', '2024', '2022', '2021', '2019'].forEach((year, k) => {
         const label = document.createElement('p'); label.className = 'archive-year'; label.textContent = year;
         const grid = document.createElement('div'); grid.className = 'photo-grid';
@@ -340,7 +340,7 @@
           const cell = document.createElement('span');
           const img = new Image(w, h); img.src = src; img.alt = ''; img.loading = 'lazy'; img.decoding = 'async';
           const cloud = document.createElement('i'); cloud.className = 'cloud';
-          const name = document.createElement('b'); name.textContent = `DSC_${String(n).padStart(4, '0')}.ARW`; n += 3 + ((i * 5) % 7);
+          const name = document.createElement('b'); name.textContent = `IMG_${String(n).padStart(4, '0')}.CR3`; n += 3 + ((i * 5) % 7);
           cell.append(img, cloud, name); grid.append(cell);
         }
         archive.append(label, grid);
@@ -576,6 +576,15 @@
     start();
   }
 
+  // -------------------------------------------------------------------------------------------- posters
+  // The clips below the first screen fetch their poster frame only as they come near, so the first load stays light.
+  const posters = [...document.querySelectorAll('video[data-poster]')];
+  const setPoster = (v) => { if (!v.poster) v.poster = v.dataset.poster; };
+  if ('IntersectionObserver' in window) {
+    const near = new IntersectionObserver((entries) => entries.forEach((e) => { if (e.isIntersecting) { setPoster(e.target); near.unobserve(e.target); } }), { rootMargin: '600px 0px' });
+    posters.forEach((v) => near.observe(v));
+  } else posters.forEach(setPoster);
+
   // -------------------------------------------------------------------------------------------- reveals
   if (!still.matches && 'IntersectionObserver' in window) {
     const fold = window.innerHeight * 0.92;
@@ -592,6 +601,11 @@
       el.style.transitionDelay = `${Math.min(siblings.indexOf(el), 4) * 70}ms`;
       el.classList.add('will-reveal');
       seen.observe(el);
+    });
+    // Anything that takes focus shows at once, so a key never lands on something still faded out.
+    document.addEventListener('focusin', (e) => {
+      const el = e.target.closest && e.target.closest('.will-reveal:not(.is-in)');
+      if (el) { el.style.transitionDelay = '0ms'; el.classList.add('is-in'); seen.unobserve(el); }
     });
   }
 })();

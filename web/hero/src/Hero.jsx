@@ -10,30 +10,22 @@ import { createSound } from "./sound.js";
 
 const sound = createSound();
 
-// Sound is on unless the reader turned it off before. It tries to start with the page; if the browser holds it back,
-// the button says so and the first click, tap or key anywhere starts it. The button stays in the corner of the page.
-function SoundButton() {
+// Sound is off until the reader presses this button, and only this button turns it on: nothing else on the page
+// (a click, a tap, a key, Tab) starts it, and the music file isn't fetched before then. It sits in the hero's corner
+// and leaves with the hero.
+function SoundButton({ stage }) {
   const [state, setState] = useState({ on: sound.on, audible: sound.audible });
   useEffect(() => sound.subscribe(setState), []);
-  useEffect(() => {
-    let off = false;
-    try { off = localStorage.getItem("airspace-sound") === "off"; } catch (e) { off = false; }
-    if (!off) sound.toggle(true);
-    const go = (e) => { if (e.target.closest && e.target.closest(".hx-sound")) return; sound.kick(); };
-    const opts = { capture: true };
-    window.addEventListener("pointerdown", go, opts); window.addEventListener("keydown", go, opts); window.addEventListener("touchend", go, opts);
-    return () => { window.removeEventListener("pointerdown", go, opts); window.removeEventListener("keydown", go, opts); window.removeEventListener("touchend", go, opts); };
-  }, []);
   const waiting = state.on && !state.audible;
-  const click = () => { if (waiting) sound.kick(); else sound.toggle(!state.on); };
-  const label = !state.on ? "Sound off" : waiting ? "Click for sound" : "Sound on";
+  const click = () => sound.toggle(!state.on);
+  const label = state.on ? "Sound on" : "Sound off";
   return createPortal(
-    <button type="button" className={`hx-sound${state.on ? " is-on" : ""}${waiting ? " is-waiting" : ""}`} aria-pressed={state.on && !waiting} onClick={click}>
+    <button type="button" className={`hx-sound${state.on ? " is-on" : ""}${waiting ? " is-waiting" : ""}`} aria-pressed={state.on} onClick={click}>
       <svg viewBox="0 0 20 20" aria-hidden="true"><path className="spk" d="M3.5 7.5h2.6L10 4.4v11.2l-3.9-3.1H3.5z" /><path className="wave w1" d="M12.6 7.6a3.3 3.3 0 0 1 0 4.8" /><path className="wave w2" d="M14.8 5.6a6.2 6.2 0 0 1 0 8.8" /><path className="mute" d="M12.8 7.8l4 4.4M16.8 7.8l-4 4.4" /></svg>
       <span className="hx-sound-bars" aria-hidden="true"><i /><i /><i /></span>
       <span>{label}</span>
     </button>,
-    document.body,
+    stage,
   );
 }
 
@@ -41,7 +33,7 @@ function SoundButton() {
 const CHAPTERS = [
   null,
   { k: "01", h: "Your work lives in your bucket.", p: "Footage, photos and projects, however big they get." },
-  { k: "02", h: "AirSpace carries it to your Mac.", p: "Without downloading it first." },
+  { k: "02", h: "ParaAir carries it to your Mac.", p: "Without downloading it first." },
   { k: "03", h: "It lands as a drive.", p: "Every file in Finder. Only the pieces you open come down." },
 ];
 
@@ -63,16 +55,10 @@ function Captions() {
   );
 }
 
-function Video({ tile }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    const v = ref.current;
-    if (!v) return;
-    v.muted = true;
-    const p = v.play();
-    if (p && p.catch) p.catch(() => {});
-  }, []);
-  return <video ref={ref} src={tile.src} poster={tile.poster} muted loop playsInline autoPlay preload="auto" draggable={false} />;
+// The picture and the clip get their sources from engine.js once the print comes near the screen, and a clip plays
+// only while its print shows.
+function Video() {
+  return <video muted loop playsInline preload="none" draggable={false} />;
 }
 
 const LINES = (n, from = 0) => Array.from({ length: n }, (_, i) => <i key={i + from} className={`ln ln-${(i + from) % 4}`} />);
@@ -127,8 +113,8 @@ function Tile({ tile, refFn }) {
   return (
     <div className={`hx-tile hx-${tile.kind}`} ref={refFn} style={{ width: tile.w }}>
       <div className="hx-media" style={{ height: tile.h }}>
-        {tile.kind === "photo" && <img src={tile.src} alt="" decoding="async" draggable={false} />}
-        {tile.kind === "video" && <Video tile={tile} />}
+        {tile.kind === "photo" && <img alt="" decoding="async" draggable={false} />}
+        {tile.kind === "video" && <Video />}
         {tile.kind === "doc" && <Doc tile={tile} />}
       </div>
     </div>
@@ -160,7 +146,7 @@ export function Hero({ hero, mac }) {
       <canvas className="hx-fx" ref={canvas} aria-hidden="true" />
       <div className="hx-plane" ref={planeWrap} aria-hidden="true"><svg ref={planeSvg} /></div>
       <Captions />
-      <SoundButton />
+      <SoundButton stage={stage} />
     </>
   );
 }

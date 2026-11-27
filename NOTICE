@@ -5,3 +5,7 @@ This product includes software built on JuiceFS
 (https://github.com/juicedata/juicefs), licensed under the Apache License,
 Version 2.0. scripts/build-juicefs.sh downloads a pinned JuiceFS release,
 verifies its checksum and applies ParaAir's patches at build time.
+
+The website (site/) also uses photos from Unsplash, video clips from Mixkit, the
+music "Dreamer" by Kevin MacLeod (CC BY 4.0) and the Fredoka font (SIL Open Font
+License 1.1). site/media/CREDITS.md lists each file, its source and its licence.

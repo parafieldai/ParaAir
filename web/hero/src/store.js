@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 
 const listeners = new Set();
-let state = { phase: "idle", arrived: 0, run: 0, still: false, chapter: 0, hint: 1 };
+let state = { phase: "idle", arrived: 0, run: 0, still: false, chapter: 0, hint: 1, inView: true };
 
 export const store = {
   get: () => state,

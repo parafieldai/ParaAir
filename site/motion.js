@@ -6,7 +6,7 @@
   const root = document.documentElement;
   const css = (name) => getComputedStyle(root).getPropertyValue(name).trim();
   const clamp = (v, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, v));
-  // The ParaAir mark (scripts/site-logo.mjs): a folded dart's three faces in a 100-unit box, far to near.
+  // The ParaAir mark (the paper plane in site/logo-mark.svg): a folded dart's three faces in a 100-unit box, far to near.
   const MARK = [["wingLit", [[93.6, 4], [40.2, 81.1], [6.4, 81.2]]], ["keelLit", [[83.9, 20.7], [40.2, 81.1], [55.1, 96]]], ["wing", [[93.6, 4], [60.8, 76.5], [40.2, 81.1]]]];
 
   // The mark drawn once into a small canvas, nose pointing along +x, so each frame only stamps it.

@@ -1,6 +1,5 @@
 /* ParaAir landing page. Light paper only: paper and ink, black and white, and the black-and-white ParaAir plane.
  * The paintings (home.js) and the photos are the colour on the page; everything else stays in paper and ink.
- * Fig 1 is drawn with the Anatomy isometric kit; its .iso-* rules are at the end, set for paper.
  */
 
 /* Fredoka, hosted with the site (SIL Open Font License): one variable font, weights 300 to 700. */
@@ -19,7 +18,7 @@
   --white: #FFFFFF;
   --ink: #141518;
   --ink-2: #5B5F67;
-  --ink-3: #8D9098;
+  --ink-3: #575B63; /* 6.2:1 on paper, 5.8:1 on paper-2: WCAG AA, with room over the paintings */
   --rule: rgb(20 21 24 / 0.08);
   --rule-2: rgb(20 21 24 / 0.13);
   --sage: #9AC7B4;
@@ -47,7 +46,7 @@
 *, *::before, *::after { box-sizing: border-box; }
 /* Pictures of macOS (Finder, QuickTime, the editor, the terminal, the drawn Mac screen) keep the Mac's own font. */
 .finder, .win, .st-screen, .story-over { --font: var(--mac); --display: var(--mac); font-family: var(--mac); }
-html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: 88px; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: 88px; scroll-padding-bottom: 40px; }
 html, body { overflow-x: clip; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 body {
@@ -81,13 +80,13 @@ code { font-family: var(--mono); font-size: 0.9em; }
   width: min(calc(100% - 24px), 720px);
   padding: 7px 7px 7px 16px;
   border-radius: 999px;
-  background: rgb(251 250 247 / 0.72);
+  background: rgb(251 250 247 / 0.94); /* opaque enough for AA text over the hero's photos */
   box-shadow: 0 0 0 1px rgb(20 21 24 / 0.07), 0 10px 30px -18px rgb(40 36 28 / 0.4);
   backdrop-filter: saturate(1.6) blur(18px);
   -webkit-backdrop-filter: saturate(1.6) blur(18px);
 }
 .brand { display: inline-flex; align-items: center; gap: 9px; text-decoration: none; font-weight: 600; letter-spacing: -0.005em; }
-.brand-mark { width: 22px; height: 22px; }
+.brand-mark { flex: none; width: 22px; height: 22px; }
 .bar-nav { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 .bar-nav a { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 999px; color: var(--ink-2); font-size: 15px; text-decoration: none; transition: color 0.2s, background-color 0.2s; }
 .bar-nav a:hover { color: var(--ink); background: rgb(20 21 24 / 0.05); }
@@ -405,7 +404,7 @@ h2 { font-size: clamp(34px, 1.2rem + 3.4vw, 60px); line-height: 1.02; letter-spa
 }
 @media (prefers-reduced-motion: reduce) { .key, .feature h3 { transition: none; } .feature:hover h3 { transform: none; } }
 
-/* ---------------------------------------------------------------- compare: AirSpace beside the other streaming drives */
+/* ---------------------------------------------------------------- compare: ParaAir beside the other streaming drives */
 .compare { max-width: calc(var(--max) + 2 * var(--gutter)); margin: 0 auto; padding: var(--section) var(--gutter) 0; }
 .compare-head { display: grid; gap: 14px; max-width: 44rem; margin-bottom: clamp(28px, 4vw, 48px); }
 .compare-card { padding: clamp(6px, 1.2vw, 14px); border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow-soft); }

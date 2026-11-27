@@ -1,4 +1,4 @@
-// Mounts the hero: one React root for the canvas layer, one for the MacBook's screen.
+// Mounts the hero: one React root for the canvas layer, one for the laptop's screen.
 // Without this script the page still reads: the headline, the buttons, and the Mac showing the drive in Finder.
 import { createRoot } from "react-dom/client";
 import { Hero } from "./Hero.jsx";

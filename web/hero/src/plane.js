@@ -1,4 +1,4 @@
-// The ParaAir paper dart in 3D (the same model as scripts/site-logo.mjs), re-projected through the Anatomy kit's
+// The ParaAir paper dart in 3D (the same model as site/logo-mark.svg), re-projected through an
 // isometric camera on every frame. Faces are shaded by how squarely they meet the light, so nothing pops as the plane
 // banks and turns; outer corners are rounded and outer edges bowed, folds stay straight.
 

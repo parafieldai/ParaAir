@@ -1,8 +1,6 @@
-// The hero's sound, on by default. It starts as the page opens where the browser allows that (Chrome does on a site
-// the reader has used before); otherwise it starts with the reader's first click, tap or key. The reader can turn it
-// off, and that is remembered.
-// Music: "Dreamer" by Kevin MacLeod (incompetech.com), CC BY 4.0, trimmed to a two-minute loop (media/music-dreamer.m4a),
-// loaded only when sound is first turned on. The effects are made here with Web Audio, no files:
+// The hero's sound, off until the reader turns it on with the sound button (Hero.jsx). Nothing else starts it.
+// Music: "Dreamer" by Kevin MacLeod (incompetech.com), CC BY 4.0, trimmed to a two-minute loop with fades
+// (media/music-dreamer.m4a), fetched only when sound is first turned on. The effects are made here with Web Audio, no files:
 //   lift   a print coming apart into particles: a short shimmer of soft high notes over a breath of air
 //   pour   the stream reaching the Mac: one low, soft swell you feel more than hear, then grains like fine sand
 //   land   the plane touching down on the lid: a small soft tap
@@ -67,7 +65,7 @@ export function createSound() {
     get on() { return on; },
     get audible() { return audible(); },
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-    // Ask the browser to start (or carry on) the sound; it may say not yet, until the reader clicks or presses a key.
+    // Start (or carry on) the sound; called from the sound button's click, so the browser allows it.
     kick() {
       if (!on || !ctx) return;
       if (ctx.state !== "running") { const r = ctx.resume(); if (r && r.catch) r.catch(() => {}); }
@@ -87,7 +85,6 @@ export function createSound() {
         master.gain.cancelScheduledValues(now); master.gain.setValueAtTime(master.gain.value, now); master.gain.linearRampToValueAtTime(0, now + 0.5);
         setTimeout(() => { if (!on && music) music.pause(); }, 600);
       } else on = false;
-      try { localStorage.setItem("airspace-sound", on ? "on" : "off"); } catch (e) { /* not kept */ }
       tell();
     },
     // A print coming apart. `size` 0..1, how big it is.

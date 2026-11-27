@@ -1,4 +1,4 @@
-// What the MacBook's screen shows: the ParaAir drive open in Finder, filling with the files as the plane's wake pours
+// What the laptop's screen shows: the ParaAir drive open in Finder, filling with the files as the plane's wake pours
 // onto the Mac, then a loop: the pointer opens a 27 GB clip and it plays at once in QuickTime; the ParaAir menu bar
 // panel drops down (the app's real panel); and back. Everything stays inside the screen. Sizes are in container
 // units (cqw, a hundredth of the screen's width), so it scales with the Mac. The icons are the page's own sprite.
@@ -26,6 +26,7 @@ export function MacDemo() {
   const arrived = useHero((s) => s.arrived);
   const still = useHero((s) => s.still);
   const run = useHero((s) => s.run);
+  const inView = useHero((s) => s.inView);
   const [step, setStep] = useState("browse");
   const shown = Math.min(FILES.length, Math.round(arrived * FILES.length));
   const ready = phase === "demo";
@@ -34,7 +35,7 @@ export function MacDemo() {
   // The loop, once every file is in: point at the clip, open it, it plays, the menu bar panel, close.
   useEffect(() => {
     setStep("browse");
-    if (!ready || !full || still) return undefined;
+    if (!ready || !full || still || !inView) return undefined;
     const timers = [];
     const at = (s, fn) => timers.push(setTimeout(fn, s * 1000));
     const cycle = () => {
@@ -47,7 +48,7 @@ export function MacDemo() {
     };
     cycle();
     return () => timers.forEach(clearTimeout);
-  }, [ready, full, still, run]);
+  }, [ready, full, still, run, inView]);
 
   // The pointer goes to what it acts on, measured, so it lands on the clip whatever the Mac's size.
   const root = useRef(null), clip = useRef(null), hud = useRef(null);
@@ -106,7 +107,7 @@ export function MacDemo() {
           <m.div key="player" className="hxd-player" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }} transition={spring}>
             <div className="hxd-bar">dance-take4.mov</div>
             <div className="hxd-view">
-              <video src="media/dancer.mp4" poster="media/dancer.webp" muted loop playsInline autoPlay ref={(v) => { if (v) { v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); } }} />
+              <video src="media/dancer.mp4" poster="media/dancer.webp" muted loop playsInline preload="none" ref={(v) => { if (v) { v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); } }} />
               <div className="hxd-hud" ref={hud}>
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M9.5 5 3 10l6.5 5zM17.5 5 11 10l6.5 5z" /></svg>
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 4h3.4v12H5zM11.6 4H15v12h-3.4z" /></svg>
@@ -126,7 +127,7 @@ export function MacDemo() {
         )}
       </AnimatePresence>
 
-      {ready && full && !still && (
+      {ready && full && !still && inView && (
         <m.svg className="hxd-cursor" viewBox="0 0 24 24" initial={{ left: "88%", top: "90%", opacity: 0 }} animate={{ ...cursor, opacity: 1, scale: step === "open" ? 0.86 : 1 }} transition={{ type: "spring", stiffness: 70, damping: 18 }}>
           <path d="M5 2.5v17.2l4.6-4.4 2.9 6.5 2.6-1.2-2.8-6.3h6.4z" />
         </m.svg>
