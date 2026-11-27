@@ -116,7 +116,7 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const s = pushUntil((k) => !hits(dx, dy, k), w + h + (b[2] - b[0]) + (b[3] - b[1]));
     return [dx * s, dy * s];
   };
-  let hintEl = null, hintBox = null;
+  let hintEl = null, hintBox = null, soundEl = null;
   // The pocket rests while the reader drags the canvas (and while it glides on): prints then move with the hand and
   // never jump across it. Once the canvas is still it eases back in, and the prints ease out of the way.
   let pocketK = 1;
@@ -261,15 +261,25 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     if (waiting) { planeWrap.style.setProperty("--hx-nx", Math.cos(nose).toFixed(3)); planeWrap.style.setProperty("--hx-ny", Math.sin(nose).toFixed(3)); }
     const pocketR = SIZE * scale * 0.55 + 22 * fit;
     if (!hintEl) hintEl = hero.querySelector(".hx-hint");
+    if (!soundEl) soundEl = stage.querySelector(".hx-sound");
     hintBox = null;
     // Placed (and cleared around) for as long as the pocket is open, so prints settle back smoothly after the hint
     // fades; it is hidden from 0.35 on.
     if (hintEl && t < 0.6) {
       const hw = hintEl.offsetWidth, hh = hintEl.offsetHeight, m = 16, side = pocketR * 0.95;
-      let hx = px + side, hy = py - hh / 2;
-      if (hx + hw > W - m) { hx = clamp(px - hw / 2, m, W - m - hw); hy = py + side; }
-      // Kept on the visible screen: on a short one the stage (560 px at least) is taller than the window.
-      hy = clamp(hy, m, Math.max(m, Math.min(VH, window.innerHeight) - hh - m));
+      // The first of right of the plane, below it and above it that stays on the visible screen (on a short one the
+      // stage, 560 px at least, is taller than the window), clear of the header bar and of the sound button; failing
+      // all three, the right-hand spot held on screen.
+      const bottom = Math.min(VH, window.innerHeight) - m, top = 76;
+      const st = stage.getBoundingClientRect(), sb = soundEl ? soundEl.getBoundingClientRect() : null;
+      const sound = sb && sb.width ? [sb.left - st.left - 8, sb.top - st.top - 8, sb.right - st.left + 8, sb.bottom - st.top + 8] : null;
+      const centred = clamp(px - hw / 2, m, W - m - hw);
+      const spots = [[px + side, py - hh / 2], [centred, py + side], [centred, py - side - hh]];
+      const fits = ([x, y]) => x >= m && x + hw <= W - m && y >= top && y + hh <= bottom
+        && !(sound && x < sound[2] && x + hw > sound[0] && y < sound[3] && y + hh > sound[1]);
+      let [hx, hy] = spots.find(fits) || spots[0];
+      hx = clamp(hx, m, Math.max(m, W - m - hw));
+      hy = clamp(hy, m, Math.max(m, bottom - hh));
       hintEl.style.left = "0px"; hintEl.style.top = "0px"; hintEl.style.bottom = "auto";
       hintEl.style.transform = `translate3d(${hx.toFixed(1)}px,${hy.toFixed(1)}px,0)`;
       hintBox = [hx - 14, hy - 14, hx + hw + 14, hy + hh + 14];
