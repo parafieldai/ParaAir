@@ -74,9 +74,10 @@
     },
   };
 
-  // The ParaAir mark's faces (the paper plane in logo-mark.svg), far to near, in a 100-unit box.
-  const PLANE = [["wingLit", [[93.6, 4], [40.2, 81.1], [6.4, 81.2]]], ["keelLit", [[83.9, 20.7], [40.2, 81.1], [55.1, 96]]], ["wing", [[93.6, 4], [60.8, 76.5], [40.2, 81.1]]]];
-  const PAPER_TONES = { wingLit: '#FFFFFF', wing: '#D3D5D9', keelLit: '#5B5F67' };
+  // The ParaAir mark, as the app icon draws it (site/logo-mark.svg): the wing and the tail, in a 100-unit box, painted
+  // as paper with the app's sage tail.
+  const PLANE = [["wing", [[0.7, 32.6], [99.3, 0.0], [69.3, 64.8], [53.7, 45.2]]], ["tail", [[53.7, 45.2], [69.3, 64.8], [34.6, 100.0], [37.2, 55.7]]]];
+  const PAPER_TONES = { wing: '#FFFFFF', tail: '#9AC7B4' };
 
   // Plan every stroke of a painting, without drawing: a list of [points, width, rgb, alpha] and the extras.
   const plan = (scene, seed, W, H, big) => {

@@ -9,10 +9,12 @@
 <meta charset="utf-8">
 <title>ParaAir link preview</title>
 <style>
+  /* The site's own type (site/home.css): Fredoka from site/fonts, so the card looks like the page it links to. */
+  @font-face { font-family: "Fredoka"; font-style: normal; font-weight: 300 700; src: url("../site/fonts/fredoka-latin.woff2") format("woff2"); }
   :root {
-    --paper: #F7F8FA; --ink: #0E0F12; --ink-2: #646974; --sage: #9AC7B4; --sage-line: #5E9C83;
+    --paper: #F5F3EE; --ink: #141518; --ink-2: #5B5F67; --sage: #9AC7B4; --sage-line: #5E9C83;
     --plane-grey: #A4A9B2; --plane-fold: #D3D7DD;
-    --font: system-ui, -apple-system, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+    --font: "Fredoka", ui-rounded, system-ui, -apple-system, sans-serif;
   }
   html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: var(--paper); }
   body { position: relative; color: var(--ink); font-family: var(--font); -webkit-font-smoothing: antialiased; }
@@ -21,7 +23,7 @@
   .brand svg { width: 38px; height: 38px; }
   .mark-a { fill: var(--ink); } .mark-b { fill: var(--sage); }
   h1 { position: absolute; left: 68px; top: 172px; margin: 0;
-       font: 500 112px/0.96 var(--font); letter-spacing: -0.035em; }
+       font: 600 108px/0.98 var(--font); letter-spacing: -0.02em; }
   .under { position: relative; white-space: nowrap; }
   .under::after { content: ""; position: absolute; left: 0.02em; right: 0.04em; bottom: -0.02em; height: 0.075em;
                   border-radius: 999px;
