@@ -191,6 +191,7 @@
   /* Room under the laptop for the sound switch, so it never sits on the laptop. */
   .hx-stage, .hx-scroll .hx-stage { padding-bottom: 66px; }
   .hx-sound { left: 12px; bottom: 14px; }
+  .hx-hint { bottom: 66px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .hx-hint svg, .hx-sound-bars i, .hx-sound.is-waiting { animation: none; }

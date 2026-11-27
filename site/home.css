@@ -90,8 +90,10 @@ code { font-family: var(--mono); font-size: 0.9em; }
 .bar-nav { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 .bar-nav a { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 999px; color: var(--ink-2); font-size: 15px; text-decoration: none; transition: color 0.2s, background-color 0.2s; }
 .bar-nav a:hover { color: var(--ink); background: rgb(20 21 24 / 0.05); }
-.gh { width: 16px; height: 16px; }
-@media (max-width: 560px) { .bar-nav a[href="#how"], .bar-label { display: none; } .bar-nav a { padding: 8px 10px; } }
+.gh { flex: none; width: 16px; height: 16px; }
+@media (max-width: 560px) { .bar-nav a[href="#how"], .bar-nav a[href="/#how"], .bar-label { display: none; } .bar-nav a { padding: 8px 10px; } }
+/* The narrowest phones: everything in the bar still fits inside it. */
+@media (max-width: 360px) { .bar { padding-left: 12px; gap: 2px; } .bar-nav a { padding: 8px 7px; } .bar .pill-sm { padding: 0 13px; } }
 
 /* ---------------------------------------------------------------- pills */
 .pill {
