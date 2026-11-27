@@ -226,10 +226,13 @@
             <p class="story-label story-label-mac"><b>Your Mac</b><span data-story-count>2 pieces in a small cache</span></p>
           </div>
         </div>
-        <div class="story-steps" role="tablist" aria-label="How a big file opens, step by step">
-          <button type="button" role="tab" aria-selected="true" aria-controls="story-0" data-step="0"><i>1</i>Open<span class="story-bar"><span></span></span></button>
-          <button type="button" role="tab" aria-selected="false" aria-controls="story-1" data-step="1"><i>2</i>Play<span class="story-bar"><span></span></span></button>
-          <button type="button" role="tab" aria-selected="false" aria-controls="story-2" data-step="2"><i>3</i>Save<span class="story-bar"><span></span></span></button>
+        <div class="story-controls" data-story-controls>
+          <div class="story-steps" role="tablist" aria-label="How a big file opens, step by step">
+            <button type="button" role="tab" aria-selected="true" aria-controls="story-0" data-step="0"><i>1</i>Open<span class="story-bar"><span></span></span></button>
+            <button type="button" role="tab" aria-selected="false" aria-controls="story-1" data-step="1"><i>2</i>Play<span class="story-bar"><span></span></span></button>
+            <button type="button" role="tab" aria-selected="false" aria-controls="story-2" data-step="2"><i>3</i>Save<span class="story-bar"><span></span></span></button>
+          </div>
+          <button type="button" class="story-pause" data-story-pause aria-label="Pause the steps" hidden><svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="2.5" width="3" height="11" rx="1"/><rect x="9.5" y="2.5" width="3" height="11" rx="1"/></svg><svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.9v10.2a.8.8 0 0 0 1.2.7l8-5.1a.8.8 0 0 0 0-1.4l-8-5.1a.8.8 0 0 0-1.2.7z"/></svg></button>
         </div>
         <div class="story-captions">
           <div class="story-caption is-on" id="story-0" role="tabpanel" data-caption="0"><h3>Open a 48 GB video</h3><p>The player’s first reads come down: the start of the file, and the index kept at its end. It opens in a moment, and the rest stays in your bucket until it’s&nbsp;needed.</p></div>

@@ -468,8 +468,11 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const next = !!el && copy.contains(el) && el.matches(":focus-visible");
     if (next !== keyFocus) { keyFocus = next; if (still.matches) return; render(t, 1); wake(); }
   };
+  // Focus leaving the headline is read once it has landed wherever it went.
+  let focusTimer = 0;
+  const onFocusOut = () => { clearTimeout(focusTimer); focusTimer = setTimeout(onFocus, 0); };
   copy.addEventListener("focusin", onFocus);
-  copy.addEventListener("focusout", () => setTimeout(onFocus, 0));
+  copy.addEventListener("focusout", onFocusOut);
 
   measure();
   // A page opened (or restored) partway down starts the story where the scroll is, rather than playing up to it.
@@ -483,7 +486,8 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     destroy() {
       cancelAnimationFrame(raf); io.disconnect();
       window.removeEventListener("resize", onResize); window.removeEventListener("scroll", onScroll); still.removeEventListener("change", onMotion);
-      copy.removeEventListener("focusin", onFocus); stopAll();
+      copy.removeEventListener("focusin", onFocus); copy.removeEventListener("focusout", onFocusOut);
+      clearTimeout(focusTimer); clearTimeout(resizeTimer); stopAll();
       stage.removeEventListener("pointerdown", onDown); stage.removeEventListener("pointermove", onMove);
       stage.removeEventListener("pointerup", onUp); stage.removeEventListener("pointercancel", onUp); stage.removeEventListener("dragstart", noDrag);
       stage.classList.remove("is-grab", "is-grabbing");

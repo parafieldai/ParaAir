@@ -6,6 +6,8 @@
 //           full the piece used longest ago makes room (the app keeps about 1 GB).
 //   3 Save  the piece under the playhead is changed and saved on the Mac at once, then only it goes back up.
 // One colour code throughout: dark grey is on your Mac, in the bucket and on the Mac's bar alike.
+// The steps take turns only while the reader lets them: choosing a step plays just that one and rests on its end, the
+// pause button stops time where it is, and no step changes while focus is on a step. Play starts the turns again.
 // Everything drawn comes from stateAt(step, t), so any moment can be shown; under reduced motion each step is shown
 // at its end, without movement. It runs only while on screen.
 (() => {
@@ -20,14 +22,17 @@
   const count = root.querySelector('[data-story-count]');
   const buttons = [...root.querySelectorAll('[data-step]')];
   const captions = [...root.querySelectorAll('[data-caption]')];
+  const controls = root.querySelector('[data-story-controls]');
+  const tablist = root.querySelector('[role="tablist"]');
+  const pauseButton = root.querySelector('[data-story-pause]');
   const bars = buttons.map((b) => b.querySelector('.story-bar span'));
   // The screen plays a real interview. It plays in Play, rests in Open and Save, and picks up where it left off on
   // the next round, so each round shows the next part of it.
   const film = root.querySelector('[data-st-film]');
   let filmStep = -1;
-  const syncFilm = (step) => {
+  const syncFilm = (step, moving) => {
     if (!film) return;
-    if (step === 1 && visible && !still.matches) {
+    if (step === 1 && moving && visible && !still.matches) {
       if (film.paused) { const p = film.play(); if (p && p.catch) p.catch(() => {}); }
     } else if (!film.paused) film.pause();
     if (step !== filmStep && step === 1 && film.duration && film.currentTime > film.duration - 9) { try { film.currentTime = 0; } catch (e) { /* not loaded yet */ } }
@@ -127,33 +132,65 @@
       captions.forEach((c, i) => { c.classList.toggle('is-on', i === step); c.setAttribute('aria-hidden', String(i !== step)); });
     }
     bars.forEach((bar, i) => { bar.style.transform = `scaleX(${i === step ? Math.min(1, t / DUR[step]) : i < step ? 1 : 0})`; });
-    syncFilm(step);
+    syncFilm(step, moving());
   };
 
-  let step = 0, t = 0, last = 0, frame = 0, visible = false;
+  // auto: the steps take turns; paused: time stands still. A chosen step plays once (auto off) and rests on its end.
+  let step = 0, t = 0, last = 0, frame = 0, visible = false, auto = true, paused = false;
+  // Focus on a step holds the turns; focus on the pause button doesn't, so Play keeps playing.
+  const holding = () => !!tablist && tablist.matches(':focus-within');
+  const atRest = () => t >= DUR[step] && (!auto || holding());
+  const moving = () => !paused && !atRest();
+  const showPause = () => {
+    if (!pauseButton) return;
+    const running = auto && !paused;
+    pauseButton.classList.toggle('is-paused', !running);
+    pauseButton.setAttribute('aria-label', running ? 'Pause the steps' : 'Play the steps');
+    pauseButton.hidden = still.matches;
+  };
   const tick = (now) => {
     const dt = last ? Math.min((now - last) / 1000, 1 / 20) : 0;
     last = now;
-    t += dt;
-    if (t >= DUR[step]) { step = (step + 1) % 3; t = 0; }
+    if (!paused) t += dt;
+    if (t >= DUR[step]) {
+      if (auto && !holding()) { step = (step + 1) % 3; t = 0; } else t = DUR[step];
+    }
     render(step, t);
-    frame = visible && !still.matches ? requestAnimationFrame(tick) : 0;
+    frame = visible && !still.matches && moving() ? requestAnimationFrame(tick) : 0;
   };
-  const wake = () => { if (!frame && visible && !still.matches) { last = 0; frame = requestAnimationFrame(tick); } };
+  const wake = () => { if (!frame && visible && !still.matches && moving()) { last = 0; frame = requestAnimationFrame(tick); } };
   const go = (i) => { step = i; t = still.matches ? DUR[i] - 0.001 : 0; render(step, t); wake(); };
+  // Choosing a step stops the turns, so its caption stays for as long as the reader wants it.
+  const choose = (i) => { auto = false; paused = false; showPause(); go(i); };
   buttons.forEach((b, i) => {
-    b.addEventListener('click', () => go(i));
+    b.addEventListener('click', () => choose(i));
     b.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
       e.preventDefault();
       const next = (i + (e.key === 'ArrowRight' ? 1 : 2)) % 3;
       buttons[next].focus();
-      go(next);
+      choose(next);
     });
   });
+  if (pauseButton) {
+    pauseButton.addEventListener('click', () => {
+      if (auto && !paused) paused = true;
+      else {
+        const rested = t >= DUR[step];
+        auto = true; paused = false;
+        if (rested) { step = (step + 1) % 3; t = 0; }
+      }
+      showPause();
+      render(step, t);
+      wake();
+    });
+  }
+  // Focus leaving the controls lets the turns go on.
+  if (controls) controls.addEventListener('focusout', () => setTimeout(() => { render(step, t); wake(); }, 0));
   new IntersectionObserver((entries) => { visible = entries[entries.length - 1].isIntersecting; if (!visible && film) film.pause(); wake(); }, { threshold: 0.25 }).observe(root);
   // A pending frame would carry the step on past its end, so it goes before the step is shown at rest.
-  still.addEventListener('change', () => { cancelAnimationFrame(frame); frame = 0; go(step); });
+  still.addEventListener('change', () => { cancelAnimationFrame(frame); frame = 0; showPause(); go(step); });
+  showPause();
   go(0);
   if (still.matches) render(0, DUR[0]);
 })();
