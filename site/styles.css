@@ -966,6 +966,3 @@ html { scroll-padding-top: 80px; }
   1% { background-color: var(--piece-on); transform: scale(1.45); }
   100% { background-color: var(--piece-on); transform: none; }
 }
-
-/* While the Mac app still carries its old name: one quiet line on the pages that walk through it. */
-.rename-note { max-width: 46ch; margin-top: 14px; padding: 10px 14px; border-radius: 12px; background: var(--muted); color: var(--ink-2); font-size: var(--text-sm); line-height: 1.5; }

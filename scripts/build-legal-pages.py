@@ -19,8 +19,8 @@ import re
 import sys
 
 DOCUMENTS = [
-    ("terms", "Terms of Service", "The agreement for the AirSpace app, this website and AirSpace Cloud."),
-    ("cloud-terms", "AirSpace Cloud Service Terms", "What the paid storage service includes and how it works."),
+    ("terms", "Terms of Service", "The agreement for the ParaAir app, this website and ParaAir Cloud."),
+    ("cloud-terms", "ParaAir Cloud Service Terms", "What the paid storage service includes and how it works."),
     ("subscription-policy", "Subscription, Cancellation and Refund Policy", "Billing, renewal, the free trial, cancelling and refunds."),
     ("privacy", "Privacy Policy", "What we collect, why, who processes it and your choices."),
     ("acceptable-use", "Acceptable Use Policy", "What you may not store or do, and how to report abuse."),
@@ -260,7 +260,7 @@ class Document:
 # --------------------------------------------------------------------------------------------------------- template
 
 SITE = "https://paraair.parafield.ai"
-CARD = (f"{SITE}/og-card.png", "The AirSpace paper plane and the words: Cloud storage, as a Mac drive.")
+CARD = (f"{SITE}/og-card.png", "The ParaAir paper plane and the words: Cloud storage, as a Mac drive.")
 
 
 def social(url, title, description):
@@ -269,7 +269,7 @@ def social(url, title, description):
     title, description = html.escape(title, quote=True), html.escape(description, quote=True)
     return f"""
   <meta property="og:type" content="website">
-  <meta property="og:site_name" content="AirSpace">
+  <meta property="og:site_name" content="ParaAir">
   <meta property="og:url" content="{url}">
   <meta property="og:title" content="{title}">
   <meta property="og:description" content="{description}">
@@ -286,14 +286,14 @@ def social(url, title, description):
 
 def masthead(root=""):
     return f"""  <header class="masthead">
-    <a class="brand" href="/" aria-label="AirSpace home">
-      <svg class="brand-mark" viewBox="0 0 100 100" aria-hidden="true"><!-- mark --><defs><linearGradient id="bm-wingLit" gradientUnits="userSpaceOnUse" x1="93.6" y1="4" x2="6.4" y2="81.2"><stop offset="0" stop-color="#33353B"/><stop offset="1" stop-color="#0E0F12"/></linearGradient><linearGradient id="bm-keelLit" gradientUnits="userSpaceOnUse" x1="93.6" y1="4" x2="55.1" y2="96"><stop offset="0" stop-color="#D9DBDF"/><stop offset="1" stop-color="#9A9EA6"/></linearGradient><linearGradient id="bm-wing" gradientUnits="userSpaceOnUse" x1="93.6" y1="4" x2="40.2" y2="81.1"><stop offset="0" stop-color="#74787F"/><stop offset="1" stop-color="#42454C"/></linearGradient></defs><path fill="url(#bm-wingLit)" d="M89.6 9.8L40.2 81.1Q25.8 79.1 11.4 81.2Q6.4 81.2 10.1 77.9Q42.3 35.4 88.4 8.6Q93.6 4 89.6 9.8Z"/><path fill="url(#bm-keelLit)" d="M83.9 20.7L40.2 81.1Q46.5 86.5 51.9 92.8Q55.1 96 56.7 91.8Q77.4 59 83.9 20.7Z"/><path fill="url(#bm-wing)" d="M90.7 10.4Q82.9 43.9 62.9 71.9Q60.8 76.5 55.9 77.6Q47.8 78.2 40.2 81.1L89.6 9.8Q93.6 4 90.7 10.4Z"/><path fill="none" stroke="#FFFFFF" stroke-opacity="0.42" stroke-width="0.9" stroke-linecap="round" d="M90 9.2L40.2 81.1"/><path fill="none" stroke="#FFFFFF" stroke-opacity=".35" stroke-width="0.6" stroke-linecap="round" d="M10.1 77.9Q42.3 35.4 88.4 8.6"/><!-- /mark --></svg>
-      <span>AirSpace</span>
+    <a class="brand" href="/" aria-label="ParaAir home">
+      <svg class="brand-mark" viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="bm-wingLit" gradientUnits="userSpaceOnUse" x1="93.6" y1="4" x2="6.4" y2="81.2"><stop offset="0" stop-color="#33353B"/><stop offset="1" stop-color="#0E0F12"/></linearGradient><linearGradient id="bm-keelLit" gradientUnits="userSpaceOnUse" x1="93.6" y1="4" x2="55.1" y2="96"><stop offset="0" stop-color="#D9DBDF"/><stop offset="1" stop-color="#9A9EA6"/></linearGradient><linearGradient id="bm-wing" gradientUnits="userSpaceOnUse" x1="93.6" y1="4" x2="40.2" y2="81.1"><stop offset="0" stop-color="#74787F"/><stop offset="1" stop-color="#42454C"/></linearGradient></defs><path fill="url(#bm-wingLit)" d="M89.6 9.8L40.2 81.1Q25.8 79.1 11.4 81.2Q6.4 81.2 10.1 77.9Q42.3 35.4 88.4 8.6Q93.6 4 89.6 9.8Z"/><path fill="url(#bm-keelLit)" d="M83.9 20.7L40.2 81.1Q46.5 86.5 51.9 92.8Q55.1 96 56.7 91.8Q77.4 59 83.9 20.7Z"/><path fill="url(#bm-wing)" d="M90.7 10.4Q82.9 43.9 62.9 71.9Q60.8 76.5 55.9 77.6Q47.8 78.2 40.2 81.1L89.6 9.8Q93.6 4 90.7 10.4Z"/><path fill="none" stroke="#FFFFFF" stroke-opacity="0.42" stroke-width="0.9" stroke-linecap="round" d="M90 9.2L40.2 81.1"/><path fill="none" stroke="#FFFFFF" stroke-opacity=".35" stroke-width="0.6" stroke-linecap="round" d="M10.1 77.9Q42.3 35.4 88.4 8.6"/></svg>
+      <span>ParaAir</span>
     </a>
     <nav class="nav" aria-label="Primary">
       <div class="nav-group">
         <a class="nav-link" href="/pricing">Pricing</a>
-        <a class="nav-link" href="https://github.com/parafieldai/ParaAir" aria-label="AirSpace source code on GitHub">
+        <a class="nav-link" href="https://github.com/parafieldai/ParaAir" aria-label="ParaAir source code on GitHub">
           <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="{GITHUB_PATH}"/></svg>
           <span class="nav-label">GitHub</span>
         </a>
@@ -307,7 +307,7 @@ def footer(current):
     links = "&nbsp;· ".join(f'<a href="/{s}"{" aria-current=\"page\"" if s == current else ""}>{label}</a>' for s, label in FOOTER_LINKS)
     return f"""  <footer class="colophon">
     <nav class="colophon-legal" aria-label="Legal">{links}</nav>
-    <p>AirSpace by Parafield · <a href="https://github.com/parafieldai/ParaAir">Source code</a> (Apache-2.0) · Built on <a href="https://github.com/juicedata/juicefs">JuiceFS</a> · © 2026</p>
+    <p>ParaAir by Parafield · <a href="https://github.com/parafieldai/ParaAir">Source code</a> (Apache-2.0) · Built on <a href="https://github.com/juicedata/juicefs">JuiceFS</a> · © 2026</p>
   </footer>"""
 
 
@@ -316,10 +316,10 @@ def page(slug_, title, description, body, current, root="", indexed=True, script
     are root-relative and extensionless everywhere. A page that is not indexed (404.html) gets noindex instead of a
     canonical address and a link preview. `script` and `body_class`: 404.html takes the landing hero, flown by
     motion.js, instead of the legal layout."""
-    full_title = f"{title} · AirSpace"
+    full_title = f"{title} · ParaAir"
     url = f"{SITE}/{slug_}"
     # The preview's title drops the " · ParaAir" suffix when the title already names ParaAir (og:site_name has it).
-    head = (f'\n  <link rel="canonical" href="{url}">' + social(url, title if "AirSpace" in title else full_title, description)
+    head = (f'\n  <link rel="canonical" href="{url}">' + social(url, title if "ParaAir" in title else full_title, description)
             if indexed
             else '\n  <meta name="robots" content="noindex">')
     return f"""<!doctype html>
@@ -380,11 +380,11 @@ def index_page(effective):
         <p class="legal-company-name">{COMPANY[0]}</p>
         <p>{COMPANY[1]}<br>{COMPANY[2]}</p>
         <dl>{contacts}</dl>
-        <p class="legal-note">AirSpace Cloud is offered in the United States. Parafield's other products have their own terms on <a href="https://parafield.ai" rel="noopener">parafield.ai</a>.</p>
+        <p class="legal-note">ParaAir Cloud is offered in the United States. Parafield's other products have their own terms on <a href="https://parafield.ai" rel="noopener">parafield.ai</a>.</p>
       </aside>
     </div>
   </main>"""
-    return page("legal", "Legal", "AirSpace's terms, policies and how to reach Parafield Inc.", body, "legal")
+    return page("legal", "Legal", "ParaAir's terms, policies and how to reach Parafield Inc.", body, "legal")
 
 
 def not_found_page():
