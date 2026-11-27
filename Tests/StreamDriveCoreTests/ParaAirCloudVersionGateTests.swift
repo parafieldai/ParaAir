@@ -213,4 +213,71 @@ final class ParaAirCloudVersionGateTests: XCTestCase {
         XCTAssertEqual(fake.contents(driveID: account.driveID, path: "/draft.txt"), Data("mine".utf8))
         XCTAssertNoThrow(try engine.create("/new.txt", directory: false))
     }
+
+    /// Copilot on ParaAir#86: a change that passes the first check can learn of the refusal from its own metadata
+    /// refresh, which the cached fallback then hides; it must still be refused before the journal changes.
+    func testAChangeThatLearnsOfTheRefusalOnTheWayIsRefusedBeforeItIsWritten() throws {
+        let fake = FakeParaAirCloud(), account = fake.createAccount(), root = try cloudTestRoot(self), vault = TestConnectionVault()
+        let record = try fake.saveAccount(account, root: root, vault: vault)
+        fake.seedFile(driveID: account.driveID, path: "/doc.txt", data: Data("cached".utf8))
+        let session = try ParaAirCloudSession(root: root, accountID: record.id, vault: vault, configuration: fake.configuration,
+                                              policy: .init(allowsLoopbackHTTP: false))
+        let clock = Clock(), gate = ParaAirCloudVersionGate(now: { clock.now })
+        try session.http().versionGate = gate
+        let backend = try ParaAirCloudBackend(driveID: account.driveID, bindVolume: { _ in }, api: {
+            let api = ParaAirCloudAPI(http: try session.http(), tokens: session); api.retryDelays = [0.01]; return api
+        })
+        let engine = try Engine(backend: backend, stateDirectory: root.appendingPathComponent("volumes/direct"), minFreeBytes: 0,
+                                blockSize: 4_194_304, tuning: EngineTuning(metadataLifetimeNanoseconds: 0, listingLifetimeNanoseconds: 0))
+        ParaAirCloudConfiguration.VersionInfo.replace(["CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "84"])
+        XCTAssertEqual(try engine.read("/doc.txt", offset: 0, length: 6), Data("cached".utf8))
+        fake.minimumClientVersion = "0.1.88"
+        func refused(_ change: () throws -> Void, _ name: String) {
+            XCTAssertThrowsError(try change(), name) { error in
+                XCTAssertEqual((error as? DriveError)?.code, EROFS, name)
+                XCTAssertEqual(ParaAirCloudOutcome.of(error), .updateRequired, name)
+            }
+        }
+        // The first check passes (nothing refused yet); the refresh on the way hears the 426.
+        XCTAssertFalse(backend.updateRequired())
+        refused({ _ = try engine.write("/doc.txt", offset: 0, data: Data("x".utf8)) }, "write")
+        XCTAssertTrue(backend.updateRequired())
+        XCTAssertTrue(try engine.uploads().isEmpty, "nothing was journaled")
+        // The same with the refusal learned by a create's lookups, which have nothing cached to fall back on.
+        gate.reset()
+        refused({ _ = try engine.create("/new.txt", directory: false) }, "create")
+        gate.reset()
+        refused({ try engine.truncate("/doc.txt", size: 0) }, "truncate")
+        XCTAssertTrue(try engine.uploads().isEmpty)
+        XCTAssertEqual(try engine.read("/doc.txt", offset: 0, length: 6), Data("cached".utf8))
+    }
+
+    /// Copilot on ParaAir#86: an engine opened after another drive of this process heard the refusal must refuse
+    /// changes before its backend connects (a change to a file with a pending journal never asks storage).
+    func testADriveThatHasNotConnectedYetKnowsTheRefusal() throws {
+        let fake = FakeParaAirCloud(), account = fake.createAccount(), root = try cloudTestRoot(self), vault = TestConnectionVault()
+        let record = try fake.saveAccount(account, root: root, vault: vault)
+        let profile = try CloudDriveSetup.attach(driveID: account.driveID, finderName: "ParaAir Cloud", accountID: record.id,
+                                                 stateRoot: root, dependencies: fake.dependencies(vault: vault))
+        let first = try Engine.open(profile: profile, stateRoot: root, dependencies: fake.dependencies(vault: vault))
+        _ = try first.create("/draft.txt", directory: false)
+        XCTAssertEqual(try first.write("/draft.txt", offset: 0, data: Data("mine".utf8)), 4)
+        first.close()
+
+        // Another drive of the same service heard the 426 (the shared gate, as in the app and its extension).
+        ParaAirCloudVersionGate.shared.answered(fake.issuer, path: "/v1/me", status: 426)
+        defer { ParaAirCloudVersionGate.shared.answered(fake.issuer, path: "/v1/me", status: 200) }
+        fake.clearLog()
+        let engine = try Engine.open(profile: profile, stateRoot: root, dependencies: fake.dependencies(vault: vault))
+        defer { engine.close() }
+        XCTAssertThrowsError(try engine.write("/draft.txt", offset: 4, data: Data(" more".utf8))) { error in
+            XCTAssertEqual((error as? DriveError)?.code, EROFS)
+        }
+        XCTAssertEqual(try engine.read("/draft.txt", offset: 0, length: 4), Data("mine".utf8), "the earlier change is kept")
+        XCTAssertTrue(fake.requests.isEmpty, "decided without connecting")
+        // ParaAirCloudBackend itself, before its first call.
+        let session = try ParaAirCloudSession(root: root, accountID: record.id, vault: vault, configuration: fake.configuration,
+                                              policy: .init(allowsLoopbackHTTP: false))
+        XCTAssertTrue(try ParaAirCloudBackend(driveID: account.driveID, session: session, issuer: fake.issuer, bindVolume: { _ in }).updateRequired())
+    }
 }

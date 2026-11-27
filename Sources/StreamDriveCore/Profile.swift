@@ -367,6 +367,8 @@ public extension Engine {
             }
         }
         if profile.backend == .paraairCloud, let account = try? CloudAccountStore(root: root).load(profile.cloudAccountID!) { try checkIssuer(account) }
+        // The service the profile names, for ParaAirCloudVersionGate before the drive connects (no I/O).
+        let cloudIssuer = profile.backend == .paraairCloud ? profile.cloudIssuer.flatMap { try? ParaAirCloudIssuer.validate($0) } : nil
         let makeBackend: () throws -> StorageBackend = {
             switch profile.backend {
             case .paraairCloud:
@@ -374,7 +376,7 @@ public extension Engine {
                 let session = try ParaAirCloudSession.shared(root: root, accountID: profile.cloudAccountID!, vault: dependencies.cloudVault,
                                                              configuration: dependencies.cloudConfiguration, policy: dependencies.cloudPolicy,
                                                              options: dependencies.cloudSessionOptions)
-                return try ParaAirCloudBackend(driveID: profile.cloudDriveID!, session: session, options: dependencies.cloudBackendOptions, bindVolume: {
+                return try ParaAirCloudBackend(driveID: profile.cloudDriveID!, session: session, issuer: cloudIssuer, options: dependencies.cloudBackendOptions, bindVolume: {
                     try ProfileStateBinding.bindVolume($0, directory: directory)
                 })
             case .local:
@@ -406,13 +408,16 @@ public extension Engine {
                 return backend
             }
         }
-        let backend = LazyProfileBackend(makeBackend)
+        // Before it connects, a ParaAir Cloud drive still learns that its service refuses this version from any other
+        // drive of this process (ParaAirCloudVersionGate), so an engine opened now refuses changes at once.
+        let refusedBeforeConnecting: () -> Bool = { cloudIssuer.map { ParaAirCloudVersionGate.shared.refusal(for: $0) == .service } ?? false }
+        let backend = LazyProfileBackend(makeBackend, refusedBeforeConnecting: refusedBeforeConnecting)
         // ParaAir Cloud holds no lock across network I/O, so one instance serves reads and uploads
         // and its quota cooldown and capacity cache see both (spec 6.10 step 9).
         return try Engine(backend: backend, stateDirectory: directory,
                           cacheLimitBytes: profile.cacheLimitBytes, minFreeBytes: profile.minFreeBytes,
                           blockSize: profile.blockSize, maxJournalBytes: profile.maxJournalBytes,
-                          publishingBackend: profile.backend == .paraairCloud ? backend : LazyProfileBackend(makeBackend),
+                          publishingBackend: profile.backend == .paraairCloud ? backend : LazyProfileBackend(makeBackend, refusedBeforeConnecting: refusedBeforeConnecting),
                           tuning: profile.backend == .paraairCloud ? .paraairCloud : .byo, conflictCopies: profile.conflictCopies ?? false)
     }
 }
@@ -433,9 +438,13 @@ public enum NativeLibraryLocation {
 private final class LazyProfileBackend: StorageBackend {
     private let lock = NSLock()
     private let make: () throws -> StorageBackend
+    /// `updateRequired` before connecting; no I/O.
+    private let refusedBeforeConnecting: () -> Bool
     private var connected: StorageBackend?
     private var closed = false
-    init(_ make: @escaping () throws -> StorageBackend) { self.make = make }
+    init(_ make: @escaping () throws -> StorageBackend, refusedBeforeConnecting: @escaping () -> Bool = { false }) {
+        self.make = make; self.refusedBeforeConnecting = refusedBeforeConnecting
+    }
     deinit { try? close() }
     private func current() throws -> StorageBackend {
         lock.lock(); defer { lock.unlock() }
@@ -468,8 +477,8 @@ private final class LazyProfileBackend: StorageBackend {
     func backupIndex(replacing previous: String?) throws -> String? { try withBackend { try $0.backupIndex(replacing: previous) } }
     /// Only from a connected backend: asking must never open a connection.
     func ownership(refresh: Bool) throws -> StorageOwnership? { try lock.withLock { connected }?.ownership(refresh: refresh) }
-    /// Only from a connected backend: one not connected hasn't been answered.
-    func updateRequired() -> Bool { lock.withLock { connected }?.updateRequired() ?? false }
+    /// The connected backend's answer; before connecting, what this process heard from the same service. Never connects.
+    func updateRequired() -> Bool { lock.withLock { connected }?.updateRequired() ?? refusedBeforeConnecting() }
     func collaboration() throws -> DriveCollaboration? { try withBackend { try $0.collaboration() } }
     func close() throws {
         lock.lock(); closed = true; let backend = connected; connected = nil; lock.unlock()

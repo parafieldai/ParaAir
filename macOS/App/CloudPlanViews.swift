@@ -279,27 +279,45 @@ struct CloudPlanSheet: View {
             }
         }
         if case .failed(let message) = model.checkout { ErrorLine(text: message) }
+        // Refused as too old, for the terms or the checkout: trying again or paying gets the same answer; updating is
+        // what helps (the floor can go up after the plans loaded).
+        let update: (@MainActor () -> Void)? = {
+            if case .failed(let failed, let message) = model.quote, failed == selection, CloudAccountModel.asksForUpdate(message) { return model.updateApp }
+            if case .failed(let message) = model.checkout, CloudAccountModel.asksForUpdate(message) { return model.updateApp }
+            return nil
+        }()
         HStack(spacing: 10) {
             Button("Back") { step = .choose }.disabled(working)
             Spacer()
             if working { ProgressView().controlSize(.small).accessibilityLabel("Opening the payment page") }
-            if case .failed(let failed, _) = model.quote, failed == selection {
+            if update == nil, case .failed(let failed, _) = model.quote, failed == selection {
                 Button("Try Again") { model.loadQuote(selection, force: true) }
             }
             Button("Cancel", role: .cancel) { model.closePlans() }
                 .keyboardShortcut(.cancelAction)
-            Button(trial == nil ? "Continue to Payment" : "Start Free Trial") {
-                guard let shown else { return }
-                // The one box covers both consents the record keeps.
-                model.startCheckout(ParaAirCloudCheckoutRequest(
-                    workspaceID: workspace.id, plan: plan, interval: interval, seats: selection.seats,
-                    consent: ParaAirCloudCheckoutConsent(disclosureVersion: shown.offer.disclosureVersion, autoRenew: agrees, terms: agrees),
-                    trialDays: shown.offer.quote?.trialDays ?? 0))
+            if let update {
+                Button(HomePresentation.updateActionTitle) { model.closePlans(); update() }
+                    .buttonStyle(.airProminent)
+                    .keyboardShortcut(.defaultAction)
+            } else {
+                payButton(workspace: workspace, shown: shown, trial: trial)
             }
-            .buttonStyle(.airProminent)
-            .keyboardShortcut(.defaultAction)
-            .disabled(shown == nil || !agrees || working || model.pendingCheckout != nil)
         }
+    }
+
+    /// Continue to Payment (Start Free Trial with a trial): the checkout for the terms on screen, once the box is ticked.
+    @ViewBuilder private func payButton(workspace: ParaAirCloudMe.Workspace, shown: CloudAccountModel.Quote?, trial: Int?) -> some View {
+        Button(trial == nil ? "Continue to Payment" : "Start Free Trial") {
+            guard let shown else { return }
+            // The one box covers both consents the record keeps.
+            model.startCheckout(ParaAirCloudCheckoutRequest(
+                workspaceID: workspace.id, plan: plan, interval: interval, seats: selection.seats,
+                consent: ParaAirCloudCheckoutConsent(disclosureVersion: shown.offer.disclosureVersion, autoRenew: agrees, terms: agrees),
+                trialDays: shown.offer.quote?.trialDays ?? 0))
+        }
+        .buttonStyle(.airProminent)
+        .keyboardShortcut(.defaultAction)
+        .disabled(shown == nil || !agrees || working || model.pendingCheckout != nil)
     }
 
     /// The service's short summary, its full box (Appendix A) one click away, and its consent sentences beside one

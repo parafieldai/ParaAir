@@ -856,11 +856,15 @@ public final class Engine {
         if Housekeeping.isRefused(path) || (directory && Housekeeping.isLocalOnly(path)) {
             throw DriveError(EACCES, "macOS system folders are not stored on this drive")
         }
-        // Existence checks may refresh metadata, so they run before the state lock.
-        do { _ = try stat(path); throw DriveError(EEXIST, "Path already exists") }
-        catch let error as DriveError where error.code == ENOENT {} // Only a confirmed missing path permits creation.
-        if !directory { guard try stat(parent(path)).kind == .directory else { throw DriveError(ENOTDIR, "Parent is not a directory") } }
+        // Existence checks may refresh metadata, so they run before the state lock. Storage refusing this version
+        // on the way makes the drive read-only (refuseIfUpdateRequired), not a failed lookup.
+        try readOnlyIfRefused(path) {
+            do { _ = try stat(path); throw DriveError(EEXIST, "Path already exists") }
+            catch let error as DriveError where error.code == ENOENT {} // Only a confirmed missing path permits creation.
+            if !directory { guard try stat(parent(path)).kind == .directory else { throw DriveError(ENOTDIR, "Parent is not a directory") } }
+        }
         return try lock.withLock {
+            try refuseIfUpdateRequired(path)
             if let _: Journal = try db.get("journal", path) { throw DriveError(EEXIST, "Path already exists") }
             namespaceEpoch &+= 1
             if directory {
@@ -894,11 +898,14 @@ public final class Engine {
     private func withWritableJournal<T>(_ path: String, cleansUp: Bool = false, _ body: (inout Journal) throws -> T) throws -> T {
         var drains = 0, missing = 0, copies = 0
         while true {
-            // A new journal's base comes from metadata refreshed outside the state lock.
-            let fetched = try refreshMetadataIfNeeded(path, force: missing > 0)
+            // A new journal's base comes from metadata refreshed outside the state lock. That refresh, or an upload
+            // or commit check below, may be what learns that storage refuses this version: checked again under the
+            // lock on every pass, before the journal changes.
+            let fetched = try readOnlyIfRefused(path) { try refreshMetadataIfNeeded(path, force: missing > 0) }
             let access: JournalAccess<T>
             do {
                 access = try lock.withLock {
+                    try refuseIfUpdateRequired(path)
                     let save = { (journal: Journal) in
                         try self.db.transaction { try self.db.put("journal", path, journal); try self.invalidatePins(under: path) }
                         if cleansUp { try self.recoverOrphans() }
@@ -1691,6 +1698,7 @@ public final class Engine {
             // The version in storage the change lost to, recorded with the copy before its base is cleared.
             let theirs = (try? backend.stat(path)).flatMap { $0.kind == .file ? $0.version : nil }
             return try lock.withLock {
+                try refuseIfUpdateRequired(target)
                 guard let current: Journal = try db.get("journal", path), unchanged(current, since: item) else {
                     throw DriveError(EBUSY, "The file changed meanwhile, and its newer change is kept. Try again.")
                 }
@@ -2258,9 +2266,25 @@ public final class Engine {
     /// local, so it is never refused.
     private func refuseIfReadOnly(_ path: String) throws {
         guard !Housekeeping.staysLocal(path) else { return }
-        if backend.updateRequired() { throw DriveError(EROFS, Self.updateRequiredMessage) }
+        try refuseIfUpdateRequired(path)
         guard let owner = try ownedElsewhere(refresh: false) else { return }
         throw DriveError(EROFS, "This drive is now used on \(owner.ownerName ?? "another Mac"). It’s read-only on this Mac.")
+    }
+    /// EROFS while storage refuses this version of ParaAir. Without I/O, so it can run under the state lock: a change
+    /// checks again there, right before the journal changes, because a metadata refresh, an upload or a commit check
+    /// on the way may be what learned of the refusal (the cached fallback then hides it from the caller).
+    private func refuseIfUpdateRequired(_ path: String) throws {
+        guard !Housekeeping.staysLocal(path), backend.updateRequired() else { return }
+        throw DriveError(EROFS, Self.updateRequiredMessage)
+    }
+    /// Runs a lookup a change depends on; storage refusing this version there (ENOTSUP, nothing cached to fall back
+    /// on) refuses the change as read-only, like refuseIfUpdateRequired.
+    private func readOnlyIfRefused<T>(_ path: String, _ body: () throws -> T) throws -> T {
+        do { return try body() }
+        catch let error as DriveError where error.code == ENOTSUP && !Housekeeping.staysLocal(path)
+                                          && ParaAirCloudOutcome.of(error) == .updateRequired {
+            throw DriveError(EROFS, Self.updateRequiredMessage)
+        }
     }
     /// Starts with the service's own message, so ParaAirCloudOutcome reads it as `.updateRequired`.
     static let updateRequiredMessage = ParaAirCloudErrorCode.clientTooOld.message + ". Until then, this drive is read-only on this Mac."

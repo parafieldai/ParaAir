@@ -34,6 +34,8 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
     public static func volumeIdentity(driveID: String) -> String { "paraair-cloud:v1:" + driveID }
 
     public let driveID: String
+    /// The service, known before connecting: a refusal another drive of this process heard covers this one too.
+    private let issuer: URL?
     private let options: Options
     private let makeAPI: () throws -> ParaAirCloudAPI
     private let now: () -> Date
@@ -57,19 +59,21 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
     /// Chunks the service didn't take, by SHA-256, and when each may be sent again (`putChunks`).
     private var holds: [String: ChunkHold] = [:]
 
-    /// No network and no Keychain access: validates the drive id and binds the volume identity.
-    public convenience init(driveID: String, session: ParaAirCloudSession, options: Options = .init(), bindVolume: (String) throws -> Void) throws {
-        try self.init(driveID: driveID, options: options, bindVolume: bindVolume,
+    /// No network and no Keychain access: validates the drive id and binds the volume identity. `issuer` is the
+    /// service the drive's profile names, so a refusal heard before this drive's first call counts (`updateRequired`).
+    public convenience init(driveID: String, session: ParaAirCloudSession, issuer: URL? = nil, options: Options = .init(),
+                            bindVolume: (String) throws -> Void) throws {
+        try self.init(driveID: driveID, options: options, bindVolume: bindVolume, issuer: issuer,
                       api: { ParaAirCloudAPI(http: try session.http(), tokens: session) })
     }
 
-    init(driveID: String, options: Options = .init(), bindVolume: (String) throws -> Void,
+    init(driveID: String, options: Options = .init(), bindVolume: (String) throws -> Void, issuer: URL? = nil,
          api: @escaping () throws -> ParaAirCloudAPI, now: @escaping () -> Date = { Date() }) throws {
         guard ParaAirCloudIDs.isDriveID(driveID) else { throw DriveError(EINVAL, "Invalid ParaAir Cloud drive identifier") }
         guard options.maxConcurrentChunkUploads > 0, options.manifestCacheEntries > 0, (1...4096).contains(options.manifestPage),
               options.maxListEntries > 0, options.chunkRetryFloor > 0, options.cutOffChunkWait >= 0, options.longestChunkWait >= 0,
               options.chunkWaitBudget >= 0 else { throw DriveError(EINVAL, "Invalid ParaAir Cloud backend options") }
-        self.driveID = driveID; self.options = options; self.makeAPI = api; self.now = now
+        self.driveID = driveID; self.issuer = issuer; self.options = options; self.makeAPI = api; self.now = now
         try bindVolume(Self.volumeIdentity(driveID: driveID))
     }
 
@@ -87,10 +91,11 @@ public final class ParaAirCloudBackend: StorageBackend, @unchecked Sendable {
         try api().stat(driveID: driveID, path: canonicalPath(path))
     }
 
-    /// The service refused this version for its file calls (ParaAirCloudVersionGate), as this process last heard.
+    /// The service refused this version for its file calls (ParaAirCloudVersionGate), as this process last heard:
+    /// through this drive's own client, or, before it has one, through any drive of the same service. No I/O.
     public func updateRequired() -> Bool {
-        guard let api = lock.withLock({ apiInstance }) else { return false }
-        return api.http.versionGate.refusal(for: api.http.baseURL) == .service
+        if let api = lock.withLock({ apiInstance }) { return api.http.versionGate.refusal(for: api.http.baseURL) == .service }
+        return issuer.map { ParaAirCloudVersionGate.shared.refusal(for: $0) == .service } ?? false
     }
 
     /// Every page, deduplicated by path (the last one wins).
