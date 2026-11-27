@@ -255,6 +255,8 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
       const hw = hintEl.offsetWidth, hh = hintEl.offsetHeight, m = 16, side = pocketR * 0.95;
       let hx = px + side, hy = py - hh / 2;
       if (hx + hw > W - m) { hx = clamp(px - hw / 2, m, W - m - hw); hy = py + side; }
+      // Kept on the visible screen: on a short one the stage (560 px at least) is taller than the window.
+      hy = clamp(hy, m, Math.max(m, Math.min(VH, window.innerHeight) - hh - m));
       hintEl.style.left = "0px"; hintEl.style.top = "0px"; hintEl.style.bottom = "auto";
       hintEl.style.transform = `translate3d(${hx.toFixed(1)}px,${hy.toFixed(1)}px,0)`;
       hintBox = [hx - 14, hy - 14, hx + hw + 14, hy + hh + 14];
@@ -280,9 +282,12 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
       tile.sx = sx; tile.sy = sy;
       let ox = 0, oy = 0, kx = 0, ky = 0;
       if (pocket > 0.001) {
-        const q = clearOf(sx, sy, tile.w, tile.h, [px, py], pocketR);
-        const b = hintBox ? clearBox(sx + q[0], sy + q[1], tile.w, tile.h, hintBox) : [0, 0];
-        kx = (q[0] + b[0]) * pocket; ky = (q[1] + b[1]) * pocket;
+        // With the hint showing, one box holding both the plane's circle and the hint is cleared, so a print moved off
+        // one can never be moved back onto the other.
+        const q = hintBox
+          ? clearBox(sx, sy, tile.w, tile.h, [Math.min(px - pocketR, hintBox[0]), Math.min(py - pocketR, hintBox[1]), Math.max(px + pocketR, hintBox[2]), Math.max(py + pocketR, hintBox[3])])
+          : clearOf(sx, sy, tile.w, tile.h, [px, py], pocketR);
+        kx = q[0] * pocket; ky = q[1] * pocket;
       }
       if (flying) {
         const a = wakeOf(sx + tile.w / 2, sy + tile.h / 2, Math.max(tile.w, tile.h), [px, py], scale);
