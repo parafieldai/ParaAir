@@ -251,7 +251,9 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const pocketR = SIZE * scale * 0.55 + 22 * fit;
     if (!hintEl) hintEl = hero.querySelector(".hx-hint");
     hintBox = null;
-    if (hintEl && t < 0.4) {
+    // Placed (and cleared around) for as long as the pocket is open, so prints settle back smoothly after the hint
+    // fades; it is hidden from 0.35 on.
+    if (hintEl && t < 0.6) {
       const hw = hintEl.offsetWidth, hh = hintEl.offsetHeight, m = 16, side = pocketR * 0.95;
       let hx = px + side, hy = py - hh / 2;
       if (hx + hw > W - m) { hx = clamp(px - hw / 2, m, W - m - hw); hy = py + side; }
