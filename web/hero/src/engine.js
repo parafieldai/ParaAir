@@ -454,12 +454,17 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
   let resizeTimer = 0;
   const onResize = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { measure(); if (still.matches) showEnd(); else wake(); }, 150); };
   window.addEventListener("resize", onResize);
-  const io = new IntersectionObserver((entries) => {
-    visible = entries[entries.length - 1].isIntersecting;
+  // The hero counts as in view only while it is on screen and the page's tab is showing: otherwise its clips stop and
+  // the laptop's demo (MacDemo.jsx, which reads inView) schedules nothing.
+  let onScreen = true;
+  const syncView = () => {
+    visible = onScreen && document.visibilityState !== "hidden";
     store.set({ inView: visible });
     if (visible) wake(); else stopAll();
-  }, { threshold: 0 });
+  };
+  const io = new IntersectionObserver((entries) => { onScreen = entries[entries.length - 1].isIntersecting; syncView(); }, { threshold: 0 });
   io.observe(hero);
+  document.addEventListener("visibilitychange", syncView);
   const onScroll = () => wake();
   window.addEventListener("scroll", onScroll, { passive: true });
   // Focus put in the headline from the keyboard keeps it showing (see render). It is read once at the start too, as a
@@ -484,12 +489,14 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
   t = target();
   if (still.matches) showEnd();
   else wake();
-  const onMotion = () => { if (still.matches) showEnd(); else { hero.classList.add("hx-scroll"); store.set({ still: false }); measure(); wake(); } };
+  // Motion turned back on: the long scroll returns, and the story starts from where the scroll now is (the short
+  // reduced-motion layout left the time at the end).
+  const onMotion = () => { if (still.matches) showEnd(); else { hero.classList.add("hx-scroll"); store.set({ still: false }); measure(); t = target(); wake(); } };
   still.addEventListener("change", onMotion);
 
   return {
     destroy() {
-      cancelAnimationFrame(raf); io.disconnect();
+      cancelAnimationFrame(raf); io.disconnect(); document.removeEventListener("visibilitychange", syncView);
       window.removeEventListener("resize", onResize); window.removeEventListener("scroll", onScroll); still.removeEventListener("change", onMotion);
       copy.removeEventListener("focusin", onFocus); copy.removeEventListener("focusout", onFocusOut);
       clearTimeout(focusTimer); clearTimeout(resizeTimer); stopAll();

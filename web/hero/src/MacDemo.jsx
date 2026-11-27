@@ -18,7 +18,7 @@ const Icon = ({ id, className, box = "0 0 20 20" }) => <svg className={className
 
 function Thumb({ file }) {
   if (file.kind === "doc") return <span className={`hxd-doc hxd-doc-${file.doc}`}><Icon id="#i-doc" box="0 0 48 60" /><b>{EXT[file.doc]}</b></span>;
-  return <img src={file.kind === "video" ? file.poster : file.src} alt="" draggable={false} />;
+  return <img src={file.kind === "video" ? file.poster : file.src} alt="" loading="lazy" decoding="async" draggable={false} />;
 }
 
 export function MacDemo() {

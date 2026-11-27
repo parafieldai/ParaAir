@@ -187,7 +187,11 @@
   }
   // Focus leaving the controls lets the turns go on.
   if (controls) controls.addEventListener('focusout', () => setTimeout(() => { render(step, t); wake(); }, 0));
-  new IntersectionObserver((entries) => { visible = entries[entries.length - 1].isIntersecting; if (!visible && film) film.pause(); wake(); }, { threshold: 0.25 }).observe(root);
+  // It runs only while on screen and while the page's tab is showing.
+  let onScreen = false;
+  const syncView = () => { visible = onScreen && document.visibilityState !== 'hidden'; if (!visible && film) film.pause(); wake(); };
+  new IntersectionObserver((entries) => { onScreen = entries[entries.length - 1].isIntersecting; syncView(); }, { threshold: 0.25 }).observe(root);
+  document.addEventListener('visibilitychange', syncView);
   // A pending frame would carry the step on past its end, so it goes before the step is shown at rest.
   still.addEventListener('change', () => { cancelAnimationFrame(frame); frame = 0; showPause(); go(step); });
   showPause();
