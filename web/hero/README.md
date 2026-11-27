@@ -8,7 +8,8 @@ site's Content-Security-Policy (`script-src 'self'`) requires. Nothing here is d
     npm run watch        # rebuilds on every save
 
 - `src/engine.js` plays the story by scroll: the hero is a tall section (`.hx-scroll`, 820vh) whose stage pins, and how
-  far it has scrolled sets the story's time (eased and speed-capped, so it glides like video, forwards and back).
+  far it has scrolled sets the story's time, and the story keeps pace with the scroll (a tenth of a second of
+  smoothing, no speed limit), forwards and back: it stops when the scroll stops.
   Every frame is worked out from that time alone. It opens on the canvas with no words; the headline appears only
   once the plane has landed (a key that puts focus in it shows it at once, and the download is always in the header
   bar). Scrolling past the hero is ordinary scrolling: the page never holds the reader until the story has played.

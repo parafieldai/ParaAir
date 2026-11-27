@@ -1,6 +1,7 @@
 // The hero's story, played by scrolling. The hero is a tall section with a pinned stage; how far it has scrolled sets
-// the story's time, eased so a flick of the wheel still glides like video. Scroll back and it plays backwards: every
-// frame is worked out from the time alone, nothing piles up. Timings are in flight.js.
+// the story's time, and the story keeps pace with the scroll: stop scrolling and it stops, scroll quickly and it moves
+// quickly. Scroll back and it plays backwards: every frame is worked out from the time alone, nothing piles up.
+// Timings are in flight.js.
 //   0 s          the canvas of big prints fades in with the paper plane waiting on it and the clips playing, no
 //                words; nothing else moves until the reader scrolls (with a mouse the canvas can be dragged about).
 //                The download stays in the header bar, and a key that puts focus in the headline shows it at once.
@@ -341,7 +342,7 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     });
   };
 
-  // ------------------------------------------------------------------ time: the scroll, eased
+  // ------------------------------------------------------------------ time: the scroll
   let t = 0, raf = 0, visible = true, last = 0, latestArrived = 0, keyFocus = false;
   const start = performance.now();
   const progress = () => {
@@ -363,13 +364,12 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
       if (Math.hypot(vel[0], vel[1]) < 6) vel = [0, 0];
       plan = null;
     }
-    // Ease towards where the scroll says, never faster than the story can look calm: a quick flick of the wheel
-    // still plays out as a glide.
+    // The story is where the scroll is. A short smoothing (about a tenth of a second) joins a wheel's steps into one
+    // movement; there is no speed limit, so the story never trails behind the scroll or plays on after it stops.
     const goal = target();
-    const step = (goal - t) * (1 - Math.exp(-dt / 0.5));
     const before = t;
-    t += clamp(step, -dt * 1.6, dt * 1.6);
-    if (Math.abs(goal - t) < 0.0005) t = goal;
+    t += (goal - t) * (1 - Math.exp(-dt / 0.09));
+    if (Math.abs(goal - t) < 0.002) t = goal;
     const shown = smooth(0, 1.1, (now - start) / 1000);
     render(t, shown);
     cue(before, t);
