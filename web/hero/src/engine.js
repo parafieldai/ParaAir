@@ -462,10 +462,15 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
   io.observe(hero);
   const onScroll = () => wake();
   window.addEventListener("scroll", onScroll, { passive: true });
-  // Focus put in the headline from the keyboard keeps it showing (see render).
-  const onFocus = () => {
+  // Focus put in the headline from the keyboard keeps it showing (see render). It is read once at the start too, as a
+  // restart after a big resize can find a headline link already focused.
+  const focusedByKey = () => {
     const el = document.activeElement;
-    const next = !!el && copy.contains(el) && el.matches(":focus-visible");
+    return !!el && copy.contains(el) && el.matches(":focus-visible");
+  };
+  keyFocus = focusedByKey();
+  const onFocus = () => {
+    const next = focusedByKey();
     if (next !== keyFocus) { keyFocus = next; if (still.matches) return; render(t, 1); wake(); }
   };
   // Focus leaving the headline is read once it has landed wherever it went.
