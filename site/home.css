@@ -444,29 +444,83 @@ h2 { font-size: clamp(34px, 1.2rem + 3.4vw, 60px); line-height: 1.02; letter-spa
 }
 
 /* ---------------------------------------------------------------- agents: what ParaAir Cloud gives scripts and agents
- * One card, read like a sheet: six entries on hairlines, each a plain title, a line of what it does, and the real
- * paraair command. Entries share their rows (subgrid), so titles, lines and commands sit level across a row. */
+ * Six cards like the work cards above: a picture of the tool at work on the same warm ground, then a plain title, a
+ * line of what it does and the real paraair command. The pictures are drawn with the page's own window parts and
+ * follow the CLI's real output (version ids, change kinds, access levels, exit codes). Cards share their rows
+ * (subgrid), so pictures, titles, lines and commands sit level across a row. */
 .agents { max-width: calc(var(--max) + 2 * var(--gutter)); margin: 0 auto; padding: var(--section) var(--gutter) 0; }
 .agents-head { display: grid; gap: 18px; margin-bottom: clamp(32px, 4.6vw, 56px); }
 .agents-head .say code { padding: 1px 6px; border-radius: 6px; background: var(--paper-2); color: var(--ink); font-size: 0.86em; }
-.agent-sheet {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0; overflow: hidden;
-  border-radius: var(--radius); background: linear-gradient(var(--rule), var(--rule)), var(--card); box-shadow: var(--shadow-soft);
+.agent-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(14px, 1.6vw, 22px); margin: 0; padding: 0; list-style: none; }
+.agent-card {
+  display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 10px; overflow: hidden;
+  border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow-soft);
 }
-.agent-item {
-  display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 10px; align-content: start;
-  padding: clamp(24px, 2.8vw, 38px); background: var(--card);
-}
-.agent-item dt { color: var(--ink); font: 500 clamp(20px, 1rem + 0.5vw, 24px)/1.15 var(--display); letter-spacing: -0.012em; }
-.agent-item dd { margin: 0; }
-.agent-say { color: var(--ink-2); font-size: 16px; line-height: 1.55; max-width: 26em; }
-.agent-cmd { align-self: end; padding-top: 8px; }
+.agent-card > :not(.agent-art) { padding-inline: clamp(22px, 2.4vw, 32px); }
+.agent-card > :last-child { padding-bottom: clamp(22px, 2.4vw, 32px); }
+.agent-card h3 { margin-top: 12px; color: var(--ink); font-size: clamp(21px, 1rem + 0.55vw, 25px); line-height: 1.12; letter-spacing: -0.013em; }
+.agent-card > p:not(.agent-cmd) { color: var(--ink-2); font-size: 16px; line-height: 1.55; }
+.agent-cmd { align-self: end; padding-top: 4px; }
 .agent-cmd code {
   display: inline-block; max-width: 100%; padding: 4px 10px; border-radius: 8px; background: var(--paper-2);
   color: var(--ink); font-size: 13.5px; line-height: 1.5; overflow-wrap: anywhere;
 }
-@media (max-width: 980px) { .agent-sheet { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 640px) { .agent-sheet { grid-template-columns: minmax(0, 1fr); } }
+.agent-art { position: relative; height: clamp(226px, 19vw, 244px); overflow: hidden; background: linear-gradient(180deg, #F0EDE6, #ECE8E0); border-bottom: 1px solid var(--rule); }
+.agent-win { left: 7%; right: 7%; top: 11%; bottom: -12%; }
+.agent-card:hover .agent-win { transform: translateY(-4px); }
+
+/* The pictures' parts. */
+/* A narrow card wraps the terminal's lines as a narrow terminal would, so nothing is cut off at the edge. */
+.agent-term { padding: 11px 13px; font-size: 10px; line-height: 1.6; color: #d6d6da; white-space: pre-wrap; overflow-wrap: anywhere; }
+.win-dark .j-k { color: #9fc6e8; } .win-dark .j-s { color: var(--sage); } .win-dark .j-n { color: #f0b37e; }
+.ag-body { display: grid; gap: 2px; padding: 8px 10px; font-size: 12px; }
+.ag-body p { margin: 0; }
+.ag-live { display: flex; align-items: center; gap: 6px; padding: 2px 6px 6px; color: var(--sage-deep); font-size: 11px; font-weight: 600; }
+.ag-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--sage-deep); box-shadow: 0 0 0 3px rgb(63 122 100 / 0.16); animation: ag-pulse 2s ease-in-out infinite; }
+@keyframes ag-pulse { 50% { box-shadow: 0 0 0 6px rgb(63 122 100 / 0); } }
+.ag-row { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 7px; }
+.ag-row.is-new { background: rgb(154 199 180 / 0.2); }
+.ag-chg { justify-self: start; padding: 1px 6px; border-radius: 5px; font: 600 10px/1.5 var(--mono); }
+.ag-chg-write { background: #E4ECF6; color: #2D5B8A; }
+.ag-chg-create { background: #E1F0E8; color: var(--sage-deep); }
+.ag-chg-move { background: #F3ECDD; color: #8A6420; }
+.ag-chg-restore { background: #EEE6F5; color: #6A4A8C; }
+.ag-path { overflow: hidden; color: var(--ink); font-family: var(--mono); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.ag-meta { color: #8e8e93; font-size: 11px; white-space: nowrap; }
+.ag-ver { display: grid; grid-template-columns: 50px minmax(0, 1fr) auto 62px; align-items: center; gap: 8px; padding: 7px 6px; border-bottom: 1px solid rgb(0 0 0 / 0.05); }
+.ag-ver.is-picked { background: #F4F2EE; border-radius: 7px; }
+.ag-vid { color: var(--ink); font: 600 11px/1 var(--mono); }
+.ag-who { display: inline-flex; align-items: center; gap: 5px; overflow: hidden; color: var(--ink-2); white-space: nowrap; }
+.ag-when { color: #8e8e93; font-size: 11px; white-space: nowrap; }
+.ag-now, .ag-on, .ag-off { justify-self: end; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600; }
+.ag-now, .ag-on { background: #E1F0E8; color: var(--sage-deep); }
+.ag-off { background: #EFEDEA; color: #8e8e93; }
+.ag-btn { justify-self: end; padding: 3px 10px; border-radius: 999px; background: var(--ink); color: var(--white); font-size: 10.5px; font-weight: 500; }
+.ag-btn-ghost { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px rgb(20 21 24 / 0.2); }
+.ag-key { flex: none; width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
+.ag-files { display: flex; justify-content: center; align-items: flex-start; gap: 4%; padding: 24px 12px 0; }
+.ag-file { display: grid; justify-items: center; gap: 8px; width: 44%; text-align: center; }
+.ag-file em { display: block; padding: 2px 6px; border-radius: 5px; color: var(--ink); font-size: 11px; font-style: normal; line-height: 1.3; }
+.ag-file.is-copy em { background: #E4ECF6; color: #2D5B8A; }
+.ag-doc { position: relative; display: block; width: 34%; aspect-ratio: 48 / 60; }
+.ag-doc svg { width: 100%; height: 100%; filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.16)); }
+.ag-doc b { position: absolute; left: 13%; right: 13%; bottom: 17%; padding: 1px 0; border-radius: 3px; background: #8E8E93; color: #FFFFFF; font-size: 9px; font-weight: 700; text-align: center; }
+.ag-grid { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, auto); align-items: center; gap: 9px 8px; padding: 12px 14px; font-size: 11.5px; }
+.ag-col { display: inline-flex; align-items: center; justify-content: center; gap: 4px; color: #8e8e93; font-size: 10.5px; font-weight: 600; }
+.ag-dir { overflow: hidden; color: var(--ink); font-family: var(--mono); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.ag-lv { justify-self: center; min-width: 50px; padding: 3px 0; border-radius: 6px; font-size: 10.5px; font-weight: 600; text-align: center; }
+.ag-lv-write { background: var(--ink); color: var(--white); }
+.ag-lv-create { background: #E1F0E8; color: var(--sage-deep); }
+.ag-lv-read { background: #EFEDEA; color: var(--ink-2); }
+.ag-lv-none { box-shadow: inset 0 0 0 1px rgb(20 21 24 / 0.14); color: #8e8e93; font-weight: 500; }
+.ag-cred { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 6px; border-bottom: 1px solid rgb(0 0 0 / 0.05); color: var(--ink); }
+.ag-cname { display: grid; gap: 1px; overflow: hidden; font-weight: 500; white-space: nowrap; }
+.ag-cname small { overflow: hidden; color: #8e8e93; font: 10px/1.4 var(--mono); text-overflow: ellipsis; }
+.ag-cred.is-off { color: #8e8e93; }
+.ag-cred.is-off .ag-cname { text-decoration: line-through; text-decoration-color: rgb(20 21 24 / 0.3); }
+@media (max-width: 980px) { .agent-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .agent-cards { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .ag-live i { animation: none; } .agent-card:hover .agent-win { transform: none; } }
 
 /* ---------------------------------------------------------------- reveal (only below the fold, only with home.js) */
 .will-reveal { opacity: 0; transform: translateY(18px); }

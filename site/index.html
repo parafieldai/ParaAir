@@ -396,14 +396,103 @@ phases.
         <h2 id="agents-title" class="reveal">A drive your agents can&nbsp;use.<br><span class="soft">On ParaAir&nbsp;Cloud.</span></h2>
         <p class="say reveal">Scripts and agents work in the same folders you do, through the <code>paraair</code> command, each with a login of its own. On your own bucket, ParaAir is a drive for one&nbsp;Mac.</p>
       </div>
-      <dl class="agent-sheet reveal" aria-label="What ParaAir Cloud gives scripts and agents">
-        <div class="agent-item"><dt>Answers a script can read</dt><dd class="agent-say">Answers in JSON, with fixed exit codes, under a versioned&nbsp;contract.</dd><dd class="agent-cmd"><code>--json</code></dd></div>
-        <div class="agent-item"><dt>Every change, as it happens</dt><dd class="agent-say">A live feed of every change in a folder, for an agent that reacts to new&nbsp;files.</dd><dd class="agent-cmd"><code>paraair changes --follow</code></dd></div>
-        <div class="agent-item"><dt>Earlier versions</dt><dd class="agent-say">Earlier versions of a file, and one command to bring one&nbsp;back.</dd><dd class="agent-cmd"><code>paraair restore-version</code></dd></div>
-        <div class="agent-item"><dt>Both saves kept</dt><dd class="agent-say">When saves from two places meet, one keeps the name and the other is saved beside&nbsp;it.</dd><dd class="agent-cmd"><code>--conflict-copies</code></dd></div>
-        <div class="agent-item"><dt>Folder permissions</dt><dd class="agent-say">For each person, role or agent login: none, read, create or write, folder by&nbsp;folder.</dd><dd class="agent-cmd"><code>paraair access set</code></dd></div>
-        <div class="agent-item"><dt>A login for each agent</dt><dd class="agent-say">Limited to the folders you give it, and revoked with one&nbsp;command.</dd><dd class="agent-cmd"><code>paraair credentials</code></dd></div>
-      </dl>
+      <ul class="agent-cards" aria-label="What ParaAir Cloud gives scripts and agents">
+        <li class="agent-card reveal">
+          <div class="agent-art" aria-hidden="true">
+            <div class="win win-dark agent-win">
+              <div class="win-bar"><span>sync-agent: zsh</span></div>
+              <pre class="win-body agent-term"><span class="c-p">$</span> paraair restore-version Team \
+  /clients/plan.md pv:211 \
+  --expected-version pv:212 --json
+{<span class="j-k">"error"</span>: <span class="j-s">"The file changed on the server"</span>,
+ <span class="j-k">"exitCode"</span>: <span class="j-n">16</span>, <span class="j-k">"code"</span>: <span class="j-s">"version_conflict"</span>}
+<span class="c-p">$</span> echo $?
+<span class="j-n">16</span></pre>
+            </div>
+          </div>
+          <h3>Answers a script can read</h3>
+          <p>Answers in JSON, with fixed exit codes, under a versioned&nbsp;contract.</p>
+          <p class="agent-cmd"><code>--json</code></p>
+        </li>
+        <li class="agent-card reveal">
+          <div class="agent-art" aria-hidden="true">
+            <div class="win agent-win">
+              <div class="win-bar"><span>Changes in /clients</span></div>
+              <div class="ag-body">
+                <p class="ag-live"><i></i>Following</p>
+                <p class="ag-row is-new"><b class="ag-chg ag-chg-write">write</b><span class="ag-path">plan.md</span><span class="ag-meta">maya · now</span></p>
+                <p class="ag-row"><b class="ag-chg ag-chg-create">create</b><span class="ag-path">notes/call-0614.md</span><span class="ag-meta">render-bot · 4 s</span></p>
+                <p class="ag-row"><b class="ag-chg ag-chg-move">move</b><span class="ag-path">cuts/v3.prproj</span><span class="ag-meta">maya · 1 min</span></p>
+                <p class="ag-row"><b class="ag-chg ag-chg-restore">restore</b><span class="ag-path">brief.md</span><span class="ag-meta">maya · 3 min</span></p>
+              </div>
+            </div>
+          </div>
+          <h3>Every change, as it happens</h3>
+          <p>A live feed of every change in a folder, for an agent that reacts to new&nbsp;files.</p>
+          <p class="agent-cmd"><code>paraair changes --follow</code></p>
+        </li>
+        <li class="agent-card reveal">
+          <div class="agent-art" aria-hidden="true">
+            <div class="win agent-win">
+              <div class="win-bar"><span>plan.md: versions</span></div>
+              <div class="ag-body">
+                <p class="ag-ver"><span class="ag-vid">pv:213</span><span class="ag-who">maya</span><span class="ag-when">Today 10:24</span><b class="ag-now">Current</b></p>
+                <p class="ag-ver is-picked"><span class="ag-vid">pv:212</span><span class="ag-who"><svg class="ag-key" viewBox="0 0 20 20"><circle cx="7" cy="10" r="3.6"/><path d="M10.6 10H17.5M15 10v2.8M17.5 10v2"/></svg>render-bot</span><span class="ag-when">Today 09:58</span><b class="ag-btn">Restore</b></p>
+                <p class="ag-ver"><span class="ag-vid">pv:211</span><span class="ag-who">maya</span><span class="ag-when">Yesterday</span></p>
+                <p class="ag-ver"><span class="ag-vid">pv:208</span><span class="ag-who">sam</span><span class="ag-when">Mon 16:40</span></p>
+              </div>
+            </div>
+          </div>
+          <h3>Earlier versions</h3>
+          <p>Earlier versions of a file, and one command to bring one&nbsp;back.</p>
+          <p class="agent-cmd"><code>paraair restore-version</code></p>
+        </li>
+        <li class="agent-card reveal">
+          <div class="agent-art" aria-hidden="true">
+            <div class="win agent-win">
+              <div class="win-bar"><span>clients</span></div>
+              <div class="ag-files">
+                <span class="ag-file"><span class="ag-doc"><svg viewBox="0 0 48 60"><use href="#i-doc"/></svg><b>MD</b></span><em>plan.md</em></span>
+                <span class="ag-file is-copy"><span class="ag-doc"><svg viewBox="0 0 48 60"><use href="#i-doc"/></svg><b>MD</b></span><em>plan (conflict 2026-11-27).md</em></span>
+              </div>
+            </div>
+          </div>
+          <h3>Both saves kept</h3>
+          <p>When saves from two places meet, one keeps the name and the other is saved beside&nbsp;it.</p>
+          <p class="agent-cmd"><code>--conflict-copies</code></p>
+        </li>
+        <li class="agent-card reveal">
+          <div class="agent-art" aria-hidden="true">
+            <div class="win agent-win">
+              <div class="win-bar"><span>Team: folder access</span></div>
+              <div class="ag-grid">
+                <span></span><span class="ag-col">Members</span><span class="ag-col">Viewers</span><span class="ag-col"><svg class="ag-key" viewBox="0 0 20 20"><circle cx="7" cy="10" r="3.6"/><path d="M10.6 10H17.5M15 10v2.8M17.5 10v2"/></svg>render-bot</span>
+                <span class="ag-dir">/clients</span><b class="ag-lv ag-lv-write">write</b><b class="ag-lv ag-lv-read">read</b><b class="ag-lv ag-lv-create">create</b>
+                <span class="ag-dir">/raw</span><b class="ag-lv ag-lv-read">read</b><b class="ag-lv ag-lv-read">read</b><b class="ag-lv ag-lv-write">write</b>
+                <span class="ag-dir">/finance</span><b class="ag-lv ag-lv-write">write</b><b class="ag-lv ag-lv-none">none</b><b class="ag-lv ag-lv-none">none</b>
+              </div>
+            </div>
+          </div>
+          <h3>Folder permissions</h3>
+          <p>For each person, role or agent login: none, read, create or write, folder by&nbsp;folder.</p>
+          <p class="agent-cmd"><code>paraair access set</code></p>
+        </li>
+        <li class="agent-card reveal">
+          <div class="agent-art" aria-hidden="true">
+            <div class="win agent-win">
+              <div class="win-bar"><span>Team: credentials</span></div>
+              <div class="ag-body">
+                <p class="ag-cred"><svg class="ag-key" viewBox="0 0 20 20"><circle cx="7" cy="10" r="3.6"/><path d="M10.6 10H17.5M15 10v2.8M17.5 10v2"/></svg><span class="ag-cname">render-bot<small>cred_8Hq2W · used 2 min ago</small></span><b class="ag-on">Active</b><b class="ag-btn ag-btn-ghost">Revoke</b></p>
+                <p class="ag-cred"><svg class="ag-key" viewBox="0 0 20 20"><circle cx="7" cy="10" r="3.6"/><path d="M10.6 10H17.5M15 10v2.8M17.5 10v2"/></svg><span class="ag-cname">ingest-job<small>cred_3Lx9P · used today</small></span><b class="ag-on">Active</b></p>
+                <p class="ag-cred is-off"><svg class="ag-key" viewBox="0 0 20 20"><circle cx="7" cy="10" r="3.6"/><path d="M10.6 10H17.5M15 10v2.8M17.5 10v2"/></svg><span class="ag-cname">old-sync<small>cred_7Rt4K · revoked Nov 20</small></span><b class="ag-off">Revoked</b></p>
+              </div>
+            </div>
+          </div>
+          <h3>A login for each agent</h3>
+          <p>Limited to the folders you give it, and revoked with one&nbsp;command.</p>
+          <p class="agent-cmd"><code>paraair credentials</code></p>
+        </li>
+      </ul>
     </section>
 
     <section class="compare" aria-labelledby="compare-title">
