@@ -440,7 +440,9 @@ final class ParaAirCloudBackendTests: XCTestCase {
     func testBusyChunkPastTheLongestWaitEndsTheAttempt() throws {
         let data = seededBytes(chunk + 500, seed: 43), parts = chunks(of: data)
         fake.leaseChunk(sha(parts[1]), for: 60)
-        let b = try backend(pacing(floor: 0.1, longest: 0.5, budget: 1))
+        // The budget is far above the 0.7 s of waits, so only `longest` can end the attempt: the budget counts real time,
+        // request time included, and a tight one ran out first on slow CI runners (3 PUTs instead of 4).
+        let b = try backend(pacing(floor: 0.1, longest: 0.5, budget: 5))
         fake.clearLog()
         let transaction = UUID().uuidString
         expectDriveError(EAGAIN, disposition: .attemptNotDispatched) { _ = try b.commit(self.create("/stuck.bin", data, transaction: transaction)) }
