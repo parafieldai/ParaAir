@@ -32,3 +32,6 @@ __pycache__/
 
 # Pinned deploy tooling installed by .github/workflows/pages.yml.
 /.github/deploy-tools/node_modules/
+
+# The hero build (web/hero): dependencies are installed, not committed.
+web/hero/node_modules/

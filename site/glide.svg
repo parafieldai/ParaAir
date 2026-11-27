@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <title>ParaAir</title>
-  <polygon fill="#20282C" points="100,76 924,76 948,100 948,924 924,948 100,948 76,924 76,100"/>
-  <polygon fill="#F1EFE7" points="252,432 706,282 568,580 496,490"/>
-  <polygon fill="#9AC7B4" points="496,490 568,580 408,742 420,538"/>
+  <defs><linearGradient id="g-tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2C2E33"/><stop offset="1" stop-color="#0E0F12"/></linearGradient><linearGradient id="g-wingLit" gradientUnits="userSpaceOnUse" x1="807.7" y1="200" x2="216.3" y2="723.9"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#ECEDEF"/></linearGradient><linearGradient id="g-keelLit" gradientUnits="userSpaceOnUse" x1="807.7" y1="200" x2="546.5" y2="824"><stop offset="0" stop-color="#80848C"/><stop offset="1" stop-color="#50545B"/></linearGradient><linearGradient id="g-wing" gradientUnits="userSpaceOnUse" x1="807.7" y1="200" x2="445.6" y2="723"><stop offset="0" stop-color="#C9CCD2"/><stop offset="1" stop-color="#9EA2AA"/></linearGradient><filter id="g-blur" x="-50%" y="-200%" width="200%" height="500%"><feGaussianBlur stdDeviation="20.5"/></filter></defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#g-tile)"/>
+  <rect x="64.5" y="64.5" width="895" height="895" rx="199.5" fill="none" stroke="#FFFFFF" stroke-opacity=".08"/>
+  <ellipse cx="481.3" cy="880.6" rx="266.2" ry="35.8" fill="#000" opacity=".28" filter="url(#g-blur)"/><path fill="url(#g-wingLit)" d="M766.9 258.9L445.6 723Q356.5 710.9 267.5 723.7Q216.3 723.9 254.6 689.9Q460.1 418.8 754 247.5Q807.7 200 766.9 258.9Z"/><path fill="url(#g-keelLit)" d="M742 313.5L445.6 723Q482.5 754.5 513.9 791.4Q546.5 824 563 781Q699.2 565.1 742 313.5Z"/><path fill="url(#g-wing)" d="M778.1 265.3Q730.1 472.3 606.2 644.9Q585.1 691.5 535.2 702.8Q489 706.6 445.6 723L766.9 258.9Q807.7 200 778.1 265.3Z"/><path fill="none" stroke="#141518" stroke-opacity="0.3" stroke-width="9.3" stroke-linecap="round" d="M771 253L445.6 723"/><path fill="none" stroke="#FFFFFF" stroke-opacity=".35" stroke-width="6.4" stroke-linecap="round" d="M254.6 689.9Q460.1 418.8 754 247.5"/>
 </svg>

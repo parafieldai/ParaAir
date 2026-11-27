@@ -1,0 +1,156 @@
+/* The pricing page, in the landing page's design: home.css gives the paper, the type, the bar, the buttons and the
+ * footer; these are the page's own parts. Black and white on warm paper, soft cards, one ink. */
+
+.pricing { position: relative; }
+.pricing > div, .pricing > section { max-width: calc(var(--max) + 2 * var(--gutter)); margin: 0 auto; padding-left: var(--gutter); padding-right: var(--gutter); }
+
+/* ---------------------------------------------------------------- the opening */
+.price-hero { display: grid; gap: 18px; padding-top: clamp(132px, 15vw, 196px); }
+.price-hero h1 { font-size: clamp(44px, 1rem + 5vw, 88px); line-height: 0.98; letter-spacing: -0.02em; }
+.price-hero .say { max-width: 36em; }
+
+/* ---------------------------------------------------------------- the two plans */
+.ledger { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(14px, 1.6vw, 22px); padding-top: clamp(40px, 5vw, 64px); }
+.path {
+  display: grid; align-content: start; gap: 14px; padding: clamp(28px, 3.4vw, 44px);
+  border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow-soft);
+}
+/* The plan with our storage: white, ringed in ink. */
+.path-cloud { background: var(--white); box-shadow: 0 0 0 1.5px var(--ink), 0 30px 60px -36px rgb(40 36 28 / 0.4); }
+.path-name { color: var(--ink-3); font: 500 15px/1.3 var(--font); letter-spacing: 0.005em; }
+.path-price { display: flex; align-items: baseline; gap: 10px; margin-top: 2px; }
+.price { color: var(--ink); font: 600 clamp(48px, 2rem + 2.4vw, 68px)/0.95 var(--display); letter-spacing: -0.02em; }
+.price-unit { color: var(--ink-3); font-size: 17px; }
+.price-alt { margin-top: -6px; color: var(--ink-3); font-size: 15px; }
+.path-desc { display: grid; gap: 10px; margin-top: 6px; }
+.path-desc p { max-width: 34em; color: var(--ink-2); font-size: 17px; line-height: 1.5; }
+.path-desc .path-status { padding: 12px 14px; border-radius: 14px; background: var(--paper-2); font-size: 15px; }
+.path-status strong { color: var(--ink); font-weight: 600; }
+.path-action { display: grid; justify-items: start; gap: 8px; margin-top: 10px; }
+.path-action .pill { margin-bottom: 4px; }
+.requires { color: var(--ink-3); font-size: 14px; }
+.requires a { color: var(--ink-2); text-underline-offset: 3px; text-decoration-color: rgb(20 21 24 / 0.25); }
+
+/* ---------------------------------------------------------------- the allowance meter */
+.scene-meter { padding-top: var(--section); }
+.scene-meter { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); align-items: center; gap: clamp(28px, 5vw, 80px); }
+.scene-copy { display: grid; gap: 16px; }
+.scene-copy p { max-width: 30em; color: var(--ink-2); font-size: clamp(17px, 1rem + 0.35vw, 20px); line-height: 1.55; }
+.meter {
+  display: grid; gap: 12px; min-width: 0; margin: 0; padding: clamp(24px, 3vw, 36px);
+  border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow-soft);
+}
+.meter-key { color: var(--ink-3); font-size: 14px; }
+.meter-lane { --g: 26px; --gap: 6px; position: relative; display: grid; grid-template-columns: repeat(20, minmax(0, 1fr)); gap: var(--gap); }
+.meter-lane i { position: relative; grid-row: 1; aspect-ratio: 1; border-radius: 5px; background: #3B3E45; }
+.meter-stored { margin-bottom: 14px; }
+.meter-stored i { background: #D9D6CE; }
+.meter-read { container-type: inline-size; margin-top: calc(var(--g) + 8px); }
+/* Past 3 TB the squares are paler: still read, only slower. */
+.meter-read .slow { background: #B9BCC2; }
+.meter-read i:nth-of-type(13) { grid-column: 14; }
+.meter-read i:nth-of-type(14) { grid-column: 16; }
+.meter-read i:nth-of-type(15) { grid-column: 18; }
+.meter-read i:nth-of-type(16) { grid-column: 20; }
+.meter-read i::after { content: ""; position: absolute; inset: -2px; border-radius: 7px; background: var(--ink); opacity: 0; }
+.meter-glider {
+  position: absolute; left: 0; top: calc(-1 * (var(--g) + 8px)); width: var(--g); height: var(--g); overflow: visible;
+  /* The mark's nose points up and right; 45° turns it to fly right. At rest it waits at the 3 TB line. */
+  transform: translateX(calc(62.5cqw - var(--g) / 2)) rotate(45deg);
+}
+.meter-scale { display: grid; grid-template-columns: repeat(20, minmax(0, 1fr)); column-gap: 6px; color: var(--ink-2); font-size: 14px; }
+.meter-scale span:first-child { grid-column: 1 / 13; }
+.meter-scale span:last-child { grid-column: 14 / 21; }
+.meter figcaption { color: var(--ink-3); font-size: 13.5px; }
+/* The glide: 30% of the loop for the first 62.5% of the lane, 56% for the rest; each square lights as it passes. */
+.meter-read i:nth-of-type(1) { --at: 77ms; } .meter-read i:nth-of-type(2) { --at: 231ms; } .meter-read i:nth-of-type(3) { --at: 385ms; }
+.meter-read i:nth-of-type(4) { --at: 539ms; } .meter-read i:nth-of-type(5) { --at: 693ms; } .meter-read i:nth-of-type(6) { --at: 847ms; }
+.meter-read i:nth-of-type(7) { --at: 1001ms; } .meter-read i:nth-of-type(8) { --at: 1155ms; } .meter-read i:nth-of-type(9) { --at: 1309ms; }
+.meter-read i:nth-of-type(10) { --at: 1463ms; } .meter-read i:nth-of-type(11) { --at: 1617ms; } .meter-read i:nth-of-type(12) { --at: 1771ms; }
+.meter-read i:nth-of-type(13) { --at: 2398ms; } .meter-read i:nth-of-type(14) { --at: 3354ms; } .meter-read i:nth-of-type(15) { --at: 4309ms; }
+.meter-read i:nth-of-type(16) { --at: 5265ms; }
+/* is-live (home.js) only while the meter is on screen, so it never animates off screen. */
+.scene-meter.is-live .meter-glider { animation: meter-glide 6.4s linear infinite; }
+.scene-meter.is-live .meter-read i::after { animation: meter-lit 6.4s var(--ease) var(--at, 0ms) infinite; }
+@keyframes meter-glide {
+  0% { transform: translateX(calc(var(--g) / -2)) rotate(45deg); opacity: 0; }
+  4% { opacity: 1; }
+  30% { transform: translateX(calc(62.5cqw - var(--g) / 2)) rotate(45deg); }
+  86% { transform: translateX(calc(100cqw - var(--g) / 2)) rotate(45deg); opacity: 1; }
+  93%, 100% { transform: translateX(calc(100cqw - var(--g) / 2)) rotate(45deg); opacity: 0; }
+}
+@keyframes meter-lit { 0% { opacity: 0.9; } 14%, 100% { opacity: 0; } }
+
+/* ---------------------------------------------------------------- Personal, as a spec sheet, and the comparison */
+.spec { padding-top: var(--section); }
+.spec h2 { margin-bottom: clamp(20px, 3vw, 32px); }
+.spec > .say { margin: -8px 0 clamp(24px, 3vw, 36px); }
+.spec-table {
+  width: 100%; border-collapse: separate; border-spacing: 0; overflow: hidden;
+  border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow-soft); font-variant-numeric: tabular-nums;
+}
+.spec-table caption { caption-side: bottom; padding: 16px 4px 0; color: var(--ink-3); font-size: 14px; line-height: 1.5; text-align: left; }
+.spec-table caption a { color: var(--ink-2); text-underline-offset: 3px; }
+.spec-table th, .spec-table td { padding: clamp(18px, 2vw, 24px) clamp(18px, 2.6vw, 32px); border-bottom: 1px solid var(--rule); text-align: left; vertical-align: baseline; }
+.spec-table tbody tr:last-child > * { border-bottom: 0; }
+.spec-table tbody th { width: 34%; color: var(--ink-2); font-weight: 500; }
+.spec-table thead th { padding-top: 22px; padding-bottom: 14px; color: var(--ink-3); font: 600 13.5px/1.2 var(--font); }
+.spec-table .fig { display: block; color: var(--ink); font: 600 clamp(18px, 1rem + 0.4vw, 22px)/1.25 var(--display); letter-spacing: -0.01em; }
+.spec-table .more { display: block; max-width: 46ch; margin-top: 6px; color: var(--ink-3); font-size: 15px; line-height: 1.5; }
+.spec-table th .more { margin-top: 3px; font-size: 13.5px; }
+.spec-table th a { color: var(--ink); text-decoration-color: rgb(20 21 24 / 0.25); text-underline-offset: 3px; }
+.spec-table code { padding: 1px 5px; border-radius: 5px; background: var(--paper-2); color: var(--ink); font-size: 0.9em; }
+/* Our row in the comparison: white, in bold. */
+.price-compare .spec-table .ours > * { background: var(--white); }
+.price-compare .spec-table .ours th { color: var(--ink); font-weight: 700; }
+.price-compare .spec-table tbody th { width: 40%; }
+.price-note { margin-top: 14px; padding: 0 4px; color: var(--ink-3); font-size: 14px; line-height: 1.5; }
+.price-note a { color: var(--ink-2); text-underline-offset: 3px; }
+
+/* ---------------------------------------------------------------- Team, later */
+.later { padding-top: var(--section); }
+.later h2 { margin-bottom: 18px; }
+.later p { max-width: 44em; color: var(--ink-2); font-size: clamp(17px, 1rem + 0.3vw, 19px); line-height: 1.55; }
+.later p:last-child { display: inline-block; margin-top: 14px; padding: 7px 14px; border-radius: 999px; background: var(--paper-2); color: var(--ink); font-size: 14px; font-weight: 500; }
+
+/* ---------------------------------------------------------------- questions */
+.faq { padding-top: var(--section); padding-bottom: var(--section); }
+.faq h2 { margin-bottom: clamp(20px, 3vw, 32px); }
+.faq-list { overflow: hidden; border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow-soft); }
+.faq-list details { border-bottom: 1px solid var(--rule); }
+.faq-list details:last-child { border-bottom: 0; }
+.faq-list summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: clamp(18px, 2vw, 24px) clamp(20px, 2.6vw, 32px);
+  color: var(--ink); font: 600 clamp(17px, 1rem + 0.25vw, 19px)/1.35 var(--font); letter-spacing: -0.005em; list-style: none; cursor: pointer;
+}
+.faq-list summary::-webkit-details-marker { display: none; }
+/* A plus that turns into a cross when open. */
+.faq-list summary::after {
+  content: ""; flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--paper-2);
+  background-image: linear-gradient(var(--ink), var(--ink)), linear-gradient(var(--ink), var(--ink));
+  background-size: 10px 1.6px, 1.6px 10px; background-position: center; background-repeat: no-repeat;
+  transition: transform 0.3s var(--ease);
+}
+.faq-list details[open] summary::after { transform: rotate(45deg); }
+.faq-list summary:hover::after { background-color: var(--paper-3); }
+.faq-list details p { max-width: 62ch; padding: 0 clamp(20px, 2.6vw, 32px) clamp(20px, 2.4vw, 26px); color: var(--ink-2); font-size: 16px; line-height: 1.6; }
+.faq-list details p a { color: var(--ink); text-underline-offset: 3px; }
+
+.foot-mark { width: 20px; height: 20px; }
+/* The bar, as on the landing page: the mark never shrinks, and on a phone the How it works link steps aside. */
+.bar .brand-mark { flex: none; }
+@media (max-width: 560px) { .bar-nav a[href="/#how"] { display: none; } }
+
+@media (max-width: 860px) {
+  .ledger, .scene-meter { grid-template-columns: 1fr; }
+  .spec-table tbody th { width: 40%; }
+}
+@media (max-width: 560px) {
+  .spec-table th, .spec-table td { padding: 16px 14px; }
+  .spec-table tbody th { width: 38%; font-size: 14.5px; }
+  .meter-lane { --g: 20px; --gap: 4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scene-meter.is-live .meter-glider, .scene-meter.is-live .meter-read i::after { animation: none; }
+  .faq-list summary::after { transition: none; }
+}

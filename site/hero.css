@@ -1,0 +1,214 @@
+/* The landing page hero (hero.js, built from web/hero): it opens on a canvas of big floating prints with no words; as
+ * the reader scrolls, the paper plane flies through the prints and carries the files to a laptop (media/laptop.svg,
+ * drawn for the site), and only then the headline appears. Scrolling past the hero is ordinary scrolling: the page
+ * never waits for the story.
+ */
+
+.hero { position: relative; isolation: isolate; }
+/* With hero.js the hero is a long scroll and its stage pins: scrolling plays the story. */
+.hero.hx-scroll { height: 820vh; }
+.hx-stage {
+  position: relative; overflow: clip;
+  display: grid; justify-items: center; grid-template-rows: auto 1fr;
+  padding: clamp(96px, 10vw, 118px) var(--gutter) clamp(28px, 4vw, 56px);
+}
+.hx-scroll .hx-stage { position: sticky; top: 0; height: 100svh; min-height: 560px; padding-bottom: clamp(12px, 2.4vh, 28px); }
+/* Before the story starts the canvas can be dragged about with a mouse. */
+.hx-stage.is-grab { cursor: grab; user-select: none; -webkit-user-select: none; }
+.hx-stage.is-grabbing { cursor: grabbing; }
+/* Without the script the words rise in after a moment; with it they wait for the end of the story. A key that puts
+ * focus in them while they sit over the prints shows them on a frosted card. */
+.hero-copy { position: relative; z-index: 3; display: grid; justify-items: center; gap: 16px; text-align: center; border-radius: 32px; transition: background-color 0.4s, box-shadow 0.4s; animation: hx-rise 0.9s var(--ease) 1.2s both; }
+.hx-scroll .hero-copy { opacity: 0; animation: none; }
+@keyframes hx-rise { from { opacity: 0; transform: translateY(14px); } }
+.hero-copy.hx-card {
+  padding: clamp(20px, 3vw, 36px) clamp(18px, 4vw, 48px); background: rgb(250 249 246 / 0.92);
+  box-shadow: 0 0 0 1px rgb(20 21 24 / 0.06), 0 24px 60px -30px rgb(20 21 24 / 0.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3); backdrop-filter: blur(18px) saturate(1.3);
+}
+/* The headline: plain ink, both lines, a little smaller on short screens so the Mac fits whole below it. */
+.hero h1, .hero h1 .soft { color: var(--ink); }
+.hero h1 { font-size: clamp(40px, min(1rem + 5.4vw, 9.4svh), 92px); }
+
+/* ---------------------------------------------------------------- the Mac */
+.hx-mac {
+  position: relative; z-index: 2; margin: clamp(36px, 5vh, 64px) 0 0; align-self: end;
+  width: min(94vw, max(300px, calc((100svh - 540px) * 1.52)), 1000px);
+  aspect-ratio: 1930 / 1270;
+  /* Without the script the laptop simply fades in a moment after the words. */
+  animation: hx-show 0.8s ease 1.6s both;
+}
+@keyframes hx-show { from { opacity: 0; } }
+.hx-js .hx-mac { animation: none; transition: opacity 1s ease; }
+.hx-mac.hx-off { opacity: 0; }
+.hx-mac::after { content: ""; position: absolute; z-index: -1; left: 6%; right: 6%; bottom: 0.4%; height: 5%; border-radius: 50%; background: rgb(40 36 30 / 0.22); filter: blur(18px); }
+.hx-mac-img { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* The screen, exactly: 3024 x 1964 at (418, 288) of the 3860 x 2540 artwork (media/laptop.svg). */
+.hx-screen { position: absolute; left: 10.829%; top: 11.339%; width: 78.342%; height: 77.323%; overflow: hidden; container-type: size; }
+
+/* ---------------------------------------------------------------- the canvas layer */
+.hx-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.hx-tiles { position: absolute; inset: 0; }
+.hx-tile { position: absolute; left: 0; top: 0; opacity: 0; will-change: transform, opacity; user-select: none; -webkit-user-select: none; }
+.hx-media { position: relative; overflow: hidden; border-radius: 3px; background: #E4E4E2; }
+.hx-media img, .hx-media video { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+.hx-fx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.hx-plane { position: absolute; left: 0; top: 0; width: 120px; height: 120px; opacity: 0; pointer-events: none; will-change: transform; }
+.hx-plane svg { display: block; width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 12px 14px rgb(20 21 24 / 0.16)); }
+.hx-caption {
+  position: absolute; right: var(--gutter); top: clamp(104px, 17vh, 190px); z-index: 4; display: grid; gap: 8px; width: min(420px, calc(100vw - 2 * var(--gutter)));
+  padding: 20px 24px 22px; border-radius: 18px;
+  /* A frosted card, so the words stay clear over any photo passing behind them. */
+  background: rgb(250 249 246 / 0.9); box-shadow: 0 0 0 1px rgb(20 21 24 / 0.06), 0 18px 40px -22px rgb(20 21 24 / 0.45);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3); backdrop-filter: blur(18px) saturate(1.3);
+}
+.hx-caption b { color: var(--ink); font: 650 clamp(22px, 1rem + 1.2vw, 32px)/1.08 var(--display); letter-spacing: -0.015em; }
+.hx-caption em { color: #3B3E45; font-size: clamp(15px, 0.9rem + 0.2vw, 16.5px); font-style: normal; line-height: 1.45; }
+/* The only words at the start: a small line asking to scroll. */
+.hx-hint { position: absolute; left: 50%; bottom: clamp(16px, 3.4vh, 32px); z-index: 4; display: flex; align-items: center; gap: 8px; transform: translateX(-50%);
+  padding: 9px 14px 9px 16px; border-radius: 999px; background: rgb(255 255 255 / 0.86); box-shadow: 0 0 0 1px rgb(20 21 24 / 0.07), 0 8px 24px -14px rgb(20 21 24 / 0.35);
+  color: var(--ink); font: 600 14px/1 var(--font); letter-spacing: -0.005em; white-space: nowrap; opacity: 0; transition: opacity 0.6s ease; }
+.hx-hint.is-on { opacity: 1; }
+.hx-hint svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; animation: hx-nudge 1.8s ease-in-out infinite; }
+@keyframes hx-nudge { 0%, 100% { transform: translateY(-1px); } 50% { transform: translateY(2px); } }
+
+/* Documents, drawn by the page. */
+.hx-doc { position: absolute; inset: 0; }
+.hx-pdf { display: grid; align-content: start; gap: 9%; padding: 12% 11%; background: #fff; box-shadow: inset 0 0 0 1px rgb(20 21 24 / 0.08); }
+.hx-pdf-title { font: 700 clamp(11px, 1.2vw, 16px)/1.05 var(--display); letter-spacing: -0.01em; }
+.hx-swatches { display: flex; gap: 5%; }
+.hx-swatches i { flex: 1; aspect-ratio: 1; border-radius: 2px; background: #141518; }
+.hx-swatches i:nth-child(2) { background: #8D9098; } .hx-swatches i:nth-child(3) { background: #C9CBD0; } .hx-swatches i:nth-child(4) { background: #E9E9E7; }
+.hx-lines { display: grid; gap: 7px; }
+.hx-lines .ln { display: block; height: 3px; border-radius: 2px; background: #D9DBDF; }
+.hx-lines .ln-1 { width: 86%; } .hx-lines .ln-2 { width: 92%; } .hx-lines .ln-3 { width: 64%; }
+.hx-sheet { display: grid; grid-template-columns: repeat(6, 1fr); grid-auto-rows: 1fr; gap: 1px; background: #E7E5E0; box-shadow: inset 0 0 0 1px rgb(20 21 24 / 0.08); }
+.hx-sheet i { background: #fff; }
+.hx-sheet i.h { background: #F2F2F1; } .hx-sheet i.k { background: #FAFAF9; } .hx-sheet i.u { background: #E6E7EA; }
+.hx-wav { display: grid; place-items: center; background: #1D1E21; }
+.hx-wav svg { width: 86%; height: 56%; fill: #E9EAEC; }
+.hx-md { display: grid; align-content: start; gap: 8%; padding: 12% 11%; background: #fff; box-shadow: inset 0 0 0 1px rgb(20 21 24 / 0.08); font: 600 clamp(9px, 0.85vw, 12px)/1.2 var(--mono); color: #141518; }
+.hx-blend { display: grid; place-items: center; background: #26272B; }
+.hx-blend svg { width: 74%; }
+.hx-blend .g { fill: none; stroke: #3A3B40; stroke-width: 1; }
+.hx-blend .w { fill: none; stroke: #9AA0AA; stroke-width: 1.1; stroke-linejoin: round; }
+.hx-blend .o { fill: #F29A3A; }
+
+/* ---------------------------------------------------------------- the Mac's screen (MacDemo.jsx), in screen units */
+.hxd { position: absolute; inset: 0; color: #1d1d1f; font-family: system-ui, -apple-system, "SF Pro Text", sans-serif; -webkit-font-smoothing: antialiased; }
+.hxd svg { display: block; }
+/* Finder: a sidebar inset in its own rounded panel, a unified toolbar, an icon grid of 4 by 3, a status line. */
+.hxd-finder {
+  position: absolute; left: 7.5%; top: 8.4%; width: 85%; height: 84.5%;
+  display: grid; grid-template-columns: 19% minmax(0, 1fr); overflow: hidden;
+  border-radius: 1.5cqw; background: #FFFFFF;
+  box-shadow: 0 0 0 0.07cqw rgb(0 0 0 / 0.22), 0 2.6cqw 5.4cqw -1.4cqw rgb(30 28 24 / 0.45), 0 0.5cqw 1.2cqw rgb(30 28 24 / 0.1);
+}
+.hxd-side {
+  display: flex; flex-direction: column; gap: 0.12cqw; margin: 0.7cqw 0 0.7cqw 0.7cqw; padding: 3.6cqw 0.7cqw 1cqw;
+  border-radius: 1.05cqw; background: rgb(240 240 243 / 0.94); box-shadow: 0 0 0 0.06cqw rgb(0 0 0 / 0.07);
+  font-size: 1.08cqw; line-height: 1.2;
+}
+.hxd-side p { margin: 0.9cqw 0.55cqw 0.35cqw; color: #8E8E93; font-size: 0.86cqw; font-weight: 600; }
+.hxd-side p:first-child { margin-top: 0; }
+.hxd-side span { display: flex; align-items: center; gap: 0.62cqw; padding: 0.42cqw 0.55cqw; border-radius: 0.55cqw; white-space: nowrap; }
+.hxd-side span svg { flex: none; width: 1.32cqw; height: 1.32cqw; color: #2F7CF6; }
+.hxd-side .is-here { background: rgb(0 0 0 / 0.075); }
+.hxd-side .hxd-eject { width: 1.05cqw; height: 1.05cqw; margin-left: auto; color: #8E8E93; }
+.hxd-main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; }
+.hxd-tools { display: flex; align-items: center; gap: 1.3cqw; height: 5.2cqw; padding: 0 1.7cqw 0 1.5cqw; }
+.hxd-nav { display: flex; gap: 0.7cqw; color: #6E6E73; }
+.hxd-nav svg { width: 1.5cqw; height: 1.5cqw; }
+.hxd-nav svg + svg { color: #C7C7CC; }
+.hxd-tools b { font-size: 1.42cqw; font-weight: 700; letter-spacing: -0.005em; white-space: nowrap; }
+.hxd-acts { display: flex; gap: 1.35cqw; margin-left: auto; color: #6E6E73; }
+.hxd-acts svg { width: 1.42cqw; height: 1.42cqw; }
+.hxd-grid {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: max-content; gap: 1.1cqw 0.8cqw;
+  align-content: start; padding: 0.9cqw 2cqw 0;
+}
+.hxd-item { display: grid; justify-items: center; gap: 0.32cqw; min-width: 0; text-align: center; }
+.hxd-thumb { display: flex; align-items: center; justify-content: center; width: 13cqw; height: 9.2cqw; padding: 0.45cqw; border-radius: 0.7cqw; transition: background-color 0.2s; }
+/* A picture keeps its own shape inside the icon's square, framed in white, as Finder shows it. */
+.hxd-thumb img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; border: 0.24cqw solid #FFFFFF; border-radius: 0.22cqw; background: #E5E5EA;
+  box-shadow: 0 0.18cqw 0.55cqw rgb(0 0 0 / 0.22), 0 0 0 0.05cqw rgb(0 0 0 / 0.14); }
+.hxd-item.is-sel .hxd-thumb { background: rgb(0 0 0 / 0.085); }
+.hxd-item b { max-width: 100%; padding: 0.1cqw 0.5cqw; overflow: hidden; border-radius: 0.38cqw; font-size: 1.02cqw; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.hxd-item.is-sel b { background: #2F7CF6; color: #FFFFFF; }
+.hxd-item em { color: #8E8E93; font-size: 0.9cqw; font-style: normal; font-variant-numeric: tabular-nums; }
+/* A document: the page's paper icon with its kind on a coloured band, as Finder draws one. */
+.hxd-doc { position: relative; display: block; flex: none; height: 100%; aspect-ratio: 48 / 60; }
+.hxd-doc svg { width: 100%; height: 100%; filter: drop-shadow(0 0.14cqw 0.32cqw rgb(0 0 0 / 0.16)); }
+.hxd-doc b { position: absolute; left: 13%; right: 13%; bottom: 17%; padding: 0.14cqw 0; border-radius: 0.2cqw; background: #8E8E93; color: #FFFFFF; font-size: 0.72cqw; font-weight: 700; letter-spacing: 0.02em; text-align: center; }
+.hxd-doc-pdf b { background: #E5483F; } .hxd-doc-sheet b { background: #1F9D55; } .hxd-doc-wav b { background: #8E5BD8; } .hxd-doc-blend b { background: #E8892B; }
+.hxd-status { padding: 0.75cqw 0 0.9cqw; border-top: 0.06cqw solid rgb(0 0 0 / 0.08); color: #8E8E93; font-size: 0.92cqw; text-align: center; }
+/* QuickTime: a light title bar, the picture, and the floating dark controls over it. */
+.hxd-player {
+  position: absolute; left: 20%; top: 12.5%; width: 60%; overflow: hidden;
+  border-radius: 1.3cqw; background: #F4F4F6;
+  box-shadow: 0 0 0 0.07cqw rgb(0 0 0 / 0.24), 0 3.4cqw 7cqw -2cqw rgb(20 18 16 / 0.6), 0 0.6cqw 1.4cqw rgb(20 18 16 / 0.14);
+}
+.hxd-bar { display: flex; align-items: center; justify-content: center; height: 3.1cqw; border-bottom: 0.06cqw solid rgb(0 0 0 / 0.08); color: #3A3A3C; font-size: 1.1cqw; font-weight: 600; }
+.hxd-view { position: relative; aspect-ratio: 16 / 9; background: #111; }
+.hxd-view video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.hxd-hud {
+  position: absolute; left: 50%; bottom: 4.5%; display: flex; align-items: center; gap: 1cqw; width: 62%; padding: 0.8cqw 1.3cqw; transform: translateX(-50%);
+  border-radius: 1.1cqw; background: rgb(28 28 30 / 0.58); box-shadow: 0 0 0 0.06cqw rgb(255 255 255 / 0.12) inset;
+  -webkit-backdrop-filter: blur(1.4cqw) saturate(1.4); backdrop-filter: blur(1.4cqw) saturate(1.4); color: #FFFFFF;
+}
+.hxd-hud svg { flex: none; width: 1.35cqw; height: 1.35cqw; fill: currentColor; }
+.hxd-hud svg:nth-child(2) { width: 1.55cqw; height: 1.55cqw; }
+.hxd-hud em { flex: none; color: rgb(255 255 255 / 0.82); font-size: 0.88cqw; font-style: normal; font-variant-numeric: tabular-nums; }
+.hxd-hud span { flex: 1; height: 0.36cqw; overflow: hidden; border-radius: 1cqw; background: rgb(255 255 255 / 0.28); }
+.hxd-hud span b { display: block; height: 100%; border-radius: inherit; background: #FFFFFF; }
+.hxd-panel { position: absolute; right: 18.5%; top: 4.4%; width: 27%; height: auto; border-radius: 1cqw; box-shadow: 0 0 0 0.08cqw rgb(0 0 0 / 0.16), 0 2.4cqw 4cqw -1.6cqw rgb(30 28 24 / 0.45); }
+.hxd-cursor { position: absolute; width: 2.1cqw; height: 2.1cqw; margin: -0.3cqw 0 0 -0.45cqw; filter: drop-shadow(0 0.15cqw 0.25cqw rgb(0 0 0 / 0.35)); }
+.hxd-cursor path { fill: #111; stroke: #fff; stroke-width: 1.4; stroke-linejoin: round; }
+
+/* ---------------------------------------------------------------- sound: a quiet switch in the corner of the hero */
+.hx-sound {
+  position: absolute; left: 16px; bottom: 16px; z-index: 40; display: inline-flex; align-items: center; gap: 8px;
+  height: 38px; padding: 0 14px 0 11px; border: 0; border-radius: 999px; cursor: pointer;
+  background: rgb(255 255 255 / 0.86); box-shadow: 0 0 0 1px rgb(20 21 24 / 0.08), 0 8px 24px -14px rgb(20 21 24 / 0.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4); backdrop-filter: blur(14px) saturate(1.4);
+  color: var(--ink); font: 600 13px/1 var(--font); letter-spacing: -0.005em;
+  transition: background-color 0.2s, transform 0.25s var(--ease);
+}
+.hx-sound:hover { background: #FFFFFF; transform: translateY(-1px); }
+.hx-sound svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.hx-sound .spk { fill: currentColor; stroke: none; }
+.hx-sound .wave, .hx-sound.is-on .mute { display: none; }
+.hx-sound.is-on .wave { display: block; }
+.hx-sound-bars { display: none; align-items: flex-end; gap: 2px; height: 12px; }
+.hx-sound.is-on .hx-sound-bars { display: inline-flex; }
+/* On, but the browser is waiting for a click: the bars rest and the button breathes a little. */
+.hx-sound.is-waiting .hx-sound-bars i { animation: none; transform: scaleY(0.35); }
+.hx-sound.is-waiting { animation: hx-breathe 2.2s ease-in-out infinite; }
+@keyframes hx-breathe { 50% { box-shadow: 0 0 0 1px rgb(20 21 24 / 0.08), 0 0 0 6px rgb(20 21 24 / 0.06), 0 8px 24px -14px rgb(20 21 24 / 0.4); } }
+.hx-sound-bars i { width: 2px; height: 100%; border-radius: 1px; background: currentColor; transform-origin: 50% 100%; animation: hx-bars 1.1s ease-in-out infinite; }
+.hx-sound-bars i:nth-child(2) { animation-delay: -0.35s; } .hx-sound-bars i:nth-child(3) { animation-delay: -0.7s; }
+@keyframes hx-bars { 0%, 100% { transform: scaleY(0.3); } 50% { transform: scaleY(1); } }
+.foot-credit { color: var(--ink-3); font-size: 13px; }
+.foot-credit a { color: inherit; }
+
+@media (max-width: 720px) {
+  .hero.hx-scroll { height: 760vh; }
+  .hx-caption { left: var(--gutter); right: auto; top: 22%; }
+  /* Room under the laptop for the sound switch, so it never sits on the laptop. */
+  .hx-stage, .hx-scroll .hx-stage { padding-bottom: 66px; }
+  .hx-sound { left: 12px; bottom: 14px; }
+  .hx-hint { bottom: 66px; }
+}
+/* Short screens, such as a phone on its side: the stage keeps its 560 px and is taller than the screen, so the sound
+ * switch and the scroll hint sit at the screen's bottom edge rather than the stage's. */
+@media (max-height: 560px) {
+  .hx-sound { top: calc(100svh - 54px); bottom: auto; }
+  .hx-hint { top: calc(100svh - 56px); bottom: auto; }
+}
+@media (max-height: 560px) and (max-width: 720px) {
+  .hx-hint { top: calc(100svh - 104px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-copy, .hx-mac, .hx-hint svg, .hx-sound-bars i, .hx-sound.is-waiting { animation: none; }
+  .hx-js .hx-mac, .hero-copy { transition: none; }
+}

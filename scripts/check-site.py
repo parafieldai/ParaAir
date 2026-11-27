@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Static checks for the pages in site/ (CI job "site"). Standard library only.
 
-- The deployed files exist: index.html, pricing.html, get-started.html, styles.css, motion.js, signup.js, _headers,
+- The deployed files exist: index.html, pricing.html, get-started.html, styles.css, motion.js, signup.js, home.css, pricing.css,
+  home.js, story.js, hero.css, hero.js (the landing page's own style and motion; hero.js is built from web/hero), _headers,
   and the site-health files: favicon.ico, og-card.png, robots.txt, sitemap.xml, .well-known/security.txt.
 - Every *.html page in site/ and its subfolders is checked, not only the required ones (site/help/export.html
   is served at /help/export).
 - No em dash in visible copy: page text and user-visible attributes, and anywhere in
-  motion.js or styles.css (either can put text on the page).
+  motion.js, styles.css, home.css, home.js or story.js (any of them can put text on the page).
 - The word "unlimited" never appears in visible copy (the transfer allowance has a limit). The legal pages
   (<body class="legal-page">) are exempt: they use the word to rule it out ("No plan offers \"unlimited\" ...").
 - Every local href/src resolves to a file in site/ (a directory resolves to its index.html, and an
@@ -42,7 +43,8 @@ import xml.etree.ElementTree as ET
 
 ORIGIN = "https://paraair.parafield.ai"
 HOST = urlsplit(ORIGIN).netloc
-REQUIRED = ["index.html", "pricing.html", "get-started.html", "styles.css", "motion.js", "signup.js", "_headers",
+REQUIRED = ["index.html", "pricing.html", "get-started.html", "styles.css", "motion.js", "signup.js", "home.css", "home.js",
+            "story.js", "hero.css", "hero.js", "pricing.css", "fonts/fredoka-latin.woff2", "fonts/fredoka-latin-ext.woff2", "_headers",
             "favicon.ico", "og-card.png", "robots.txt", "sitemap.xml", ".well-known/security.txt"]
 EM_DASH = "—"  # em dash
 BANNED_WORDS = re.compile(r"\bunlimited\b", re.IGNORECASE)
@@ -262,7 +264,7 @@ def main(argv):
         page.close()
         pages[path.resolve()] = page
         problems += page.problems
-    for name in ("motion.js", "signup.js", "styles.css"):
+    for name in ("motion.js", "signup.js", "styles.css", "home.css", "home.js", "story.js", "hero.css", "pricing.css"):
         for number, line in enumerate((site / name).read_text(encoding="utf-8").splitlines(), 1):
             if EM_DASH in line:
                 problems.append("%s:%d: em dash" % (name, number))
