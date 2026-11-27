@@ -199,6 +199,15 @@
   .hx-sound { left: 12px; bottom: 14px; }
   .hx-hint { bottom: 66px; }
 }
+/* Short screens, such as a phone on its side: the stage keeps its 560 px and is taller than the screen, so the sound
+ * switch and the scroll hint sit at the screen's bottom edge rather than the stage's. */
+@media (max-height: 560px) {
+  .hx-sound { top: calc(100svh - 54px); bottom: auto; }
+  .hx-hint { top: calc(100svh - 56px); bottom: auto; }
+}
+@media (max-height: 560px) and (max-width: 720px) {
+  .hx-hint { top: calc(100svh - 104px); }
+}
 @media (prefers-reduced-motion: reduce) {
   .hero-copy, .hx-mac, .hx-hint svg, .hx-sound-bars i, .hx-sound.is-waiting { animation: none; }
   .hx-js .hx-mac, .hero-copy { transition: none; }
