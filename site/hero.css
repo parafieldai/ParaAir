@@ -1,7 +1,7 @@
-/* The landing page hero (hero.js, built from web/hero): it opens on a canvas of big floating prints with the headline
- * and the download on a card over them; as the reader scrolls, the paper plane flies through the prints and carries the
- * files to a laptop (media/laptop.svg, drawn for the site), and the headline comes back over it. Scrolling past the
- * hero is ordinary scrolling: the page never waits for the story.
+/* The landing page hero (hero.js, built from web/hero): it opens on a canvas of big floating prints with no words; as
+ * the reader scrolls, the paper plane flies through the prints and carries the files to a laptop (media/laptop.svg,
+ * drawn for the site), and only then the headline appears. Scrolling past the hero is ordinary scrolling: the page
+ * never waits for the story.
  */
 
 .hero { position: relative; isolation: isolate; }
@@ -16,8 +16,11 @@
 /* Before the story starts the canvas can be dragged about with a mouse. */
 .hx-stage.is-grab { cursor: grab; user-select: none; -webkit-user-select: none; }
 .hx-stage.is-grabbing { cursor: grabbing; }
-/* The words show from the start, with or without the script. Over the prints they sit on a frosted card. */
-.hero-copy { position: relative; z-index: 3; display: grid; justify-items: center; gap: 16px; text-align: center; border-radius: 32px; transition: background-color 0.4s, box-shadow 0.4s; }
+/* Without the script the words rise in after a moment; with it they wait for the end of the story. A key that puts
+ * focus in them while they sit over the prints shows them on a frosted card. */
+.hero-copy { position: relative; z-index: 3; display: grid; justify-items: center; gap: 16px; text-align: center; border-radius: 32px; transition: background-color 0.4s, box-shadow 0.4s; animation: hx-rise 0.9s var(--ease) 1.2s both; }
+.hx-scroll .hero-copy { opacity: 0; animation: none; }
+@keyframes hx-rise { from { opacity: 0; transform: translateY(14px); } }
 .hero-copy.hx-card {
   padding: clamp(20px, 3vw, 36px) clamp(18px, 4vw, 48px); background: rgb(250 249 246 / 0.92);
   box-shadow: 0 0 0 1px rgb(20 21 24 / 0.06), 0 24px 60px -30px rgb(20 21 24 / 0.5);
@@ -32,8 +35,11 @@
   position: relative; z-index: 2; margin: clamp(36px, 5vh, 64px) 0 0; align-self: end;
   width: min(94vw, max(300px, calc((100svh - 540px) * 1.52)), 1000px);
   aspect-ratio: 1930 / 1270;
+  /* Without the script the laptop simply fades in a moment after the words. */
+  animation: hx-show 0.8s ease 1.6s both;
 }
-.hx-js .hx-mac { transition: opacity 1s ease; }
+@keyframes hx-show { from { opacity: 0; } }
+.hx-js .hx-mac { animation: none; transition: opacity 1s ease; }
 .hx-mac.hx-off { opacity: 0; }
 .hx-mac::after { content: ""; position: absolute; z-index: -1; left: 6%; right: 6%; bottom: 0.4%; height: 5%; border-radius: 50%; background: rgb(40 36 30 / 0.22); filter: blur(18px); }
 .hx-mac-img { position: absolute; inset: 0; width: 100%; height: 100%; }
@@ -194,6 +200,6 @@
   .hx-hint { bottom: 66px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .hx-hint svg, .hx-sound-bars i, .hx-sound.is-waiting { animation: none; }
+  .hero-copy, .hx-mac, .hx-hint svg, .hx-sound-bars i, .hx-sound.is-waiting { animation: none; }
   .hx-js .hx-mac, .hero-copy { transition: none; }
 }

@@ -1,16 +1,16 @@
 // The hero's story, played by scrolling. The hero is a tall section with a pinned stage; how far it has scrolled sets
 // the story's time, eased so a flick of the wheel still glides like video. Scroll back and it plays backwards: every
 // frame is worked out from the time alone, nothing piles up. Timings are in flight.js.
-//   0 s          the canvas of big prints with the paper plane waiting on it, and the headline and download on a
-//                card over it; nothing moves until the reader scrolls (with a mouse the canvas can be dragged about)
-//   0.3 - 0.9 s  the headline fades out of the way of the story (it stays while a key has focus in it)
+//   0 s          the canvas of big prints fades in with the paper plane waiting on it and the clips playing, no
+//                words; nothing else moves until the reader scrolls (with a mouse the canvas can be dragged about).
+//                The download stays in the header bar, and a key that puts focus in the headline shows it at once.
 //   0 - 6 s      the plane flies through the canvas, the camera with it, so the prints stream past
 //   6 - 10 s     each print the plane passes lifts off into particles of its own colours and joins the plane's wake
 //   10 - 13.6 s  the canvas comes to rest, the Mac fades in, the last prints join the wake; the plane passes over
 //                the Mac and its wake falls from there straight down onto the top of the lid in one stream, as the
 //                files drop into the drive on its screen (MacDemo.jsx); the plane glides on down to rest on the lid.
 //                Nothing enters or covers the screen.
-//   15.4 s       the headline comes back over the Mac; the screen plays the demo
+//   15.4 s       only now the headline appears, over the Mac; the screen plays the demo
 // The page below never waits for the story: scrolling past the hero is ordinary scrolling, and the story simply stops
 // where the reader left it. Reduced motion: no pinning, the end straight away.
 import { createPlane, REST_POSE, SIZE } from "./plane.js";
@@ -30,9 +30,8 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
   const drawPlane = createPlane(planeSvg);
   const tiles = layout.tiles.map((t, i) => ({ ...t, el: tileEls[i], sx: 0, sy: 0, loaded: false }));
   tiles.forEach((tl) => { tl.media = tl.el.querySelector("img, video"); });
-  // A print's picture is fetched only when it first comes near the screen. A clip shows its poster until the reader
-  // first scrolls or drags the canvas, then plays only while its print shows, the hero is in view and motion is
-  // welcome. Nothing plays under reduced motion.
+  // A print's picture is fetched only when it first comes near the screen. A clip plays while its print shows and
+  // the hero is in view, from the moment the page opens. Nothing plays under reduced motion.
   const loadMedia = (tl) => {
     tl.loaded = true;
     const m = tl.media;
@@ -217,15 +216,14 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     planeWrap.style.opacity = shown.toFixed(3);
     planeWrap.style.transform = `translate3d(${(px - SIZE / 2).toFixed(1)}px,${(py - SIZE / 2).toFixed(1)}px,0) rotate(${rot.toFixed(2)}deg) scale(${scale.toFixed(3)})`;
 
-    // The headline and the download show from the start, on a card over the prints; they step aside while the plane
-    // flies and come back once it has landed. Out of the way they are inert, so nothing invisible takes focus; and
-    // while a key has put focus in them they stay.
-    const words = keyFocus ? 1 : Math.max(1 - smooth(0.3, 0.9, t), smooth(T.copy, T.copy + 0.9, t));
+    // No words to begin with: the headline appears only once the plane has landed. Until then it can't be clicked,
+    // but it stays in the page for screen readers, and a key that puts focus in it shows it at once (on a card while
+    // it sits over the prints), like a skip link.
+    const words = keyFocus ? 1 : smooth(T.copy, T.copy + 0.9, t);
     copy.style.opacity = words.toFixed(3);
     copy.style.transform = `translateY(${((1 - words) * 16).toFixed(1)}px)`;
     copy.style.pointerEvents = words > 0.5 ? "" : "none";
-    if (copy.inert !== words < 0.5) copy.inert = words < 0.5;
-    copy.classList.toggle("hx-card", t < T.mac);
+    copy.classList.toggle("hx-card", keyFocus && t < T.mac);
 
     // The prints.
     const p = t > T.pick0 - 0.4 ? ensurePlan() : null;
@@ -250,8 +248,7 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
       const shows = alpha >= 0.005 && sx + tile.w > 0 && sx < W && sy + tile.h > 0 && sy < VH;
       const near = alpha >= 0.005 && sx + tile.w > -160 && sx < W + 160 && sy + tile.h > -160 && sy < VH + 160;
       if (near && !tile.loaded) loadMedia(tile);
-      if (t > 0.02 || grab) moved = true;
-      playMedia(tile, moved && shows && visible && !still.matches);
+      playMedia(tile, shows && visible && !still.matches);
       tile.el.style.transform = `translate3d(${(sx + ox).toFixed(1)}px,${(sy + oy).toFixed(1)}px,0) rotate(${(ox * 0.05).toFixed(2)}deg) scale(${(0.95 + 0.05 * appear - 0.03 * gone).toFixed(3)})`;
     }
 
@@ -345,7 +342,7 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
   };
 
   // ------------------------------------------------------------------ time: the scroll, eased
-  let t = 0, raf = 0, visible = true, last = 0, latestArrived = 0, keyFocus = false, moved = false;
+  let t = 0, raf = 0, visible = true, last = 0, latestArrived = 0, keyFocus = false;
   const start = performance.now();
   const progress = () => {
     const r = hero.getBoundingClientRect();

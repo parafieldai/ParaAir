@@ -9,9 +9,9 @@ site's Content-Security-Policy (`script-src 'self'`) requires. Nothing here is d
 
 - `src/engine.js` plays the story by scroll: the hero is a tall section (`.hx-scroll`, 820vh) whose stage pins, and how
   far it has scrolled sets the story's time (eased and speed-capped, so it glides like video, forwards and back).
-  Every frame is worked out from that time alone. It opens on the canvas with the headline and the download on a
-  card; they step aside while the plane flies (inert, so nothing invisible takes focus) and come back once it has
-  landed. Scrolling past the hero is ordinary scrolling: the page never holds the reader until the story has played.
+  Every frame is worked out from that time alone. It opens on the canvas with no words; the headline appears only
+  once the plane has landed (a key that puts focus in it shows it at once, and the download is always in the header
+  bar). Scrolling past the hero is ordinary scrolling: the page never holds the reader until the story has played.
   Prints fetch their picture only when they come near the screen, and clips play only while on screen, never under
   reduced motion.
 - `src/flight.js` holds the timings (`T`, `STORY`), the camera's pan and the plane's flight: one speed curve that
