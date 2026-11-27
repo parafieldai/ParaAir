@@ -82,33 +82,44 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const push = Math.pow(1 - d / reach, 2) * 22 * scale;
     return [(dx / (d || 1)) * push, (dy / (d || 1)) * push];
   };
-  // While the plane waits, the prints part around it so it sits on open paper: each print overlapping the circle of
-  // radius r round the plane moves straight away from it, just far enough to clear it. The pocket closes as it flies.
-  const clearOf = (x, y, w, h, c, r) => {
-    let dx = x + w / 2 - c[0], dy = y + h / 2 - c[1];
-    const d = Math.hypot(dx, dy) || 1;
-    dx /= d; dy /= d;
-    const gap = (s) => {
+  // While the plane waits, the prints part around it (and around the hint beside it) so they sit on open paper: each
+  // print overlapping the obstacle moves away from it, just far enough to clear it. The direction is chosen when the
+  // print first overlaps (away from the obstacle's centre, or straight down when the centres meet) and kept while it
+  // overlaps, so a print dragged through the middle doesn't flip across the pocket. The pocket closes as the plane flies.
+  const escapeOf = (tile, x, y, w, h, cx, cy) => {
+    if (!tile.esc) {
+      const dx = x + w / 2 - cx, dy = y + h / 2 - cy, d = Math.hypot(dx, dy);
+      tile.esc = d > 1 ? [dx / d, dy / d] : [0, 1];
+    }
+    return tile.esc;
+  };
+  const pushUntil = (clear, reach) => {
+    if (clear(0)) return 0;
+    let lo = 0, hi = reach;
+    for (let i = 0; i < 16; i++) { const mid = (lo + hi) / 2; if (clear(mid)) hi = mid; else lo = mid; }
+    return hi;
+  };
+  const clearOf = (tile, x, y, w, h, c, r) => {
+    const gapAt = (dx, dy, s) => {
       const nx = Math.max(x + dx * s, Math.min(c[0], x + dx * s + w)), ny = Math.max(y + dy * s, Math.min(c[1], y + dy * s + h));
       return Math.hypot(nx - c[0], ny - c[1]);
     };
-    if (gap(0) >= r) return [0, 0];
-    let lo = 0, hi = r + Math.max(w, h);
-    for (let i = 0; i < 14; i++) { const mid = (lo + hi) / 2; if (gap(mid) >= r) hi = mid; else lo = mid; }
-    return [dx * hi, dy * hi];
+    if (gapAt(0, 0, 0) >= r) { tile.esc = null; return [0, 0]; }
+    const [dx, dy] = escapeOf(tile, x, y, w, h, c[0], c[1]);
+    const s = pushUntil((k) => gapAt(dx, dy, k) >= r, 2 * r + w + h);
+    return [dx * s, dy * s];
   };
-  // The same for the hint beside the plane (box [x0, y0, x1, y1]), so it sits on the paper too, never on a print.
-  const clearBox = (x, y, w, h, b) => {
-    let dx = x + w / 2 - (b[0] + b[2]) / 2, dy = y + h / 2 - (b[1] + b[3]) / 2;
-    const d = Math.hypot(dx, dy) || 1;
-    dx /= d; dy /= d;
-    const hits = (s) => x + dx * s < b[2] && x + dx * s + w > b[0] && y + dy * s < b[3] && y + dy * s + h > b[1];
-    if (!hits(0)) return [0, 0];
-    let lo = 0, hi = Math.max(w, h) + Math.max(b[2] - b[0], b[3] - b[1]);
-    for (let i = 0; i < 14; i++) { const mid = (lo + hi) / 2; if (hits(mid)) lo = mid; else hi = mid; }
-    return [dx * hi, dy * hi];
+  const clearBox = (tile, x, y, w, h, b) => {
+    const hits = (dx, dy, s) => x + dx * s < b[2] && x + dx * s + w > b[0] && y + dy * s < b[3] && y + dy * s + h > b[1];
+    if (!hits(0, 0, 0)) { tile.esc = null; return [0, 0]; }
+    const [dx, dy] = escapeOf(tile, x, y, w, h, (b[0] + b[2]) / 2, (b[1] + b[3]) / 2);
+    const s = pushUntil((k) => !hits(dx, dy, k), w + h + (b[2] - b[0]) + (b[3] - b[1]));
+    return [dx * s, dy * s];
   };
   let hintEl = null, hintBox = null;
+  // The pocket rests while the reader drags the canvas (and while it glides on): prints then move with the hand and
+  // never jump across it. Once the canvas is still it eases back in, and the prints ease out of the way.
+  let pocketK = 1;
 
   // ------------------------------------------------------------------ the plan: when each print lifts off, and its particles
   const sampleTile = (tile, cols, rows) => {
@@ -278,23 +289,25 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     const prevWorld = F.planeWorld(t - 0.14);
     const prevPlane = [prevWorld[0] - view[0], prevWorld[1] - view[1]];
     const flying = t < T.touch - 0.4;
-    const pocket = 1 - smooth(0.04, 0.6, t);
+    const pocket = (1 - smooth(0.04, 0.6, t)) * pocketK;
     for (const tile of tiles) {
       const [sx, sy] = tileAt(tile, view);
       tile.sx = sx; tile.sy = sy;
       let ox = 0, oy = 0, kx = 0, ky = 0;
+      if (pocketK < 0.01) tile.esc = null;
       if (pocket > 0.001) {
         // With the hint showing, one box holding both the plane's circle and the hint is cleared, so a print moved off
         // one can never be moved back onto the other.
         const q = hintBox
-          ? clearBox(sx, sy, tile.w, tile.h, [Math.min(px - pocketR, hintBox[0]), Math.min(py - pocketR, hintBox[1]), Math.max(px + pocketR, hintBox[2]), Math.max(py + pocketR, hintBox[3])])
-          : clearOf(sx, sy, tile.w, tile.h, [px, py], pocketR);
+          ? clearBox(tile, sx, sy, tile.w, tile.h, [Math.min(px - pocketR, hintBox[0]), Math.min(py - pocketR, hintBox[1]), Math.max(px + pocketR, hintBox[2]), Math.max(py + pocketR, hintBox[3])])
+          : clearOf(tile, sx, sy, tile.w, tile.h, [px, py], pocketR);
         kx = q[0] * pocket; ky = q[1] * pocket;
       }
       if (flying) {
         const a = wakeOf(sx + tile.w / 2, sy + tile.h / 2, Math.max(tile.w, tile.h), [px, py], scale);
         const b = wakeOf(sx + tile.w / 2, sy + tile.h / 2, Math.max(tile.w, tile.h), prevPlane, scale);
-        ox = (a[0] + b[0]) * 0.6; oy = (a[1] + b[1]) * 0.6;
+        // The wake's nudge fades in as the pocket closes, so it never pushes a print back into the open pocket.
+        ox = (a[0] + b[0]) * 0.6 * (1 - pocket); oy = (a[1] + b[1]) * 0.6 * (1 - pocket);
       }
       const appear = smooth(tile.enter * 0.5, tile.enter * 0.5 + 0.6, shown * 1.0);
       const f = p && p.fade.has(tile) ? p.fade.get(tile) : Infinity;
@@ -424,13 +437,16 @@ export function startHero({ hero, stage, copy, tileEls, layout, canvas, planeWra
     // movement; there is no speed limit, so the story never trails behind the scroll or plays on after it stops.
     const goal = target();
     const before = t;
+    const pocketWant = grab || vel[0] || vel[1] ? 0 : 1;
+    pocketK += (pocketWant - pocketK) * (1 - Math.exp(-dt / 0.12));
+    if (Math.abs(pocketWant - pocketK) < 0.002) pocketK = pocketWant;
     t += (goal - t) * (1 - Math.exp(-dt / 0.09));
     if (Math.abs(goal - t) < 0.002) t = goal;
     const shown = smooth(0, 1.1, (now - start) / 1000);
     render(t, shown);
     cue(before, t);
     // Stop drawing once everything has come to rest; a scroll, a drag or a resize starts it again.
-    const busy = t !== goal || shown < 1 || grab || vel[0] || vel[1];
+    const busy = t !== goal || shown < 1 || grab || vel[0] || vel[1] || pocketK !== pocketWant;
     raf = busy && visible && !still.matches ? requestAnimationFrame(frame) : 0;
   };
   // The sound effects follow the story forwards only: a print lifting off, the stream reaching the lid, the plane
