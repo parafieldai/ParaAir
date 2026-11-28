@@ -1,7 +1,7 @@
 # Third-party media on the ParaAir site
 
-The site's own drawings (the paper plane, the laptop in `laptop.svg`, the Finder and app windows, the paintings and
-the diagrams) are part of ParaAir. These files come from others, under the licences named here. Licences were read on
+The site's own drawings (the paper plane, the Finder and app windows, the paintings and the diagrams) are part of
+ParaAir. These files come from others, under the licences named here. Licences were read on
 each source's page on 27 November 2026.
 
 ## Photos: Unsplash
@@ -67,3 +67,12 @@ with a fade in and out, and re-encoded as AAC. The page loads it only when a rea
 `../fonts/fredoka-latin.woff2` and `../fonts/fredoka-latin-ext.woff2`: Fredoka, Copyright 2016 The Fredoka Project
 Authors (https://github.com/hafontia/Fredoka-One), under the SIL Open Font License 1.1. The full licence is in
 `../fonts/OFL.txt`.
+
+## The MacBook Pro: Apple
+
+`macbook-pro.webp` is Apple's product image "MacBook Pro with PROLED XDR Display 14-inch Space Black" from Apple's
+Product Bezels (developer.apple.com/design/resources, `Bezel-MacBook-Pro-PROLED-XDR-Display.dmg`, dated 28 October
+2026), © Apple Inc. The ParaAir desktop and menu bar on its screen are drawn for the site. Apple's "License Agreement
+for Apple Design Resources" was accepted for Parafield on 28 November 2026 (owner decision) to open the file. Apple,
+MacBook Pro and Mac are trademarks of Apple Inc.
+
