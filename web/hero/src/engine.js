@@ -19,7 +19,7 @@ import { store } from "./store.js";
 import { T, STORY, clamp, smooth, lerp, makeFlight } from "./flight.js";
 
 export { T, STORY };
-const LID = 232 / 2540; // the transparent margin above the laptop's lid in the artwork (site/media/laptop.svg)
+const LID = 231 / 2540; // the transparent margin above the lid in the artwork (site/media/macbook-pro.webp)
 const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
 const wrap = (v, m) => ((v % m) + m) % m;
 const TS = 0.02, TR = 140; // the wake: where the plane was every 20 ms over the last 2.8 s

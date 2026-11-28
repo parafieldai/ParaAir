@@ -24,6 +24,7 @@ site's Content-Security-Policy (`script-src 'self'`) requires. Nothing here is d
   fetched only then.
 - `src/media.js` lists the files on the canvas. Their sources and licences are in `site/media/CREDITS.md`.
 
-The laptop (`site/media/laptop.svg`) is drawn for the site and is no particular maker's product. Its screen is
-3024 x 1964 at (418, 288) of the 3860 x 2540 artwork, with the lid 232 from the top; `site/hero.css`, `src/engine.js`
-and the How it works diagram in `site/index.html` rely on that geometry.
+The Mac (`site/media/macbook-pro.webp`) is Apple's MacBook Pro with PROLED XDR Display (14-inch, Space Black) from
+Apple's product bezels, with the ParaAir desktop and menu bar composited into its screen; see `site/media/CREDITS.md`.
+Its screen is 3024 x 1986 at (418, 277) of the 3860 x 2540 artwork, with the lid 231 from the top; `site/hero.css`,
+`src/engine.js` and the How it works diagram in `site/index.html` rely on that geometry.

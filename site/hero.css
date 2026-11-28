@@ -1,6 +1,6 @@
 /* The landing page hero (hero.js, built from web/hero): it opens on a canvas of big floating prints with no words; as
- * the reader scrolls, the paper plane flies through the prints and carries the files to a laptop (media/laptop.svg,
- * drawn for the site), and only then the headline appears. Scrolling past the hero is ordinary scrolling: the page
+ * the reader scrolls, the paper plane flies through the prints and carries the files to a MacBook Pro (media/macbook-pro.webp,
+ * with the ParaAir desktop on its screen), and only then the headline appears. Scrolling past the hero is ordinary scrolling: the page
  * never waits for the story.
  */
 
@@ -43,8 +43,9 @@
 .hx-mac.hx-off { opacity: 0; }
 .hx-mac::after { content: ""; position: absolute; z-index: -1; left: 6%; right: 6%; bottom: 0.4%; height: 5%; border-radius: 50%; background: rgb(40 36 30 / 0.22); filter: blur(18px); }
 .hx-mac-img { position: absolute; inset: 0; width: 100%; height: 100%; }
-/* The screen, exactly: 3024 x 1964 at (418, 288) of the 3860 x 2540 artwork (media/laptop.svg). */
-.hx-screen { position: absolute; left: 10.829%; top: 11.339%; width: 78.342%; height: 77.323%; overflow: hidden; container-type: size; }
+/* The screen, exactly: 3024 x 1986 at (418, 277) of the 3860 x 2540 artwork (media/macbook-pro.webp, Apple's MacBook Pro
+ * with PROLED XDR Display, 14-inch). */
+.hx-screen { position: absolute; left: 10.829%; top: 10.906%; width: 78.342%; height: 78.189%; overflow: hidden; container-type: size; }
 
 /* ---------------------------------------------------------------- the canvas layer */
 .hx-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
